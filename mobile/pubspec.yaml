@@ -1,0 +1,40 @@
+name: vibegrab
+description: Mobile media downloader
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: any
+  http: ^1.2.2
+  provider: ^6.1.2
+  path_provider: ^2.1.4
+  share_handler: ^0.0.21
+  flutter_local_notifications: ^17.2.4
+  permission_handler: ^11.3.1
+  url_launcher: ^6.2.6
+  shared_preferences: ^2.2.3
+  video_player: ^2.8.6
+  just_audio: ^0.9.42
+  audio_service: ^0.18.19
+  wakelock_plus: ^1.2.1
+  connectivity_plus: ^6.0.3
+  youtube_explode_dart: ^2.3.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+  assets:
+    - lib/core/localization/app_en.arb
+    - lib/core/localization/app_es.arb

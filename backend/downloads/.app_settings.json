@@ -1,0 +1,8 @@
+{
+  "download_dir": "C:\\Users\\jacka\\OneDrive\\Desktop\\VibeGrab\\backend\\downloads",
+  "max_concurrent_downloads": 2,
+  "max_file_size_mb": 2298,
+  "auto_open_after_download": false,
+  "prefer_best_quality": true,
+  "save_metadata": true
+}
