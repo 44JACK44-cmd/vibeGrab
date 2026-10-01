@@ -4,6 +4,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/localization/language_provider.dart';
+import '../../../core/constants/api_constants.dart';
 import '../controllers/settings_controller.dart';
 import '../../downloads/controllers/downloads_controller.dart';
 
@@ -82,6 +83,7 @@ class _SettingsViewState extends State<SettingsView> {
                 cs: cs,
                 text1: text1,
               ),
+              _buildBackendUrlTile(context, loc, text1, text2),
               const SizedBox(height: 24),
               _sectionHeader(loc.sectionBehavior, cs.primary),
               _buildSwitchTile(
@@ -137,6 +139,70 @@ class _SettingsViewState extends State<SettingsView> {
         }
       },
     );
+  }
+
+  Widget _buildBackendUrlTile(BuildContext context, AppLocalizations loc, Color text1, Color text2) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(Icons.dns_outlined, color: text2),
+      title: Text(loc.backendUrl, style: TextStyle(color: text1, fontSize: 15)),
+      subtitle: Text(
+        ApiConfig.isCustomBackend ? ApiConfig.baseUrl : loc.backendUrlHint,
+        style: TextStyle(color: text2.withValues(alpha: 0.7), fontSize: 12),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => _showBackendUrlDialog(context, loc),
+    );
+  }
+
+  Future<void> _showBackendUrlDialog(BuildContext context, AppLocalizations loc) async {
+    final ctrl = TextEditingController(text: ApiConfig.isCustomBackend ? ApiConfig.baseUrl : '');
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(loc.backendUrl),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.url,
+          style: const TextStyle(fontSize: 15),
+          decoration: InputDecoration(
+            hintText: 'https://vibegrab-api.onrender.com',
+            helperText: loc.backendUrlHint,
+            helperMaxLines: 4,
+            border: const OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => _saveBackendUrl(ctx, ctrl.text),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(loc.cancel),
+          ),
+          FilledButton(
+            onPressed: () => _saveBackendUrl(ctx, ctrl.text),
+            child: Text(loc.save),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+  }
+
+  Future<void> _saveBackendUrl(BuildContext dialogContext, String raw) async {
+    var url = raw.trim();
+    while (url.endsWith('/')) {
+      url = url.substring(0, url.length - 1);
+    }
+    await ApiConfig.setBaseUrl(url);
+    if (mounted) {
+      setState(() {});
+    }
+    if (dialogContext.mounted) {
+      Navigator.pop(dialogContext);
+    }
   }
 
   Widget _sectionHeader(String title, Color accent) {

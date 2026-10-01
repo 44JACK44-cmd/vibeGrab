@@ -7,6 +7,7 @@ import 'core/theme/app_theme.dart';
 import 'core/theme/theme_provider.dart';
 import 'core/localization/app_localizations.dart';
 import 'core/localization/language_provider.dart';
+import 'core/constants/api_constants.dart';
 import 'services/storage_service.dart';
 import 'services/connectivity_service.dart';
 import 'services/share_intent_handler.dart';
@@ -49,6 +50,8 @@ Future<void> main() async {
     await metaService.init();
 
     await StorageService.instance.init();
+
+    await ApiConfig.init();
 
     ConnectivityService.instance.init();
 
