@@ -147,7 +147,7 @@ class _SettingsViewState extends State<SettingsView> {
       leading: Icon(Icons.dns_outlined, color: text2),
       title: Text(loc.backendUrl, style: TextStyle(color: text1, fontSize: 15)),
       subtitle: Text(
-        ApiConfig.isCustomBackend ? ApiConfig.baseUrl : loc.backendUrlHint,
+        ApiConfig.baseUrl,
         style: TextStyle(color: text2.withValues(alpha: 0.7), fontSize: 12),
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
@@ -158,7 +158,7 @@ class _SettingsViewState extends State<SettingsView> {
   }
 
   Future<void> _showBackendUrlDialog(BuildContext context, AppLocalizations loc) async {
-    final ctrl = TextEditingController(text: ApiConfig.isCustomBackend ? ApiConfig.baseUrl : '');
+    final ctrl = TextEditingController(text: ApiConfig.baseUrl);
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(

@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ApiConfig {
   static String? _customBaseUrl;
   static const String _prefKey = 'vibegrab_backend_url';
-  static const String _defaultEmulatorUrl = 'http://10.0.2.2:8000';
+  static const String _defaultBaseUrl = 'https://vibegrab-api.onrender.com';
 
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -24,13 +24,12 @@ class ApiConfig {
     if (_customBaseUrl != null && _customBaseUrl!.isNotEmpty) {
       return _customBaseUrl!;
     }
-    return _defaultEmulatorUrl;
+    return _defaultBaseUrl;
   }
 
   static bool get isCustomBackend => _customBaseUrl != null && _customBaseUrl!.isNotEmpty;
-  static bool get isBackendConfigured => isCustomBackend;
 
-  static String get displayUrl => _customBaseUrl ?? 'Not configured';
+  static String get displayUrl => baseUrl;
 
   static const String analyzeEndpoint = '/api/analyze';
   static const String downloadsEndpoint = '/api/downloads';
