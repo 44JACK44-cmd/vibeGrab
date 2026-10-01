@@ -3,3 +3,5 @@ uvicorn[standard]==0.30.6
 pydantic==2.9.2
 pydantic-settings==2.5.2
 python-multipart==0.0.12
+yt-dlp[default]==2026.9.27.232945.dev0
+curl_cffi==0.16.0

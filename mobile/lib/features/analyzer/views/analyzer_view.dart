@@ -9,6 +9,7 @@ import '../../../core/localization/app_localizations.dart';
 import '../controllers/analyze_controller.dart';
 import '../widgets/media_card.dart';
 import '../widgets/format_selector.dart';
+import '../../../data/models/format_option.dart';
 import '../../../data/models/download_task.dart';
 import '../../../services/connectivity_service.dart';
 import '../../../services/local_extraction_service.dart';
@@ -87,25 +88,28 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
     if (url.isNotEmpty) _saveRecentUrl(url);
   }
 
-  void _download(String formatId, String title, String? thumbnail, String? source, bool hasVideo, bool hasAudio, String formatType) async {
+  void _download(FormatOption format, String title, String? thumbnail, String? source) async {
     final downloadsController = context.read<DownloadsController>();
     final url = LocalExtractionService.sanitizeUrl(_urlController.text);
     final loc = AppLocalizations.of(context);
 
-    final mediaType = formatType == 'audio' ? DownloadMediaType.audio : DownloadMediaType.video;
+    final mediaType = format.type == 'audio' ? DownloadMediaType.audio : DownloadMediaType.video;
 
-    debugPrint('[DOWNLOAD] mediaType=${mediaType.name}');
+    debugPrint('[DOWNLOAD] mediaType=${mediaType.name} direct=${format.directUrl != null}');
 
     final task = DownloadTask(
       id: 'dl_${DateTime.now().millisecondsSinceEpoch}',
       url: url,
       title: title,
-      formatId: formatId,
+      formatId: format.id,
       thumbnail: thumbnail,
       source: source,
-      hasVideo: hasVideo,
-      hasAudio: hasAudio,
+      hasVideo: format.hasVideo,
+      hasAudio: format.hasAudio,
       mediaType: mediaType,
+      directUrl: format.directUrl,
+      fileExt: format.extension,
+      totalBytes: format.sizeBytes,
       createdAt: DateTime.now().toIso8601String(),
     );
     
@@ -173,13 +177,10 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
                           videoFormats: controller.videoFormats,
                           onSelected: (format) {
                             _download(
-                              format.id,
+                              format,
                               controller.media!.title,
                               controller.media!.thumbnail,
                               controller.media!.source,
-                              format.hasVideo,
-                              format.hasAudio,
-                              format.type,
                             );
                           },
                         ),

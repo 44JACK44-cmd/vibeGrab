@@ -50,7 +50,7 @@ class ApiService {
   })  : _client = client ?? http.Client(),
         _shortTimeout = shortTimeout ?? const Duration(seconds: 8),
         _mediumTimeout = mediumTimeout ?? const Duration(seconds: 15),
-        _longTimeout = longTimeout ?? const Duration(seconds: 30);
+        _longTimeout = longTimeout ?? const Duration(seconds: 45);
 
   Future<bool> checkHealth() async {
     try {

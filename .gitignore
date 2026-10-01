@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+backend/.venv/
+backend/downloads/
+backend/temp/
+
+# Flutter/Dart
+mobile/.dart_tool/
+mobile/build/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+
+# IDE / OS
+.vscode/
+.idea/
+*.iml
+.DS_Store

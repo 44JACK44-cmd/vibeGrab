@@ -207,5 +207,9 @@
   "shareConfigureServer": "Configure the server URL in Settings first.",
   "shareTimeout": "Analysis timed out. The server may be slow or unavailable.",
   "sharePreparingDownload": "Preparing download...",
-  "shareDownloadStarted": "Download added successfully"
+  "shareDownloadStarted": "Download added successfully",
+  "shareNoInternet": "No internet connection. Check your network.",
+  "shareUnsupportedPlatform": "This platform is not supported.",
+  "shareContentUnavailable": "This content is not available.",
+  "shareUnsupportedPlatformDesc": "VibeGrab currently supports YouTube links only."
 }

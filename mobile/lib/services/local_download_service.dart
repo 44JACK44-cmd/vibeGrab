@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import '../core/constants/api_constants.dart';
 import '../data/models/download_task.dart';
 import '../services/storage_service.dart';
 import '../services/local_extraction_service.dart';
@@ -41,6 +43,87 @@ class LocalDownloadService {
     'Origin': 'https://www.youtube.com',
     'Referer': 'https://www.youtube.com/',
   };
+
+  static const _directHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': '*/*',
+  };
+
+  Future<DownloadTask> _downloadDirect({
+    required DownloadTask task,
+    required String dir,
+    required Function(double progress, int bytesDownloaded) onProgress,
+    required Function(DownloadStep step) onStep,
+    required Stopwatch sw,
+  }) async {
+    final ext = _directExtension(task);
+    final safeTitle = _sanitizeFilename(task.title);
+    final filePath = '$dir/$safeTitle.$ext';
+
+    final fetchUri = Uri.tryParse(
+      '${ApiConfig.baseUrl}/api/fetch'
+      '?url=${Uri.encodeQueryComponent(task.url)}'
+      '&format_id=${Uri.encodeQueryComponent(task.formatId)}'
+      '&ext=${Uri.encodeQueryComponent(ext)}',
+    );
+    if (fetchUri == null) {
+      _log('DIRECT FAILED: invalid fetch URL');
+      return task.copyWith(status: 'failed', error: 'Invalid download URL', errorCode: 'invalidUrl');
+    }
+
+    _log('DIRECT: filePath=$filePath ext=$ext server=${ApiConfig.baseUrl} knownSize=${task.totalBytes}');
+
+    if (!_activeDownloads.containsKey(task.id)) {
+      return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
+    }
+
+    onStep(const DownloadStep('connecting', 'Connecting to server...'));
+    onStep(const DownloadStep('downloading', 'Downloading...'));
+    _log('DIRECT: Starting streaming download via backend...');
+
+    final result = await _downloadViaHttpClient(
+      url: fetchUri,
+      filePath: filePath,
+      totalBytes: task.totalBytes ?? 0,
+      onProgress: onProgress,
+      task: task,
+      headers: _directHeaders,
+    );
+
+    if (result.status == DownloadStatus.completed) {
+      final expected = task.totalBytes ?? 0;
+      if (expected > 0 && result.bytesDownloaded < (expected * 0.95).floor()) {
+        _log('DIRECT FAILED: truncated ${result.bytesDownloaded} < expected $expected');
+        try {
+          await File(result.filePath!).delete();
+        } catch (_) {}
+        return task.copyWith(
+          status: 'failed',
+          error: 'Incomplete download',
+          errorCode: 'fileEmpty',
+          bytesDownloaded: 0,
+          progress: 0,
+        );
+      }
+      sw.stop();
+      _log('===== COMPLETED (direct) id=${task.id} =====');
+      _log('file=${result.filePath} size=${result.bytesDownloaded} (${(result.bytesDownloaded / 1024 / 1024).toStringAsFixed(1)} MB) time=${sw.elapsedMilliseconds}ms');
+    }
+    return result;
+  }
+
+  String _directExtension(DownloadTask task) {
+    final fromTask = task.fileExt?.trim();
+    if (fromTask != null && fromTask.isNotEmpty && fromTask != 'none') return fromTask;
+    final path = Uri.tryParse(task.directUrl!)?.path ?? '';
+    final dot = path.lastIndexOf('.');
+    if (dot > -1 && dot < path.length - 1) {
+      final ext = path.substring(dot + 1).toLowerCase();
+      if (ext.length <= 5 && RegExp(r'^[a-z0-9]+$').hasMatch(ext)) return ext;
+    }
+    return 'mp4';
+  }
 
   String _getExtension(StreamInfo stream) {
     final mimeType = stream.codec.mimeType;
@@ -119,6 +202,17 @@ class LocalDownloadService {
         );
       }
       _log('STEP 0 OK: directory writable = true (${sw.elapsedMilliseconds}ms)');
+
+      if (task.directUrl != null && task.directUrl!.isNotEmpty) {
+        _log('DIRECT branch: using backend-provided direct URL');
+        return await _downloadDirect(
+          task: task,
+          dir: dir,
+          onProgress: onProgress,
+          onStep: onStep,
+          sw: sw,
+        );
+      }
 
       onStep(const DownloadStep('resolving', 'Parsing video ID...'));
       _log('STEP 1: Parsing video ID...');
@@ -539,6 +633,7 @@ class LocalDownloadService {
     required int totalBytes,
     required Function(double progress, int bytesDownloaded) onProgress,
     required DownloadTask task,
+    Map<String, String> headers = _youTubeHeaders,
   }) async {
     _log('HTTP GET: ${url.host}${url.path.substring(0, url.path.length.clamp(0, 40))}...');
     final sw = Stopwatch()..start();
@@ -557,7 +652,7 @@ class LocalDownloadService {
         },
       );
 
-      for (final entry in _youTubeHeaders.entries) {
+      for (final entry in headers.entries) {
         request.headers.set(entry.key, entry.value);
       }
       request.headers.set('Range', 'bytes=0-');
@@ -577,11 +672,16 @@ class LocalDownloadService {
 
       if (response.statusCode != 200 && response.statusCode != 206) {
         _log('HTTP FAILED: status=${response.statusCode}');
-        await response.drain<void>();
+        String detail = '';
+        try {
+          final text = await response.transform(utf8.decoder).join();
+          final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(text);
+          if (m != null) detail = ' - ${m.group(1)}';
+        } catch (_) {}
         if (response.statusCode == 403) {
-          return task.copyWith(status: 'failed', error: 'HTTP 403', errorCode: 'http403');
+          return task.copyWith(status: 'failed', error: 'HTTP 403$detail', errorCode: 'http403');
         }
-        return task.copyWith(status: 'failed', error: 'HTTP ${response.statusCode}', errorCode: 'httpError');
+        return task.copyWith(status: 'failed', error: 'HTTP ${response.statusCode}$detail', errorCode: 'httpError');
       }
 
       final responseBytes = response.contentLength;

@@ -14,6 +14,7 @@ import 'services/download_notification_service.dart';
 import 'services/download_persistence_service.dart';
 import 'services/media_engine.dart';
 import 'services/media_metadata_service.dart';
+import 'services/pip_service.dart';
 import 'services/local_extraction_service.dart';
 import 'services/local_download_service.dart';
 import 'features/analyzer/controllers/analyze_controller.dart';
@@ -171,7 +172,9 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
 
     _shareSubscription = ShareIntentHandler().onUrlReceived.listen((url) {
       if (!mounted) return;
+      if (url.isEmpty) return;
       final sharedController = context.read<SharedDownloadController>();
+      ShareIntentHandler().consumePendingUrl();
       sharedController.analyzeUrl(url);
       SharedDownloadSheet.show(context, sharedController);
     });
@@ -192,9 +195,22 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       }
     });
 
+    PiPService.onPiPChanged.listen((isInPip) {
+      final engine = context.read<MediaEngine>();
+      if (isInPip) {
+        engine.onPiPEntered();
+      } else {
+        engine.onPiPExited();
+      }
+    });
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       DownloadNotificationService().requestPermission();
-      context.read<MediaEngine>().initAudioService();
+      context.read<MediaEngine>().initAudioService().then((_) {
+        debugPrint('[MainShell] AudioService initialized');
+      }).catchError((e) {
+        debugPrint('[MainShell] AudioService init failed: $e');
+      });
       context.read<DownloadsController>().init();
       context.read<LibraryController>().loadLibrary();
     });
@@ -213,13 +229,23 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     final engine = context.read<MediaEngine>();
     switch (state) {
       case AppLifecycleState.paused:
+        if (!engine.isInPiP) {
+          engine.onScreenOff();
+        } else {
+          debugPrint('[MainShell] Ignoring onScreenOff due to PiP mode');
+        }
+        break;
       case AppLifecycleState.inactive:
-        engine.onScreenOff();
         break;
       case AppLifecycleState.resumed:
         engine.onScreenOn();
-        context.read<DownloadsController>().init();
-        context.read<LibraryController>().loadLibrary();
+        final sincePipExit = engine.pipExitedAt == null
+            ? null
+            : DateTime.now().difference(engine.pipExitedAt!);
+        if (sincePipExit == null || sincePipExit > const Duration(seconds: 5)) {
+          context.read<DownloadsController>().init();
+          context.read<LibraryController>().loadLibrary();
+        }
         break;
       default:
         break;

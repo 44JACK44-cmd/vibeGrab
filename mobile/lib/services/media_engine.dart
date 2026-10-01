@@ -34,6 +34,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   bool _isAudioBackgroundActive = false;
   bool get isAudioBackgroundActive => _isAudioBackgroundActive;
+  bool _isInPiP = false;
+  bool _isPiPEntering = false;
+  DateTime? pipExitedAt;
+  Timer? _pipConfirmTimer;
+  bool get isInPiP => _isInPiP || _isPiPEntering;
 
   double get progress {
     if (_state.duration.inMilliseconds <= 0) return 0.0;
@@ -158,21 +163,38 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       debugPrint('[MediaEngine] Initializing AudioService...');
       PiPService.init();
       _audioHandler = VibeGrabAudioHandler(this);
-      await AudioService.init(
-        builder: () => _audioHandler!,
-        config: const AudioServiceConfig(
-          androidNotificationChannelId: 'com.example.vibegrab.audio',
-          androidNotificationChannelName: 'VibeGrab Audio',
-          androidNotificationChannelDescription: 'VibeGrab media playback controls',
-          androidNotificationIcon: 'drawable/ic_music_note',
-          androidNotificationOngoing: true,
-          androidStopForegroundOnPause: true,
-          preloadArtwork: true,
-        ),
-      );
-      debugPrint('[MediaEngine] AudioService initialized successfully');
+      // AudioServiceActivity already calls AudioService.init(), so only
+      // call init() here if the service is not yet connected
+      final isAlreadyInitialized = _isAudioServiceInitialized();
+      if (!isAlreadyInitialized) {
+        await AudioService.init(
+          builder: () => _audioHandler!,
+          config: const AudioServiceConfig(
+            androidNotificationChannelId: 'com.example.vibegrab.audio',
+            androidNotificationChannelName: 'VibeGrab Audio',
+            androidNotificationChannelDescription: 'VibeGrab media playback controls',
+            androidNotificationIcon: 'drawable/ic_music_note',
+            androidNotificationOngoing: true,
+            androidStopForegroundOnPause: true,
+            preloadArtwork: true,
+          ),
+        );
+        debugPrint('[MediaEngine] AudioService initialized (first call)');
+      } else {
+        debugPrint('[MediaEngine] AudioService already connected (by AudioServiceActivity)');
+      }
+      debugPrint('[MediaEngine] AudioService ready');
     } catch (e) {
       debugPrint('[MediaEngine] AudioService init FAILED: $e');
+    }
+  }
+
+  bool _isAudioServiceInitialized() {
+    try {
+      final _ = AudioService.config;
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -753,6 +775,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   // --- Screen Off / Audio Background ---
 
   Future<void> onScreenOff() async {
+    if (isInPiP) return;
     if (!isVideo || _videoController == null) return;
     if (!_state.isPlaying) return;
 
@@ -842,10 +865,31 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   // --- PiP ---
 
-  Future<void> enterPiP() async {
+  Future<bool> enterPiP() async {
+    if (isInPiP) return true;
+    _isPiPEntering = true;
     final result = await PiPService.enterPiP();
-    if (result) {
-      debugPrint('[MediaEngine] Entered PiP mode');
+    if (!result) {
+      _isPiPEntering = false;
+      return false;
+    }
+    debugPrint('[MediaEngine] PiP enter requested, awaiting system confirmation');
+    _pipConfirmTimer?.cancel();
+    _pipConfirmTimer = Timer(const Duration(seconds: 2), _confirmPiPEntry);
+    return true;
+  }
+
+  Future<void> _confirmPiPEntry() async {
+    if (_isInPiP) {
+      _isPiPEntering = false;
+      return;
+    }
+    final inPiP = await PiPService.isInPiP();
+    if (!_isPiPEntering) return;
+    _isInPiP = inPiP;
+    _isPiPEntering = false;
+    if (!inPiP) {
+      debugPrint('[MediaEngine] PiP never started, lifecycle guard released');
     }
   }
 
@@ -853,7 +897,23 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     return PiPService.isAvailable();
   }
 
-  // --- Audio Subscriptions ---
+  void onPiPEntered() {
+    debugPrint('[MediaEngine] PiP entered, keeping video alive');
+    _pipConfirmTimer?.cancel();
+    _isPiPEntering = false;
+    _isInPiP = true;
+  }
+
+  void onPiPExited() {
+    debugPrint('[MediaEngine] PiP exited, restoring normal state');
+    pipExitedAt = DateTime.now();
+    _pipConfirmTimer?.cancel();
+    _isInPiP = false;
+    _isPiPEntering = false;
+    if (_videoController != null && _state.isPlaying) {
+      _videoController!.play();
+    }
+  }
 
   void _wireAudioSubscriptions(String mediaId) {
     _posSub?.cancel();
@@ -1047,6 +1107,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   @override
   void dispose() {
     _completionDebounce?.cancel();
+    _pipConfirmTimer?.cancel();
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();

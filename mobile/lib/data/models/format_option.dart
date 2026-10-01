@@ -6,6 +6,7 @@ class FormatOption {
   final bool hasVideo;
   final bool hasAudio;
   final int? sizeBytes;
+  final String? directUrl;
 
   FormatOption({
     required this.id,
@@ -15,6 +16,7 @@ class FormatOption {
     required this.hasVideo,
     required this.hasAudio,
     this.sizeBytes,
+    this.directUrl,
   });
 
   factory FormatOption.fromJson(Map<String, dynamic> json) {
@@ -26,6 +28,7 @@ class FormatOption {
       hasVideo: json['has_video'] ?? false,
       hasAudio: json['has_audio'] ?? false,
       sizeBytes: json['size_bytes'],
+      directUrl: json['direct_url'],
     );
   }
 

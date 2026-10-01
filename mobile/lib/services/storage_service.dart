@@ -57,12 +57,25 @@ class StorageService {
           _initialized = true;
           return;
         } else {
-          _log('Custom dir NOT writable: ${customDir.path} — falling back to app-private');
+          _log('Custom dir NOT writable: ${customDir.path} — falling back to phone downloads');
           await _clearCustomDir();
         }
       } else {
-        _log('Custom dir does not exist: $customPath — falling back to app-private');
+        _log('Custom dir does not exist: $customPath — falling back to phone downloads');
         await _clearCustomDir();
+      }
+    }
+
+    final phoneDir = await _getPhoneDownloadsDir();
+    if (phoneDir != null) {
+      final canWrite = await testDirectoryWritable(phoneDir.path);
+      if (canWrite) {
+        _downloadDir = phoneDir;
+        _log('Using phone Downloads: ${phoneDir.path}');
+        _initialized = true;
+        return;
+      } else {
+        _log('Phone Downloads NOT writable — falling back to app-private');
       }
     }
 
@@ -106,12 +119,27 @@ class StorageService {
   Future<void> setCustomDownloadDir(String uriString, String path) async {
     final canWrite = await testDirectoryWritable(path);
     if (!canWrite) {
-      _log('setCustomDownloadDir: directory not writable, using app-private instead');
+      _log('setCustomDownloadDir: directory not writable, using phone downloads');
       _log('Requested path: $path');
-      final fallback = '${_appDir.path}/$defaultDirName';
-      _downloadDir = Directory(fallback);
-      if (!await _downloadDir!.exists()) {
-        await _downloadDir!.create(recursive: true);
+      final phoneDir = await _getPhoneDownloadsDir();
+      if (phoneDir != null) {
+        final phoneCanWrite = await testDirectoryWritable(phoneDir.path);
+        if (phoneCanWrite) {
+          _downloadDir = phoneDir;
+          _log('setCustomDownloadDir fallback to phone Downloads: ${phoneDir.path}');
+        } else {
+          _downloadDir = Directory('${_appDir.path}/$defaultDirName');
+          if (!await _downloadDir!.exists()) {
+            await _downloadDir!.create(recursive: true);
+          }
+          _log('setCustomDownloadDir fallback to app-private');
+        }
+      } else {
+        _downloadDir = Directory('${_appDir.path}/$defaultDirName');
+        if (!await _downloadDir!.exists()) {
+          await _downloadDir!.create(recursive: true);
+        }
+        _log('setCustomDownloadDir fallback to app-private');
       }
       await _clearCustomDir();
       return;
@@ -129,15 +157,30 @@ class StorageService {
 
   Future<void> resetToDefaultDir() async {
     _customDirUri = null;
-    final dirName = (await SharedPreferences.getInstance()).getString(_downloadDirKey) ?? defaultDirName;
-    _downloadDir = Directory('${_appDir.path}/$dirName');
-    if (!await _downloadDir!.exists()) {
-      await _downloadDir!.create(recursive: true);
+    final phoneDir = await _getPhoneDownloadsDir();
+    if (phoneDir != null) {
+      final canWrite = await testDirectoryWritable(phoneDir.path);
+      if (canWrite) {
+        _downloadDir = phoneDir;
+        _log('resetToDefaultDir: phone Downloads ${phoneDir.path}');
+      } else {
+        _downloadDir = Directory('${_appDir.path}/$defaultDirName');
+        if (!await _downloadDir!.exists()) {
+          await _downloadDir!.create(recursive: true);
+        }
+        _log('resetToDefaultDir: app-private ${_downloadDir!.path}');
+      }
+    } else {
+      _downloadDir = Directory('${_appDir.path}/$defaultDirName');
+      if (!await _downloadDir!.exists()) {
+        await _downloadDir!.create(recursive: true);
+      }
+      _log('resetToDefaultDir: app-private ${_downloadDir!.path}');
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_customDirUriKey);
     await prefs.remove(_customDirPathKey);
-    _log('resetToDefaultDir: ${_downloadDir!.path}');
+    await prefs.setString(_downloadDirKey, 'VibeGrab');
   }
 
   Future<String?> pickDirectory() async {
@@ -159,6 +202,39 @@ class StorageService {
       }
       return null;
     } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Directory?> _getPhoneDownloadsDir() async {
+    try {
+      final result = await _channel.invokeMethod<Map>('getExternalStorageRoot');
+      if (result == null) {
+        _log('getExternalStorageRoot returned null');
+        return null;
+      }
+      final rootPath = result['path'] as String?;
+      if (rootPath == null || rootPath.isEmpty) {
+        _log('getExternalStorageRoot path is null/empty');
+        return null;
+      }
+      _log('External storage root: $rootPath');
+      final downloadsDir = Directory('$rootPath/Download/VibeGrab');
+      if (!await downloadsDir.exists()) {
+        await downloadsDir.create(recursive: true);
+      }
+      final testFile = File('${downloadsDir.path}/.vibegrab_test');
+      await testFile.writeAsString('test');
+      final content = await testFile.readAsString();
+      await testFile.delete();
+      if (content == 'test') {
+        _log('Phone Downloads verified: ${downloadsDir.path}');
+        return downloadsDir;
+      }
+      _log('Phone Downloads write test failed');
+      return null;
+    } catch (e) {
+      _log('Failed to get phone downloads dir: $e');
       return null;
     }
   }

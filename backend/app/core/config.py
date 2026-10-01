@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     MIN_FREE_SPACE_MB: int = 500
 
     YT_DLP_PATH: str = "yt-dlp"
-    FFMPEG_PATH: str = r"C:\Users\jacka\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0-full_build\bin\ffmpeg.exe"
+    FFMPEG_PATH: str = "ffmpeg"
 
     CORS_ORIGINS: str = "*"
 

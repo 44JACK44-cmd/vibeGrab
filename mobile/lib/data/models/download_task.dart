@@ -32,6 +32,8 @@ class DownloadTask {
   final bool hasVideo;
   final bool hasAudio;
   final DownloadMediaType mediaType;
+  final String? directUrl;
+  final String? fileExt;
   DownloadStatus status;
   double progress;
   int bytesDownloaded;
@@ -55,6 +57,8 @@ class DownloadTask {
     this.hasVideo = true,
     this.hasAudio = true,
     this.mediaType = DownloadMediaType.video,
+    this.directUrl,
+    this.fileExt,
     this.status = DownloadStatus.queued,
     this.progress = 0.0,
     this.bytesDownloaded = 0,
@@ -83,6 +87,8 @@ class DownloadTask {
         (e) => e.name == json['media_type'],
         orElse: () => DownloadMediaType.video,
       ),
+      directUrl: json['direct_url'],
+      fileExt: json['file_ext'],
       status: DownloadStatus.values.firstWhere(
         (e) => e.name == json['status'],
         orElse: () => DownloadStatus.queued,
@@ -117,6 +123,8 @@ class DownloadTask {
       'has_video': hasVideo,
       'has_audio': hasAudio,
       'media_type': mediaType.name,
+      'direct_url': directUrl,
+      'file_ext': fileExt,
       'status': status.name,
       'progress': progress,
       'bytes_downloaded': bytesDownloaded,
@@ -158,6 +166,8 @@ class DownloadTask {
       hasVideo: hasVideo,
       hasAudio: hasAudio,
       mediaType: mediaType ?? this.mediaType,
+      directUrl: directUrl,
+      fileExt: fileExt,
       status: status != null
           ? DownloadStatus.values.firstWhere((e) => e.name == status, orElse: () => this.status)
           : this.status,

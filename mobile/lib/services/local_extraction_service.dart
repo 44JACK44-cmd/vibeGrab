@@ -1,9 +1,35 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../data/models/analyze_response.dart';
 import '../data/models/format_option.dart';
 import '../data/models/media_info.dart';
 import '../data/models/explore_video.dart';
+
+class ExtractorException implements Exception {
+  final String message;
+  final String platform;
+  final String type;
+  ExtractorException(this.message, {this.platform = 'unknown', this.type = 'general'});
+
+  @override
+  String toString() => 'ExtractorException: $message (platform=$platform, type=$type)';
+}
+
+class UnsupportedPlatformException extends ExtractorException {
+  UnsupportedPlatformException(String platform)
+      : super('This platform is not supported', platform: platform, type: 'unsupported');
+}
+
+class ContentUnavailableException extends ExtractorException {
+  ContentUnavailableException(String platform)
+      : super('This content is not available', platform: platform, type: 'unavailable');
+}
+
+class PlatformNotSupportedException extends ExtractorException {
+  PlatformNotSupportedException(String platform)
+      : super('This platform is not supported', platform: platform, type: 'unsupported');
+}
 
 class LocalExtractionService {
   final YoutubeExplode _ytc = YoutubeExplode();
@@ -21,35 +47,101 @@ class LocalExtractionService {
     'Education', 'Science', 'Comedy', 'Podcasts',
   ];
 
+  static const _supportedPlatforms = ['youtube.com', 'youtu.be'];
+
   void dispose() {
     _ytc.close();
   }
 
+  static bool supportsPlatform(String url) {
+    try {
+      final uri = Uri.tryParse(url);
+      if (uri == null) return false;
+      final host = uri.host.replaceAll('www.', '').replaceAll('m.', '');
+      return _supportedPlatforms.any((p) => host == p || host.endsWith('.$p'));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static String? detectPlatform(String url) {
+    try {
+      final uri = Uri.tryParse(url);
+      if (uri == null) return null;
+      final host = uri.host.replaceAll('www.', '').replaceAll('m.', '');
+      if (_supportedPlatforms.any((p) => host == p || host.endsWith('.$p'))) {
+        return 'youtube';
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static String friendlyError(Object e) {
+    if (e is UnsupportedPlatformException) {
+      return 'unsupported_platform';
+    }
+    if (e is ContentUnavailableException) {
+      return 'content_unavailable';
+    }
+    if (e is PlatformNotSupportedException) {
+      return 'unsupported_platform';
+    }
+    final msg = e.toString();
+    if (msg.contains('TimeoutException') || msg.contains('timeout')) {
+      return 'timeout';
+    }
+    if (msg.contains('SocketException') || msg.contains('Connection refused') || msg.contains('Network')) {
+      return 'no_internet';
+    }
+    if (msg.contains('FormatException')) {
+      return 'invalid_url';
+    }
+    if (msg.contains('NoSuchFileError') || msg.contains('FileNotFoundException')) {
+      return 'content_unavailable';
+    }
+    return 'analysis_failed';
+  }
+
   Future<AnalyzeResponse> extractMedia(String url) async {
+    final platform = detectPlatform(url);
+    if (platform == null) {
+      throw UnsupportedPlatformException('unknown');
+    }
+    if (!supportsPlatform(url)) {
+      throw UnsupportedPlatformException(platform);
+    }
+
     final videoId = _parseVideoId(url);
     if (videoId == null) {
       throw Exception('Invalid YouTube URL');
     }
 
-    final video = await _ytc.videos.get(videoId);
-    final manifest = await _ytc.videos.streamsClient.getManifest(videoId);
+    try {
+      final video = await _ytc.videos.get(videoId);
+      final manifest = await _ytc.videos.streamsClient.getManifest(videoId);
 
-    final media = MediaInfo(
-      id: video.id.value,
-      title: video.title,
-      thumbnail: video.thumbnails.maxResUrl,
-      duration: video.duration?.inSeconds,
-      uploader: video.author,
-      source: 'youtube',
-    );
+      final media = MediaInfo(
+        id: video.id.value,
+        title: video.title,
+        thumbnail: video.thumbnails.maxResUrl,
+        duration: video.duration?.inSeconds,
+        uploader: video.author,
+        source: 'youtube',
+        platform: 'youtube',
+      );
 
-    final formats = _buildFormats(manifest);
+      final formats = _buildFormats(manifest);
 
-    return AnalyzeResponse(
-      success: true,
-      media: media,
-      formats: formats,
-    );
+      return AnalyzeResponse(
+        success: true,
+        media: media,
+        formats: formats,
+      );
+    } on Exception {
+      throw ContentUnavailableException('youtube');
+    } catch (e) {
+      rethrow;
+    }
   }
 
   Future<List<ExploreVideo>> search(String query, {int limit = 10}) async {

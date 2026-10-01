@@ -4,13 +4,16 @@ import '../../../data/models/media_info.dart';
 import '../../../data/models/format_option.dart';
 import '../../../data/models/analyze_response.dart';
 import '../../../services/local_extraction_service.dart';
+import '../../../services/api_service.dart';
 import '../../../services/connectivity_service.dart';
 
 class AnalyzeController extends ChangeNotifier {
   final LocalExtractionService _extraction;
+  final ApiService _api;
 
-  AnalyzeController({LocalExtractionService? extraction})
-      : _extraction = extraction ?? LocalExtractionService();
+  AnalyzeController({LocalExtractionService? extraction, ApiService? api})
+      : _extraction = extraction ?? LocalExtractionService(),
+        _api = api ?? ApiService();
 
   bool _isLoading = false;
   bool get isLoading => _isLoading;
@@ -65,7 +68,15 @@ class AnalyzeController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      _result = await _extraction.extractMedia(url);
+      if (LocalExtractionService.supportsPlatform(url)) {
+        _result = await _extraction.extractMedia(url);
+      } else {
+        _result = await _api.analyze(url);
+      }
+    } on NetworkException catch (e) {
+      _error = (e.type == 'connection' || e.type == 'timeout')
+          ? 'Could not reach the VibeGrab server. Start it on your PC and check the server URL in Settings.'
+          : e.message;
     } catch (e) {
       _error = e.toString().replaceFirst('Exception: ', '');
     } finally {

@@ -12,6 +12,7 @@ class MediaInfo(BaseModel):
     duration: int | None = None
     uploader: str | None = None
     source: str
+    platform: str | None = None
 
 
 class FormatOption(BaseModel):
@@ -21,6 +22,8 @@ class FormatOption(BaseModel):
     quality: str | None = None
     has_video: bool
     has_audio: bool
+    size_bytes: int | None = None
+    direct_url: str | None = None
 
 
 class AnalyzeResponse(BaseModel):

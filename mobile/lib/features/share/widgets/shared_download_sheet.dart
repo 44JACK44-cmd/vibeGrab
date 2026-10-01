@@ -202,6 +202,19 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
                     ],
                   ],
                 ),
+                if (controller.platform != null && controller.platform != 'youtube')
+                  Container(
+                    margin: const EdgeInsets.only(top: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: cs.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      controller.platform!,
+                      style: TextStyle(fontSize: 11, color: cs.primary, fontWeight: FontWeight.w600),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -383,6 +396,15 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
       case 'timeout':
         message = loc.shareTimeout;
         break;
+      case 'no_internet':
+        message = loc.shareNoInternet;
+        break;
+      case 'unsupported_platform':
+        message = loc.shareUnsupportedPlatform;
+        break;
+      case 'content_unavailable':
+        message = loc.shareContentUnavailable;
+        break;
       case 'analysis_failed':
         message = loc.shareAnalysisFailed;
         break;
@@ -517,6 +539,10 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
       source: media?.source,
       hasVideo: format.hasVideo,
       hasAudio: format.hasAudio,
+      directUrl: format.directUrl,
+      fileExt: format.extension,
+      totalBytes: format.sizeBytes,
+      mediaType: format.type == 'audio' ? DownloadMediaType.audio : DownloadMediaType.video,
       createdAt: DateTime.now().toIso8601String(),
     );
 

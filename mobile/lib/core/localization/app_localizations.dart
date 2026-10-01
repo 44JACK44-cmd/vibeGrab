@@ -287,6 +287,10 @@ class AppLocalizations {
   String get shareTimeout => _get('shareTimeout');
   String get sharePreparingDownload => _get('sharePreparingDownload');
   String get shareDownloadStarted => _get('shareDownloadStarted');
+  String get shareNoInternet => _get('shareNoInternet');
+  String get shareUnsupportedPlatform => _get('shareUnsupportedPlatform');
+  String get shareContentUnavailable => _get('shareContentUnavailable');
+  String get shareUnsupportedPlatformDesc => _get('shareUnsupportedPlatformDesc');
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

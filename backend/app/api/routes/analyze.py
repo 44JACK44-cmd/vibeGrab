@@ -1,7 +1,10 @@
+import re
 import shutil
+import subprocess
+import threading
 from contextlib import asynccontextmanager
-from fastapi import APIRouter, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi.responses import JSONResponse, StreamingResponse
 from app.schemas.analyze import AnalyzeRequest, AnalyzeResponse
 from app.schemas.download import (
     DownloadRequest,
@@ -108,6 +111,111 @@ def analyze(req: AnalyzeRequest):
         )
 
     return AnalyzeResponse(success=True, media=media, formats=formats)
+
+
+_MIME_BY_EXT = {
+    "mp4": "video/mp4",
+    "m4v": "video/x-m4v",
+    "mov": "video/quicktime",
+    "webm": "video/webm",
+    "mkv": "video/x-matroska",
+    "m4a": "audio/mp4",
+    "mp3": "audio/mpeg",
+    "aac": "audio/aac",
+    "ogg": "audio/ogg",
+    "opus": "audio/ogg",
+    "wav": "audio/wav",
+}
+
+
+@router.get("/fetch")
+def fetch_media(
+    url: str = Query(..., min_length=10, max_length=2048),
+    format_id: str = Query(..., min_length=1, max_length=64),
+    ext: str = Query("mp4", max_length=8),
+):
+    """Stream a single yt-dlp format to the client (server-side download relay)."""
+    raw_url = extract_url(url)
+    if not raw_url:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "detail": "No valid URL found in input"},
+        )
+    target = normalize_url(raw_url)
+    if not validate_url(target):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "detail": "Unsupported or invalid URL"},
+        )
+    if not re.fullmatch(r"[A-Za-z0-9_.+-]+", format_id):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "detail": "Invalid format id"},
+        )
+
+    logger.info(f"Streaming fetch: {target} format={format_id}")
+
+    proc = subprocess.Popen(
+        [
+            settings.YT_DLP_PATH,
+            "-f", format_id,
+            "-o", "-",
+            "--no-warnings",
+            "--no-playlist",
+            "--socket-timeout", "30",
+            target,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    stderr_buf: list[bytes] = []
+
+    def _drain_stderr():
+        try:
+            while True:
+                data = proc.stderr.read(4096)
+                if not data:
+                    break
+                if sum(len(c) for c in stderr_buf) < 8192:
+                    stderr_buf.append(data)
+        except Exception:
+            pass
+
+    threading.Thread(target=_drain_stderr, daemon=True).start()
+
+    first = proc.stdout.read(65536)
+    if not first:
+        proc.wait(timeout=30)
+        tail = b"".join(stderr_buf).decode(errors="replace").strip()[-400:]
+        logger.error(f"Fetch failed for {target}: {tail}")
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": f"Extractor failed: {tail or 'unknown error'}"},
+        )
+
+    mime = _MIME_BY_EXT.get(ext.lower(), "application/octet-stream")
+
+    def _stream():
+        try:
+            yield first
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+            proc.wait(timeout=60)
+            if proc.returncode != 0:
+                tail = b"".join(stderr_buf).decode(errors="replace").strip()[-400:]
+                logger.warning(f"Fetch stream ended with exit {proc.returncode}: {tail}")
+        finally:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    return StreamingResponse(_stream(), media_type=mime)
 
 
 @router.post("/downloads")

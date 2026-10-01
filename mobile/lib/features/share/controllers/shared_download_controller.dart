@@ -4,21 +4,27 @@ import '../../../data/models/analyze_response.dart';
 import '../../../data/models/media_info.dart';
 import '../../../data/models/format_option.dart';
 import '../../../services/local_extraction_service.dart';
+import '../../../services/api_service.dart';
 import '../../../services/connectivity_service.dart';
 
 enum SharedSheetStatus { idle, analyzing, ready, downloading, completed, error }
 
 class SharedDownloadController extends ChangeNotifier {
   final LocalExtractionService _extraction;
+  final ApiService _api;
 
-  SharedDownloadController({LocalExtractionService? extraction})
-      : _extraction = extraction ?? LocalExtractionService();
+  SharedDownloadController({LocalExtractionService? extraction, ApiService? api})
+      : _extraction = extraction ?? LocalExtractionService(),
+        _api = api ?? ApiService();
 
   SharedSheetStatus _status = SharedSheetStatus.idle;
   SharedSheetStatus get status => _status;
 
   String? _url;
   String? get url => _url;
+
+  String? _platform;
+  String? get platform => _platform;
 
   AnalyzeResponse? _result;
   AnalyzeResponse? get result => _result;
@@ -43,13 +49,17 @@ class SharedDownloadController extends ChangeNotifier {
   bool get isAnalyzing => _status == SharedSheetStatus.analyzing;
   bool get isReady => _status == SharedSheetStatus.ready;
   bool get hasResult => _result != null;
+  bool get isUnsupportedPlatform => _error == 'unsupported_platform';
+  bool get isContentUnavailable => _error == 'content_unavailable';
+  bool get isNoInternet => _error == 'no_internet';
 
   Completer<void>? _cancelCompleter;
 
   List<FormatOption> get allFormats => [..._audioFormats, ..._videoFormats];
 
   Future<void> analyzeUrl(String url) async {
-    if (url.trim().isEmpty) {
+    final sanitized = LocalExtractionService.sanitizeUrl(url);
+    if (sanitized.trim().isEmpty) {
       _error = 'Invalid URL';
       _status = SharedSheetStatus.error;
       notifyListeners();
@@ -63,7 +73,8 @@ class SharedDownloadController extends ChangeNotifier {
       return;
     }
 
-    _url = url.trim();
+    _url = sanitized;
+    _platform = LocalExtractionService.detectPlatform(sanitized);
     _status = SharedSheetStatus.analyzing;
     _error = null;
     _result = null;
@@ -72,14 +83,23 @@ class SharedDownloadController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      _result = await _extraction.extractMedia(url);
+      if (LocalExtractionService.supportsPlatform(sanitized)) {
+        _result = await _extraction.extractMedia(sanitized);
+      } else {
+        _result = await _api.analyze(sanitized);
+        _platform = _result!.media.source;
+      }
       _audioFormats = _result!.formats.where((f) => f.type == 'audio').toList();
       _videoFormats = _result!.formats.where((f) => f.type == 'video').toList();
       _selectDefaultFormat();
       _status = SharedSheetStatus.ready;
+    } on NetworkException catch (e) {
+      _error = (e.type == 'connection' || e.type == 'timeout')
+          ? 'Server not reachable. Start the VibeGrab server on your PC and check the server URL in Settings.'
+          : e.message;
+      _status = SharedSheetStatus.error;
     } catch (e) {
-      final msg = _friendlyError(e);
-      _error = msg;
+      _error = LocalExtractionService.friendlyError(e);
       _status = SharedSheetStatus.error;
     } finally {
       _cancelCompleter?.complete();
@@ -115,23 +135,10 @@ class SharedDownloadController extends ChangeNotifier {
     }
   }
 
-  String _friendlyError(Object e) {
-    final msg = e.toString().replaceFirst('Exception: ', '');
-    if (msg.contains('TimeoutException') || msg.contains('timeout')) {
-      return 'timeout';
-    }
-    if (msg.contains('SocketException') || msg.contains('Connection refused')) {
-      return 'server_unavailable';
-    }
-    if (msg.contains('Invalid YouTube URL')) {
-      return 'invalid_url';
-    }
-    return msg.isNotEmpty ? msg : 'analysis_failed';
-  }
-
   void reset() {
     _status = SharedSheetStatus.idle;
     _url = null;
+    _platform = null;
     _result = null;
     _audioFormats = [];
     _videoFormats = [];

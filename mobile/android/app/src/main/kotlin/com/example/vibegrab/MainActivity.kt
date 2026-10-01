@@ -6,14 +6,14 @@ import android.content.res.Configuration
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Rational
-import com.ryanheise.audioservice.AudioServiceActivity
+import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.text.SimpleDateFormat
 import java.util.*
 
-class MainActivity : AudioServiceActivity() {
+class MainActivity : FlutterActivity() {
     private val SHARE_CHANNEL = "com.example.vibegrab/share"
     private val DOWNLOAD_CHANNEL = "com.example.vibegrab/downloads"
     private val LOCAL_MEDIA_CHANNEL = "com.example.vibegrab/local_media"
@@ -100,7 +100,7 @@ class MainActivity : AudioServiceActivity() {
         }
 
         storageChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL)
-        storageChannel?.setMethodCallHandler { call, result ->
+                storageChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "pickDirectory" -> {
                     pendingPickResult = result
@@ -114,6 +114,10 @@ class MainActivity : AudioServiceActivity() {
                 }
                 "getAndroidSdkVersion" -> {
                     result.success(mapOf("sdkVersion" to android.os.Build.VERSION.SDK_INT))
+                }
+                "getExternalStorageRoot" -> {
+                    val externalRoot = android.os.Environment.getExternalStorageDirectory()
+                    result.success(mapOf("path" to externalRoot?.absolutePath))
                 }
                 else -> result.notImplemented()
             }
@@ -156,10 +160,12 @@ class MainActivity : AudioServiceActivity() {
                 "enterPip" -> {
                     try {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            val params = PictureInPictureParams.Builder()
+                            val builder = PictureInPictureParams.Builder()
                                 .setAspectRatio(Rational(16, 9))
-                                .build()
-                            enterPictureInPictureMode(params)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                builder.setSeamlessResizeEnabled(true)
+                            }
+                            enterPictureInPictureMode(builder.build())
                             result.success(true)
                         } else {
                             result.success(false)

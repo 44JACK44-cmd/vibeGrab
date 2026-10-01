@@ -137,14 +137,11 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
                     icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white),
                     onPressed: () async {
                       final available = await engine.isPiPAvailable();
-                      if (available) {
-                        await engine.enterPiP();
-                      } else {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('PiP not available on this device')),
-                          );
-                        }
+                      final entered = available && await engine.enterPiP();
+                      if (!entered && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('PiP not available on this device')),
+                        );
                       }
                     },
                   ),

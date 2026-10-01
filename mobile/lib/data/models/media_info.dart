@@ -5,6 +5,7 @@ class MediaInfo {
   final int? duration;
   final String? uploader;
   final String source;
+  final String? platform;
 
   MediaInfo({
     required this.id,
@@ -13,6 +14,7 @@ class MediaInfo {
     this.duration,
     this.uploader,
     required this.source,
+    this.platform,
   });
 
   factory MediaInfo.fromJson(Map<String, dynamic> json) {
@@ -23,6 +25,7 @@ class MediaInfo {
       duration: json['duration'],
       uploader: json['uploader'],
       source: json['source'] ?? 'unknown',
+      platform: json['platform'],
     );
   }
 

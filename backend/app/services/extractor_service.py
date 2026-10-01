@@ -53,6 +53,15 @@ def _normalize_format(fmt: dict) -> FormatOption | None:
     if not has_video and not has_audio:
         return None
 
+    url = fmt.get("url") or ""
+    protocol = str(fmt.get("protocol") or "")
+    if not url.startswith(("http://", "https://")):
+        return None
+    if "m3u8" in protocol or "m3u8" in url or "dash" in protocol:
+        return None
+
+    size = fmt.get("filesize") or fmt.get("filesize_approx")
+
     if has_video and has_audio:
         return FormatOption(
             id=format_id,
@@ -61,6 +70,8 @@ def _normalize_format(fmt: dict) -> FormatOption | None:
             quality=f"{height}p",
             has_video=True,
             has_audio=True,
+            size_bytes=size,
+            direct_url=url,
         )
 
     if has_video and not has_audio:
@@ -71,6 +82,8 @@ def _normalize_format(fmt: dict) -> FormatOption | None:
             quality=f"{height}p",
             has_video=True,
             has_audio=False,
+            size_bytes=size,
+            direct_url=url,
         )
 
     if not has_video and has_audio:
@@ -83,6 +96,8 @@ def _normalize_format(fmt: dict) -> FormatOption | None:
             quality=quality,
             has_video=False,
             has_audio=True,
+            size_bytes=size,
+            direct_url=url,
         )
 
     return None
@@ -129,14 +144,23 @@ def _pick_best_formats(raw_formats: list[dict]) -> list[FormatOption]:
 
 
 def extract_media_info(url: str) -> tuple[MediaInfo, list[FormatOption]]:
+    from app.services.validation_service import get_source
+
     data = extract_info(url)
 
     media_id = data.get("id", "unknown")
     title = data.get("title", "Untitled")
     thumbnail = _best_thumbnail(data)
     duration = data.get("duration")
+    if duration is not None:
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
+            duration = None
     uploader = data.get("uploader") or data.get("channel")
-    source = data.get("extractor", "unknown")
+    source = get_source(url)
+    if source == "unknown":
+        source = str(data.get("extractor") or "unknown").lower()
 
     media = MediaInfo(
         id=media_id,
@@ -145,9 +169,13 @@ def extract_media_info(url: str) -> tuple[MediaInfo, list[FormatOption]]:
         duration=duration,
         uploader=uploader,
         source=source,
+        platform=source,
     )
 
     raw_formats = data.get("formats", [])
     formats = _pick_best_formats(raw_formats)
+
+    if not formats:
+        raise Exception("No downloadable formats found")
 
     return media, formats
