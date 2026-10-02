@@ -31,6 +31,7 @@ import 'features/explore/views/explore_view.dart';
 import 'features/library/views/library_view.dart';
 import 'features/settings/views/settings_view.dart';
 import 'features/media_player/widgets/mini_player.dart';
+import 'features/settings/widgets/update_dialog.dart';
 import 'features/share/controllers/shared_download_controller.dart';
 import 'features/share/widgets/shared_download_sheet.dart';
 
@@ -228,6 +229,10 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       Future.delayed(const Duration(milliseconds: 1500), () {
         if (!mounted) return;
         DownloadNotificationService().requestPermission();
+      });
+      Future.delayed(const Duration(milliseconds: 5000), () {
+        if (!mounted) return;
+        UpdateDialog.checkAndShow(context);
       });
     });
   }

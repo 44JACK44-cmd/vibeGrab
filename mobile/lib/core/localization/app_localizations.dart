@@ -350,6 +350,15 @@ class AppLocalizations {
   String get shareUnsupportedPlatform => _get('shareUnsupportedPlatform');
   String get shareContentUnavailable => _get('shareContentUnavailable');
   String get shareUnsupportedPlatformDesc => _get('shareUnsupportedPlatformDesc');
+  String get updateTitle => _get('updateTitle');
+  String get updateBody => _get('updateBody');
+  String get updateNow => _get('updateNow');
+  String get updateLater => _get('updateLater');
+  String get updateFailed => _get('updateFailed');
+  String get updateLatest => _get('updateLatest');
+  String get updateChecking => _get('updateChecking');
+  String get updateCheckFailed => _get('updateCheckFailed');
+  String get aboutVersion => _get('aboutVersion');
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

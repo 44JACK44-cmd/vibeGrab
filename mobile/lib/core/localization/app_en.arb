@@ -119,7 +119,7 @@
   "serverStatus": "Server status",
   "serverOnline": "Online",
   "serverOffline": "Offline",
-  "serverChecking": "Checking…",
+  "serverChecking": "Checkingâ€¦",
   "checkNow": "Test",
   "recommendedFormat": "Recommended",
 
@@ -169,12 +169,12 @@
   "preferBestQualityHint": "Auto-select highest quality format",
   "saveMetadata": "Save metadata",
   "saveMetadataHint": "Keep title, thumbnail, and source info",
-  "appVersion": "v0.2.0",
+  "appVersion": "v1.1.0",
 
   "backendUrl": "Backend URL",
   "backendUrlHint": "URL of the VibeGrab backend server. Use http://10.0.2.2:8000 for emulator, or your PC's local IP for a real device.",
   "backendUrlPlaceholder": "http://192.168.1.x:8000",
-  "backendNotConfigured": "Not configured — required for analyze and explore",
+  "backendNotConfigured": "Not configured â€” required for analyze and explore",
   "backendConfigured": "Connected",
   "resetDefault": "Emulator",
   "save": "Save",
@@ -194,7 +194,7 @@
 
   "language": "Language",
   "languageAuto": "Automatic",
-  "languageSpanish": "Español",
+  "languageSpanish": "EspaÃ±ol",
   "languageEnglish": "English",
 
   "untitled": "Untitled",
@@ -270,5 +270,14 @@
   "shareNoInternet": "No internet connection. Check your network.",
   "shareUnsupportedPlatform": "This platform is not supported.",
   "shareContentUnavailable": "This content is not available.",
-  "shareUnsupportedPlatformDesc": "VibeGrab currently supports YouTube links only."
+  "shareUnsupportedPlatformDesc": "VibeGrab currently supports YouTube links only.",
+  "updateTitle": "New version available",
+  "updateBody": "A new version of VibeGrab is available.",
+  "updateNow": "Update now",
+  "updateLater": "Later",
+  "updateFailed": "Download failed. Try again.",
+  "updateLatest": "You're up to date.",
+  "updateChecking": "Checking for updatesâ€¦",
+  "updateCheckFailed": "Couldn't check for updates.",
+  "aboutVersion": "Version"
 }

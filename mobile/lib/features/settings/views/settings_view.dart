@@ -8,8 +8,10 @@ import '../../../core/constants/api_constants.dart';
 import '../../../data/models/app_settings.dart';
 import '../../../services/api_service.dart';
 import '../../../services/download_notification_service.dart';
+import '../../../services/update_service.dart';
 import '../controllers/settings_controller.dart';
 import '../../downloads/controllers/downloads_controller.dart';
+import '../widgets/update_dialog.dart';
 import 'trash_view.dart';
 import 'vault_view.dart';
 import 'status_view.dart';
@@ -215,7 +217,7 @@ class _SettingsViewState extends State<SettingsView> {
               ),
               const SizedBox(height: 24),
               _sectionHeader(loc.sectionAbout, cs.primary),
-              _buildAboutTile(cs, text1, text2),
+              _buildAboutTile(context, cs, text1, text2),
             ],
           );
         },
@@ -664,12 +666,23 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
-  Widget _buildAboutTile(ColorScheme cs, Color text1, Color text2) {
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      leading: Icon(Icons.apps, color: text2),
-      title: Text('VibeGrab', style: TextStyle(color: text1, fontSize: 15)),
-      subtitle: Text('Version 1.0.0', style: TextStyle(color: text2.withValues(alpha: 0.7), fontSize: 12)),
+  Widget _buildAboutTile(BuildContext context, ColorScheme cs, Color text1, Color text2) {
+    return FutureBuilder<({String version, int build})>(
+      future: UpdateService.currentVersion(),
+      builder: (context, snap) {
+        final version = snap.data?.version ?? '';
+        return ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.apps, color: text2),
+          title: Text('VibeGrab', style: TextStyle(color: text1, fontSize: 15)),
+          subtitle: Text(
+            version.isEmpty ? 'VibeGrab' : '${AppLocalizations.of(context).aboutVersion} $version',
+            style: TextStyle(color: text2.withValues(alpha: 0.7), fontSize: 12),
+          ),
+          trailing: const Icon(Icons.system_update_outlined, size: 20),
+          onTap: () => UpdateDialog.checkAndShow(context, manual: true),
+        );
+      },
     );
   }
 

@@ -28,12 +28,14 @@ class MainActivity : FlutterActivity() {
     private val STORAGE_CHANNEL = "com.example.vibegrab/storage"
     private val PIP_CHANNEL = "com.example.vibegrab/pip"
     private val STATUS_CHANNEL = "com.example.vibegrab/status"
+    private val APP_CHANNEL = "com.example.vibegrab/app"
     private var shareChannel: MethodChannel? = null
     private var downloadChannel: MethodChannel? = null
     private var localMediaChannel: MethodChannel? = null
     private var storageChannel: MethodChannel? = null
     private var pipChannel: MethodChannel? = null
     private var statusChannel: MethodChannel? = null
+    private var appChannel: MethodChannel? = null
     private var pipEventSink: EventChannel.EventSink? = null
     private var initialSharedUrl: String? = null
     private var pendingNotificationAction: Map<String, String?>? = null
@@ -252,6 +254,54 @@ class MainActivity : FlutterActivity() {
                         } catch (e: Exception) {
                             android.util.Log.w("VibeGrab", "saveToGallery failed: ${e.message}")
                             result.success(false)
+                        }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        appChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APP_CHANNEL)
+        appChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getVersion" -> {
+                    try {
+                        val pInfo = packageManager.getPackageInfo(packageName, 0)
+                        val build = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            pInfo.longVersionCode.toInt()
+                        } else {
+                            @Suppress("DEPRECATION")
+                            pInfo.versionCode
+                        }
+                        result.success(mapOf(
+                            "version" to (pInfo.versionName ?: "0"),
+                            "build" to build
+                        ))
+                    } catch (e: Exception) {
+                        result.error("VERSION_ERROR", e.message, null)
+                    }
+                }
+                "installApk" -> {
+                    val path = call.argument<String>("path")
+                    val file = if (path != null) File(path) else null
+                    if (file == null || !file.exists()) {
+                        result.error("ENOENT", "APK file not found", null)
+                    } else {
+                        try {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                this, "$packageName.fileprovider", file
+                            )
+                            val intent = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(uri, "application/vnd.android.package-archive")
+                                addFlags(
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                        Intent.FLAG_ACTIVITY_NEW_TASK
+                                )
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("INSTALL_ERROR", e.message, null)
                         }
                     }
                 }
