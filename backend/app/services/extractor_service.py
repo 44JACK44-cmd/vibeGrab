@@ -1,8 +1,141 @@
 import subprocess
 import json
+import re
+import html as htmllib
+from urllib.parse import urlparse
 from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.analyze import MediaInfo, FormatOption
+
+_KWAI_HOST_SUFFIXES = ("kwai.com", "kuaishou.com")
+_KWAI_MOBILE_UA = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+)
+_ISO_DURATION = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
+
+
+def is_kwai_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host.endswith(_KWAI_HOST_SUFFIXES)
+
+
+def _iso_to_seconds(value: str | None) -> int | None:
+    if not value:
+        return None
+    m = _ISO_DURATION.match(value)
+    if not m:
+        return None
+    hours, minutes, seconds = (int(g) if g else 0 for g in m.groups())
+    total = hours * 3600 + minutes * 60 + seconds
+    return total or None
+
+
+def parse_kwai_page(page_html: str, url: str) -> dict:
+    """Pull video metadata out of a Kwai SSR page. Raises if nothing found."""
+
+    def og(name: str) -> str | None:
+        m = re.search(
+            r'<meta[^>]*property="%s"[^>]*content="([^"]*)"' % re.escape(name),
+            page_html,
+        )
+        return htmllib.unescape(m.group(1).strip()) if m else None
+
+    mp4s = re.findall(r'https://[^"\'\s]+?\.mp4[^"\'\s]*', page_html)
+    if not mp4s:
+        raise Exception("No video URL found in Kwai page")
+
+    thumbnail = og("og:image") or ""
+    video_url = mp4s[0]
+    if thumbnail:
+        image_id = thumbnail.rsplit("/", 1)[-1].split("_")[0]
+        if image_id:
+            for candidate in mp4s:
+                if image_id in candidate:
+                    video_url = candidate
+                    break
+
+    caption = og("og:description") or ""
+    author_m = re.search(r'"author":"([^"]+)"', page_html)
+    username_m = re.search(r"/@([^/?#]+)", url)
+    uploader = (
+        author_m.group(1)
+        if author_m
+        else (username_m.group(1) if username_m else None)
+    )
+    title = caption.strip() or (f"@{uploader} on Kwai" if uploader else "Kwai video")
+
+    dur_m = re.search(r'"duration":"(PT[^"]+)"', page_html)
+    duration = _iso_to_seconds(dur_m.group(1) if dur_m else None)
+
+    dims_m = re.search(r'"width":(\d+),"height":(\d+)', page_html)
+    height = int(dims_m.group(2)) if dims_m else None
+
+    id_m = re.search(r"/(?:video|photo)/(\d+)", url)
+    video_id = id_m.group(1) if id_m else str(abs(hash(url)) % 10**12)
+
+    return {
+        "id": video_id,
+        "title": title,
+        "thumbnail": thumbnail or None,
+        "duration": duration,
+        "uploader": uploader,
+        "height": height,
+        "url": video_url,
+    }
+
+
+def extract_kwai(url: str) -> tuple[MediaInfo, list[FormatOption]]:
+    from curl_cffi import requests as cffi_requests
+
+    logger.info(f"Running Kwai extractor for: {url}")
+    response = cffi_requests.get(
+        url,
+        impersonate="chrome",
+        headers={"User-Agent": _KWAI_MOBILE_UA},
+        timeout=30,
+        allow_redirects=True,
+    )
+    if response.status_code >= 400:
+        raise Exception(f"Kwai page returned HTTP {response.status_code}")
+
+    meta = parse_kwai_page(response.text, url)
+
+    size_bytes = None
+    try:
+        head = cffi_requests.head(
+            meta["url"],
+            impersonate="chrome",
+            timeout=10,
+            allow_redirects=True,
+        )
+        size_bytes = int(head.headers.get("content-length") or 0) or None
+    except Exception:
+        size_bytes = None
+
+    media = MediaInfo(
+        id=meta["id"],
+        title=meta["title"],
+        thumbnail=meta["thumbnail"],
+        duration=meta["duration"],
+        uploader=meta["uploader"],
+        source="kwai",
+        platform="kwai",
+    )
+    fmt = FormatOption(
+        id="direct-mp4",
+        type="video",
+        extension="mp4",
+        quality=f"{meta['height']}p" if meta["height"] else "hd",
+        has_video=True,
+        has_audio=True,
+        size_bytes=size_bytes,
+        direct_url=meta["url"],
+    )
+    return media, [fmt]
 
 
 def extract_info(url: str) -> dict:
@@ -154,6 +287,9 @@ def _pick_best_formats(raw_formats: list[dict]) -> list[FormatOption]:
 
 def extract_media_info(url: str) -> tuple[MediaInfo, list[FormatOption]]:
     from app.services.validation_service import get_source
+
+    if is_kwai_url(url):
+        return extract_kwai(url)
 
     data = extract_info(url)
 
