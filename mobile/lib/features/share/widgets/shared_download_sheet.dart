@@ -11,17 +11,23 @@ import '../../../services/storage_service.dart';
 import '../controllers/shared_download_controller.dart';
 
 class SharedDownloadSheet extends StatefulWidget {
-  const SharedDownloadSheet({super.key});
+  final bool overlay;
 
-  static Future<void> show(BuildContext context, SharedDownloadController controller) {
+  const SharedDownloadSheet({super.key, this.overlay = false});
+
+  static Future<void> show(
+    BuildContext context,
+    SharedDownloadController controller, {
+    bool overlay = false,
+  }) {
     return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      barrierColor: Colors.black54,
+      barrierColor: overlay ? Colors.black38 : Colors.black54,
       builder: (_) => ChangeNotifierProvider.value(
         value: controller,
-        child: const SharedDownloadSheet(),
+        child: SharedDownloadSheet(overlay: overlay),
       ),
     );
   }
@@ -31,63 +37,214 @@ class SharedDownloadSheet extends StatefulWidget {
 }
 
 class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
+  String? _savingTaskId;
+  bool _closeScheduled = false;
+
+  DownloadTask? _findSavingTask(DownloadsController? dl) {
+    if (dl == null || _savingTaskId == null) return null;
+    for (final t in dl.tasks) {
+      if (t.id == _savingTaskId) return t;
+    }
+    return null;
+  }
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final loc = AppLocalizations.of(context);
     final controller = context.watch<SharedDownloadController>();
+    final saving = _savingTaskId != null;
+    final dl = saving ? context.watch<DownloadsController>() : null;
+    final savingTask = _findSavingTask(dl);
+    final canPop = !saving ||
+        savingTask == null ||
+        savingTask.status == DownloadStatus.completed ||
+        savingTask.status == DownloadStatus.failed ||
+        savingTask.status == DownloadStatus.cancelled;
 
-    return AnimatedContainer(
-      duration: AppDurations.normal,
-      curve: AppCurves.easeOut,
-      child: DraggableScrollableSheet(
-        initialChildSize: 0.55,
-        minChildSize: 0.3,
-        maxChildSize: 0.85,
-        builder: (context, scrollController) {
-          return Container(
-            decoration: BoxDecoration(
-              color: cs.surface,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            ),
-            child: Column(
-              children: [
-                _buildDragHandle(cs),
-                Expanded(
-                  child: ListView(
-                    controller: scrollController,
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-                    children: [
-                      _buildTitle(loc, cs),
-                      const SizedBox(height: 16),
-                      if (controller.isAnalyzing) _buildAnalyzing(loc, cs),
-                      if (controller.isReady && controller.hasResult) ...[
-                        _buildMediaInfo(controller, cs, loc),
-                        const SizedBox(height: 20),
-                        if (controller.audioFormats.isNotEmpty)
-                          _buildFormatSection(loc, cs, controller, isAudio: true),
-                        if (controller.videoFormats.isNotEmpty) ...[
-                          if (controller.audioFormats.isNotEmpty) const SizedBox(height: 16),
-                          _buildFormatSection(loc, cs, controller, isAudio: false),
+    if (savingTask?.status == DownloadStatus.completed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleAutoClose());
+    }
+
+    return PopScope(
+      canPop: canPop,
+      child: AnimatedContainer(
+        duration: AppDurations.normal,
+        curve: AppCurves.easeOut,
+        child: DraggableScrollableSheet(
+          initialChildSize: 0.55,
+          minChildSize: 0.3,
+          maxChildSize: 0.85,
+          builder: (context, scrollController) {
+            return Container(
+              decoration: BoxDecoration(
+                color: cs.surface,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              ),
+              child: Column(
+                children: [
+                  _buildDragHandle(cs),
+                  Expanded(
+                    child: ListView(
+                      controller: scrollController,
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                      children: [
+                        _buildTitle(loc, cs),
+                        const SizedBox(height: 16),
+                        if (saving) ...[
+                          if (controller.media != null) ...[
+                            _buildMediaInfo(controller, cs, loc),
+                            const SizedBox(height: 20),
+                          ],
+                          _buildSavingBlock(savingTask, dl, cs, loc),
                         ],
-                        if (controller.allFormats.isEmpty)
-                          _buildNoFormats(loc, cs),
+                        if (!saving && controller.isAnalyzing) _buildAnalyzing(loc, cs),
+                        if (!saving && controller.isReady && controller.hasResult) ...[
+                          _buildMediaInfo(controller, cs, loc),
+                          const SizedBox(height: 20),
+                          if (controller.audioFormats.isNotEmpty)
+                            _buildFormatSection(loc, cs, controller, isAudio: true),
+                          if (controller.videoFormats.isNotEmpty) ...[
+                            if (controller.audioFormats.isNotEmpty) const SizedBox(height: 16),
+                            _buildFormatSection(loc, cs, controller, isAudio: false),
+                          ],
+                          if (controller.allFormats.isEmpty)
+                            _buildNoFormats(loc, cs),
+                        ],
+                        if (!saving && controller.status == SharedSheetStatus.error)
+                          _buildError(loc, cs, controller),
+                        if (!saving && controller.status == SharedSheetStatus.downloading)
+                          _buildDownloading(loc, cs),
+                        if (!saving && controller.status == SharedSheetStatus.completed)
+                          _buildCompleted(loc, cs),
                       ],
-                      if (controller.status == SharedSheetStatus.error)
-                        _buildError(loc, cs, controller),
-                      if (controller.status == SharedSheetStatus.downloading)
-                        _buildDownloading(loc, cs),
-                      if (controller.status == SharedSheetStatus.completed)
-                        _buildCompleted(loc, cs),
-                    ],
+                    ),
                   ),
-                ),
-                if (controller.isReady && controller.selectedFormat != null)
-                  _buildDownloadButton(loc, cs, controller),
-              ],
+                  if (!saving &&
+                      controller.isReady &&
+                      controller.selectedFormat != null)
+                    _buildDownloadButton(loc, cs, controller),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _scheduleAutoClose() {
+    if (_closeScheduled) return;
+    _closeScheduled = true;
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    });
+  }
+
+  Widget _buildSavingBlock(
+    DownloadTask? task,
+    DownloadsController? dl,
+    ColorScheme cs,
+    AppLocalizations loc,
+  ) {
+    if (task == null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Column(
+          children: [
+            const CircularProgressIndicator(strokeWidth: 3),
+            const SizedBox(height: 16),
+            Text(
+              loc.sharePreparingDownload,
+              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
             ),
-          );
-        },
+          ],
+        ),
+      );
+    }
+
+    if (task.status == DownloadStatus.completed) {
+      return FadeSlideIn(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Column(
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.check_circle_outline,
+                    size: 32, color: Colors.green),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                loc.shareSaved,
+                style: TextStyle(
+                    color: cs.onSurface,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (task.status == DownloadStatus.failed ||
+        task.status == DownloadStatus.cancelled) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Column(
+          children: [
+            Icon(Icons.error_outline, size: 36, color: cs.error),
+            const SizedBox(height: 12),
+            Text(
+              loc.shareSavingFailed,
+              style: TextStyle(color: cs.onSurface, fontSize: 14),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            FilledButton.tonal(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text(loc.shareClose),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final progress = task.progress.clamp(0.0, 1.0).toDouble();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 24),
+      child: Column(
+        children: [
+          LinearProgressIndicator(
+            value: progress > 0 ? progress : null,
+            minHeight: 6,
+            borderRadius: BorderRadius.circular(3),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            progress > 0
+                ? '${(progress * 100).toStringAsFixed(0)}%'
+                : loc.shareDownloadingText,
+            style: TextStyle(
+              color: cs.onSurface,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            loc.shareDownloadingText,
+            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+          ),
+        ],
       ),
     );
   }
@@ -359,11 +516,18 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
   }
 
   String _formatSubtitle(FormatOption format) {
-    if (format.type == 'audio') return format.quality ?? 'Audio';
-    final parts = <String>['Video'];
-    if (format.hasAudio) parts.add('Audio');
-    if (!format.hasAudio) parts.add('Video only');
-    return parts.join(' · ');
+    final parts = <String>[];
+    if (format.type == 'audio') {
+      parts.add(format.quality ?? 'Audio');
+    } else if (format.hasVideo && format.hasAudio) {
+      parts.add('Video + Audio');
+    } else {
+      parts.add('Video only');
+    }
+    if (format.sizeBytes != null) {
+      parts.add(FormatOption.formatSize(format.sizeBytes!));
+    }
+    return parts.join(' \u00B7 ');
   }
 
   Widget _buildNoFormats(AppLocalizations loc, ColorScheme cs) {
@@ -547,6 +711,16 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
     );
 
     downloadsController.addTask(task);
+
+    if (widget.overlay) {
+      if (mounted) {
+        setState(() {
+          _savingTaskId = task.id;
+          _closeScheduled = false;
+        });
+      }
+      return;
+    }
 
     controller.setCompleted();
 

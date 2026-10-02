@@ -359,6 +359,10 @@ class AppLocalizations {
   String get updateChecking => _get('updateChecking');
   String get updateCheckFailed => _get('updateCheckFailed');
   String get aboutVersion => _get('aboutVersion');
+  String get shareSaved => _get('shareSaved');
+  String get shareDownloadingText => _get('shareDownloadingText');
+  String get shareSavingFailed => _get('shareSavingFailed');
+  String get shareClose => _get('shareClose');
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

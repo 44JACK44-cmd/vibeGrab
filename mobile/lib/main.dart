@@ -33,6 +33,7 @@ import 'features/settings/views/settings_view.dart';
 import 'features/media_player/widgets/mini_player.dart';
 import 'features/settings/widgets/update_dialog.dart';
 import 'features/share/controllers/shared_download_controller.dart';
+import 'features/share/widgets/share_overlay_page.dart';
 import 'features/share/widgets/shared_download_sheet.dart';
 
 Future<void> main() async {
@@ -60,7 +61,7 @@ Future<void> main() async {
 
     ConnectivityService.instance.init();
 
-    ShareIntentHandler().init();
+    await ShareIntentHandler().init();
 
     final notifService = DownloadNotificationService();
     notifService.init();
@@ -133,21 +134,29 @@ class VibeGrabApp extends StatelessWidget {
       ],
       child: Consumer2<LanguageProvider, ThemeProvider>(
         builder: (context, langProv, themeProv, _) {
-          return MaterialApp(
-            title: 'VibeGrab',
-            themeMode: themeProv.themeMode,
-            theme: AppTheme.lightTheme(themeProv.accent.color),
-            darkTheme: AppTheme.darkTheme(themeProv.accent.color),
-            debugShowCheckedModeBanner: false,
-            locale: langProv.locale,
-            supportedLocales: AppLocalizations.supportedLocales,
-            localizationsDelegates: const [
-              AppLocalizations.delegate,
-              GlobalMaterialLocalizations.delegate,
-              GlobalWidgetsLocalizations.delegate,
-              GlobalCupertinoLocalizations.delegate,
-            ],
-            home: const MainShell(),
+          return ListenableBuilder(
+            listenable: ShareIntentHandler().overlayMode,
+            builder: (context, _) {
+              final shareOverlay = ShareIntentHandler().overlayMode.value;
+              return MaterialApp(
+                title: 'VibeGrab',
+                themeMode: themeProv.themeMode,
+                theme: AppTheme.lightTheme(themeProv.accent.color),
+                darkTheme: AppTheme.darkTheme(themeProv.accent.color),
+                debugShowCheckedModeBanner: false,
+                locale: langProv.locale,
+                supportedLocales: AppLocalizations.supportedLocales,
+                localizationsDelegates: const [
+                  AppLocalizations.delegate,
+                  GlobalMaterialLocalizations.delegate,
+                  GlobalWidgetsLocalizations.delegate,
+                  GlobalCupertinoLocalizations.delegate,
+                ],
+                home: shareOverlay
+                    ? const ShareOverlayPage()
+                    : const MainShell(),
+              );
+            },
           );
         },
       ),
@@ -181,6 +190,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     _shareSubscription = ShareIntentHandler().onUrlReceived.listen((url) {
       if (!mounted) return;
       if (url.isEmpty) return;
+      if (ShareIntentHandler().overlayMode.value) return;
       final sharedController = context.read<SharedDownloadController>();
       ShareIntentHandler().consumePendingUrl();
       sharedController.analyzeUrl(url);

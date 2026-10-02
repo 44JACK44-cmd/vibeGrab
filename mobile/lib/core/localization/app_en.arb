@@ -119,7 +119,7 @@
   "serverStatus": "Server status",
   "serverOnline": "Online",
   "serverOffline": "Offline",
-  "serverChecking": "Checkingâ€¦",
+  "serverChecking": "CheckingÃ¢â‚¬Â¦",
   "checkNow": "Test",
   "recommendedFormat": "Recommended",
 
@@ -169,12 +169,12 @@
   "preferBestQualityHint": "Auto-select highest quality format",
   "saveMetadata": "Save metadata",
   "saveMetadataHint": "Keep title, thumbnail, and source info",
-  "appVersion": "v1.1.0",
+  "appVersion": "v1.2.0",
 
   "backendUrl": "Backend URL",
   "backendUrlHint": "URL of the VibeGrab backend server. Use http://10.0.2.2:8000 for emulator, or your PC's local IP for a real device.",
   "backendUrlPlaceholder": "http://192.168.1.x:8000",
-  "backendNotConfigured": "Not configured â€” required for analyze and explore",
+  "backendNotConfigured": "Not configured Ã¢â‚¬â€ required for analyze and explore",
   "backendConfigured": "Connected",
   "resetDefault": "Emulator",
   "save": "Save",
@@ -194,7 +194,7 @@
 
   "language": "Language",
   "languageAuto": "Automatic",
-  "languageSpanish": "EspaÃ±ol",
+  "languageSpanish": "EspaÃƒÂ±ol",
   "languageEnglish": "English",
 
   "untitled": "Untitled",
@@ -277,7 +277,11 @@
   "updateLater": "Later",
   "updateFailed": "Download failed. Try again.",
   "updateLatest": "You're up to date.",
-  "updateChecking": "Checking for updatesâ€¦",
+  "updateChecking": "Checking for updatesÃ¢â‚¬Â¦",
   "updateCheckFailed": "Couldn't check for updates.",
-  "aboutVersion": "Version"
+  "aboutVersion": "Version",
+  "shareSaved": "Saved to your library",
+  "shareDownloadingText": "Downloadingâ€¦",
+  "shareSavingFailed": "The download failed. Try again.",
+  "shareClose": "Close"
 }

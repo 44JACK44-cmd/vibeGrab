@@ -15,4 +15,12 @@
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
+    <!-- Translucent window used when the app is opened via Share from another
+         app (e.g. TikTok) so the share sheet floats over the source app. -->
+    <style name="ShareTranslucentTheme" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:windowDimAmount">0.6</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
 </resources>

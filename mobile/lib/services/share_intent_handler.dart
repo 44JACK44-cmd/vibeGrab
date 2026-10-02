@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:rxdart/rxdart.dart';
 
@@ -10,42 +11,53 @@ class ShareIntentHandler {
   ShareIntentHandler._();
 
   String? _lastProcessedUrl;
+  final _overlayController = ValueNotifier<bool>(false);
   final _urlController = BehaviorSubject<String>.seeded('');
 
   Stream<String> get onUrlReceived => _urlController.stream;
+  ValueListenable<bool> get overlayMode => _overlayController;
   String? get pendingUrl => _lastProcessedUrl;
   String? get lastProcessedUrl => _lastProcessedUrl;
 
-  void init() {
+  Future<void> init() async {
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'onSharedUrl') {
-        final raw = call.arguments as String?;
-        if (raw != null) {
-          final url = _extractUrl(raw);
-          if (url != null) {
-            _processUrl(url);
-          }
+        final args = call.arguments;
+        String? raw;
+        bool overlay = false;
+        if (args is Map) {
+          raw = args['url'] as String?;
+          overlay = args['overlay'] == true;
+        } else {
+          raw = args as String?;
+        }
+        final url = raw != null ? _extractUrl(raw) : null;
+        if (url != null) {
+          _processUrl(url, overlay: overlay);
         }
       } else if (call.method == 'getInitialSharedUrl') {
         return _lastProcessedUrl ?? '';
       }
     });
-    _checkInitialUrl();
-  }
-
-  Future<void> _checkInitialUrl() async {
     try {
-      final url = await _channel.invokeMethod<String>('getInitialSharedUrl');
-      if (url != null && url.isNotEmpty) {
-        _processUrl(url);
+      final info =
+          await _channel.invokeMapMethod<String, dynamic>('getInitialShareInfo');
+      final raw = (info?['url'] as String?) ?? '';
+      if (raw.isNotEmpty) {
+        final url = _extractUrl(raw) ??
+            (raw.startsWith('http') ? sanitizeUrl(raw) : null);
+        if (url != null) {
+          _processUrl(url, overlay: info?['overlay'] == true);
+        }
       }
     } catch (_) {}
   }
 
-  void _processUrl(String url) {
+  void _processUrl(String url, {bool overlay = false}) {
     final sanitized = ShareIntentHandler.sanitizeUrl(url);
     if (sanitized == _lastProcessedUrl) return;
     _lastProcessedUrl = sanitized;
+    _overlayController.value = overlay;
     _urlController.add(sanitized);
   }
 
@@ -117,5 +129,6 @@ class ShareIntentHandler {
 
   void dispose() {
     _urlController.close();
+    _overlayController.dispose();
   }
 }

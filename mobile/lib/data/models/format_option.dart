@@ -34,12 +34,12 @@ class FormatOption {
 
   String get label {
     if (type == 'audio') {
-      final size = sizeBytes != null ? ' \u2022 ${_formatSize(sizeBytes!)}' : '';
+      final size = sizeBytes != null ? ' \u2022 ${formatSize(sizeBytes!)}' : '';
       return '${quality ?? extension} \u2022 ${extension.toUpperCase()}$size';
     }
     final q = quality ?? '';
     final codec = hasAudio ? '' : ' (no audio)';
-    final size = sizeBytes != null ? ' \u2022 ${_formatSize(sizeBytes!)}' : '';
+    final size = sizeBytes != null ? ' \u2022 ${formatSize(sizeBytes!)}' : '';
     return '$q \u2022 ${extension.toUpperCase()}$codec$size';
   }
 
@@ -52,7 +52,7 @@ class FormatOption {
 
   String get typeLabel => type == 'audio' ? 'AUDIO' : 'VIDEO';
 
-  static String _formatSize(int bytes) {
+  static String formatSize(int bytes) {
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
     if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';

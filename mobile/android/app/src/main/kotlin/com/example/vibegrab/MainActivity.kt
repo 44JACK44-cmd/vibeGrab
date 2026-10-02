@@ -6,13 +6,18 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Rational
+import android.view.WindowManager
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -38,19 +43,45 @@ class MainActivity : FlutterActivity() {
     private var appChannel: MethodChannel? = null
     private var pipEventSink: EventChannel.EventSink? = null
     private var initialSharedUrl: String? = null
+    private var initialShareOverlay = false
     private var pendingNotificationAction: Map<String, String?>? = null
     private var pendingPickResult: MethodChannel.Result? = null
     private val PICK_DIR_REQUEST = 1001
     private var isInPipMode = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        val fromShare = intent?.action == Intent.ACTION_SEND
+        setTheme(if (fromShare) R.style.ShareTranslucentTheme else R.style.NormalTheme)
+        super.onCreate(savedInstanceState)
+        if (fromShare) {
+            applyShareWindowOverlay()
+        }
+    }
+
+    private fun applyShareWindowOverlay() {
+        try {
+            @Suppress("DEPRECATION")
+            window.setFormat(PixelFormat.TRANSLUCENT)
+            window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            window.setDimAmount(0.6f)
+        } catch (e: Exception) {
+            android.util.Log.w("VibeGrab", "share window overlay failed: ${e.message}")
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         shareChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SHARE_CHANNEL)
         shareChannel?.setMethodCallHandler { call, result ->
-            if (call.method == "getInitialSharedUrl") {
-                result.success(initialSharedUrl)
+            if (call.method == "getInitialShareInfo") {
+                result.success(mapOf(
+                    "url" to (initialSharedUrl ?: ""),
+                    "overlay" to initialShareOverlay
+                ))
                 initialSharedUrl = null
+                initialShareOverlay = false
             } else {
                 result.notImplemented()
             }
@@ -305,6 +336,12 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
+                "closeActivity" -> {
+                    runOnUiThread {
+                        finish()
+                        result.success(true)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -315,6 +352,9 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.action == Intent.ACTION_SEND) {
+            applyShareWindowOverlay()
+        }
         handleIntent(intent)
     }
 
@@ -376,10 +416,15 @@ class MainActivity : FlutterActivity() {
         if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
             val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
             if (sharedText != null) {
+                val overlay = lifecycle.currentState != Lifecycle.State.RESUMED
                 if (shareChannel != null) {
-                    shareChannel?.invokeMethod("onSharedUrl", sharedText)
+                    shareChannel?.invokeMethod(
+                        "onSharedUrl",
+                        mapOf("url" to sharedText, "overlay" to overlay)
+                    )
                 } else {
                     initialSharedUrl = sharedText
+                    initialShareOverlay = overlay
                 }
             }
         }
