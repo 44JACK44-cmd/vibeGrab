@@ -12,6 +12,7 @@ import '../controllers/settings_controller.dart';
 import '../../downloads/controllers/downloads_controller.dart';
 import 'trash_view.dart';
 import 'vault_view.dart';
+import 'status_view.dart';
 
 enum _ServerStatus { checking, up, down }
 
@@ -197,6 +198,20 @@ class _SettingsViewState extends State<SettingsView> {
                     context,
                     MaterialPageRoute(
                         builder: (_) => const VaultView())),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.perm_media_outlined, color: text2),
+                title: Text(loc.statusSaver,
+                    style: TextStyle(color: text1, fontSize: 15)),
+                subtitle: Text(loc.statusSaverHint,
+                    style: TextStyle(
+                        color: text2.withValues(alpha: 0.7), fontSize: 12)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const StatusView())),
               ),
               const SizedBox(height: 24),
               _sectionHeader(loc.sectionAbout, cs.primary),

@@ -224,6 +224,19 @@ class AppLocalizations {
   String get vaultMoved => _get('vaultMoved');
   String get movedToTrash => _get('movedToTrash');
 
+  String get statusSaver => _get('statusSaver');
+  String get statusSaverHint => _get('statusSaverHint');
+  String get statusEmpty => _get('statusEmpty');
+  String get statusNoPermission => _get('statusNoPermission');
+  String get statusGrant => _get('statusGrant');
+  String get statusAllFiles => _get('statusAllFiles');
+  String get statusAllFilesHint => _get('statusAllFilesHint');
+  String get statusSaved => _get('statusSaved');
+  String get statusSaveError => _get('statusSaveError');
+  String get statusUnavailable => _get('statusUnavailable');
+  String get statusSaveAll => _get('statusSaveAll');
+  String get saveOne => _get('saveOne');
+
   String get backendUrl => _get('backendUrl');
   String get backendUrlHint => _get('backendUrlHint');
   String get backendUrlPlaceholder => _get('backendUrlPlaceholder');

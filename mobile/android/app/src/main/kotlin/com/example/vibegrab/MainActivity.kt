@@ -1,15 +1,23 @@
 package com.example.vibegrab
 
+import android.Manifest
 import android.app.PictureInPictureParams
+import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Rational
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -19,11 +27,13 @@ class MainActivity : FlutterActivity() {
     private val LOCAL_MEDIA_CHANNEL = "com.example.vibegrab/local_media"
     private val STORAGE_CHANNEL = "com.example.vibegrab/storage"
     private val PIP_CHANNEL = "com.example.vibegrab/pip"
+    private val STATUS_CHANNEL = "com.example.vibegrab/status"
     private var shareChannel: MethodChannel? = null
     private var downloadChannel: MethodChannel? = null
     private var localMediaChannel: MethodChannel? = null
     private var storageChannel: MethodChannel? = null
     private var pipChannel: MethodChannel? = null
+    private var statusChannel: MethodChannel? = null
     private var pipEventSink: EventChannel.EventSink? = null
     private var initialSharedUrl: String? = null
     private var pendingNotificationAction: Map<String, String?>? = null
@@ -181,6 +191,65 @@ class MainActivity : FlutterActivity() {
                 }
                 "isInPip" -> {
                     result.success(isInPipMode)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        statusChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STATUS_CHANNEL)
+        statusChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "checkAccess" -> {
+                    try {
+                        result.success(checkStatusAccess())
+                    } catch (e: Exception) {
+                        result.error("STATUS_ERROR", e.message, null)
+                    }
+                }
+                "openAllFilesSettings" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= 30) {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                            startActivity(intent)
+                        } else {
+                            val intent = Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:$packageName")
+                            )
+                            startActivity(intent)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        try {
+                            val intent = Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:$packageName")
+                            )
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e2: Exception) {
+                            result.success(false)
+                        }
+                    }
+                }
+                "saveToGallery" -> {
+                    val args = call.arguments as? Map<*, *>
+                    val path = args?.get("path") as? String
+                    val name = args?.get("name") as? String
+                    val mime = args?.get("mime") as? String ?: "*/*"
+                    if (path == null || name == null) {
+                        result.error("INVALID_ARGS", "path and name required", null)
+                    } else {
+                        try {
+                            result.success(saveToGallery(path, name, mime))
+                        } catch (e: Exception) {
+                            android.util.Log.w("VibeGrab", "saveToGallery failed: ${e.message}")
+                            result.success(false)
+                        }
+                    }
                 }
                 else -> result.notImplemented()
             }
@@ -415,6 +484,103 @@ class MainActivity : FlutterActivity() {
 
                 mediaList.add(mediaItem)
             }
+        }
+    }
+
+    private fun hasMediaReadPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) ==
+                PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun statusDirCandidates(): List<File> {
+        val root = Environment.getExternalStorageDirectory().absolutePath
+        val list = mutableListOf<File>()
+        if (Build.VERSION.SDK_INT >= 29) {
+            list.add(File("$root/Android/media/com.whatsapp/WhatsApp/Media/.Statuses"))
+            list.add(File("$root/Android/media/com.whatsapp.w4b/WhatsApp Business/Media/.Statuses"))
+        }
+        list.add(File("$root/WhatsApp/Media/.Statuses"))
+        list.add(File("$root/WhatsApp Business/Media/.Statuses"))
+        list.add(File("/sdcard/Android/media/com.whatsapp/WhatsApp/Media/.Statuses"))
+        return list
+    }
+
+    private fun checkStatusAccess(): Map<String, Any?> {
+        if (!hasMediaReadPermission()) {
+            return mapOf("state" to "need_media", "path" to null)
+        }
+        val readable = statusDirCandidates().firstOrNull { it.isDirectory && it.listFiles() != null }
+        if (readable != null) {
+            return mapOf("state" to "granted", "path" to readable.absolutePath)
+        }
+        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
+            return mapOf("state" to "need_manage", "path" to null)
+        }
+        return mapOf("state" to "unsupported", "path" to null)
+    }
+
+    private fun saveToGallery(path: String, displayName: String, mime: String): Boolean {
+        val src = File(path)
+        if (!src.exists()) return false
+        val isVideo = mime.startsWith("video")
+
+        if (Build.VERSION.SDK_INT >= 29) {
+            val collection = if (isVideo) {
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+            val relativePath = if (isVideo) "Movies/VibeGrab" else "Pictures/VibeGrab"
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(collection, values) ?: return false
+            return try {
+                val out = contentResolver.openOutputStream(uri)
+                if (out == null) {
+                    contentResolver.delete(uri, null, null)
+                    false
+                } else {
+                    out.use { stream ->
+                        src.inputStream().use { it.copyTo(stream) }
+                    }
+                    values.clear()
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    contentResolver.update(uri, values, null, null)
+                    true
+                }
+            } catch (e: Exception) {
+                contentResolver.delete(uri, null, null)
+                false
+            }
+        }
+
+        return try {
+            val baseDir = if (isVideo) {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
+            } else {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+            }
+            val dir = File(baseDir, "VibeGrab")
+            dir.mkdirs()
+            val dst = File(dir, displayName)
+            src.copyTo(dst, overwrite = true)
+            android.media.MediaScannerConnection.scanFile(
+                this, arrayOf(dst.absolutePath), arrayOf(mime), null
+            )
+            true
+        } catch (e: Exception) {
+            false
         }
     }
 
