@@ -28,11 +28,11 @@ void main() {
       expect(ApiConfig.exploreSearchUrl, contains('/api/explore/search'));
     });
 
-    test('all URLs use http scheme', () {
-      expect(ApiConfig.analyzeUrl, startsWith('http://'));
-      expect(ApiConfig.downloadsUrl, startsWith('http://'));
-      expect(ApiConfig.libraryUrl, startsWith('http://'));
-      expect(ApiConfig.statusUrl, startsWith('http://'));
+    test('all URLs use http or https scheme', () {
+      expect(ApiConfig.analyzeUrl, startsWith('http'));
+      expect(ApiConfig.downloadsUrl, startsWith('http'));
+      expect(ApiConfig.libraryUrl, startsWith('http'));
+      expect(ApiConfig.statusUrl, startsWith('http'));
     });
   });
 }

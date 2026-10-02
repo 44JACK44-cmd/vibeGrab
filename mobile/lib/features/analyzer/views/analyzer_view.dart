@@ -10,7 +10,9 @@ import '../controllers/analyze_controller.dart';
 import '../widgets/media_card.dart';
 import '../widgets/format_selector.dart';
 import '../../../data/models/format_option.dart';
+import '../../../data/models/app_settings.dart';
 import '../../../data/models/download_task.dart';
+import '../../../core/utils/format_picker.dart';
 import '../../../services/connectivity_service.dart';
 import '../../../services/local_extraction_service.dart';
 import '../../downloads/controllers/downloads_controller.dart';
@@ -27,6 +29,7 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
   final _focusNode = FocusNode();
   bool _isFocused = false;
   List<String> _recentUrls = [];
+  String _qualityPref = '720p';
   static const _recentKey = 'vibegrab_recent_urls';
   static const _maxRecent = 8;
 
@@ -39,6 +42,15 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncPendingUrl();
       _loadRecentUrls();
+      _loadQualityPref();
+    });
+  }
+
+  Future<void> _loadQualityPref() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _qualityPref = prefs.getString(AppSettingKeys.defaultQuality) ?? '720p';
     });
   }
 
@@ -175,6 +187,11 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
                         child: FormatSelector(
                           audioFormats: controller.audioFormats,
                           videoFormats: controller.videoFormats,
+                          recommendedId: FormatPicker.pick(
+                            video: controller.videoFormats,
+                            audio: controller.audioFormats,
+                            quality: _qualityPref,
+                          )?.id,
                           onSelected: (format) {
                             _download(
                               format,

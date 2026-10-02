@@ -177,6 +177,28 @@ class AppLocalizations {
   String get sectionAbout => _get('sectionAbout');
   String get sectionLanguage => _get('sectionLanguage');
   String get sectionServer => _get('sectionServer');
+  String get sectionGeneral => _get('sectionGeneral');
+  String get sectionNotifications => _get('sectionNotifications');
+
+  String get defaultQuality => _get('defaultQuality');
+  String get defaultQualityHint => _get('defaultQualityHint');
+  String get qualityBest => _get('qualityBest');
+  String get qualityAudioOnly => _get('qualityAudioOnly');
+  String get speedLimit => _get('speedLimit');
+  String get speedLimitHint => _get('speedLimitHint');
+  String get speedUnlimited => _get('speedUnlimited');
+  String get notifyCompleted => _get('notifyCompleted');
+  String get notifyCompletedHint => _get('notifyCompletedHint');
+  String get notifyErrors => _get('notifyErrors');
+  String get notifyErrorsHint => _get('notifyErrorsHint');
+  String get notifySound => _get('notifySound');
+  String get notifySoundHint => _get('notifySoundHint');
+  String get serverStatus => _get('serverStatus');
+  String get serverOnline => _get('serverOnline');
+  String get serverOffline => _get('serverOffline');
+  String get serverChecking => _get('serverChecking');
+  String get checkNow => _get('checkNow');
+  String get recommendedFormat => _get('recommendedFormat');
 
   String get backendUrl => _get('backendUrl');
   String get backendUrlHint => _get('backendUrlHint');

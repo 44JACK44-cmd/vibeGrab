@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../data/models/app_settings.dart';
 
 enum NotificationActionType { cancel, retry, openLibrary }
 
@@ -25,6 +27,8 @@ class DownloadNotificationService {
   void init() {
     if (_initialized) return;
     _initialized = true;
+
+    _syncSoundSetting();
 
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'onNotificationAction') {
@@ -89,6 +93,8 @@ class DownloadNotificationService {
     required String title,
   }) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!(prefs.getBool(AppSettingKeys.notifyCompleted) ?? true)) return;
       await _channel.invokeMethod('showCompleted', {
         'taskId': taskId,
         'title': title,
@@ -102,11 +108,27 @@ class DownloadNotificationService {
     required String error,
   }) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!(prefs.getBool(AppSettingKeys.notifyErrors) ?? true)) return;
       await _channel.invokeMethod('showFailed', {
         'taskId': taskId,
         'title': title,
         'error': error,
       });
+    } catch (_) {}
+  }
+
+  Future<void> setResultsSound(bool enabled) async {
+    try {
+      await _channel.invokeMethod('setResultsSound', enabled);
+    } catch (_) {}
+  }
+
+  Future<void> _syncSoundSetting() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final enabled = prefs.getBool(AppSettingKeys.notifySound) ?? true;
+      await _channel.invokeMethod('setResultsSound', enabled);
     } catch (_) {}
   }
 

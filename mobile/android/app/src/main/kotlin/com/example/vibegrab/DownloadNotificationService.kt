@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -17,6 +18,17 @@ class DownloadNotificationService : Service() {
         const val CHANNEL_PROGRESS = "vibegrab_downloading"
         const val CHANNEL_RESULTS = "vibegrab_results"
         const val FOREGROUND_ID = 9001
+
+        fun applyResultsSound(context: Context, enabled: Boolean) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            val nm = context.getSystemService(NotificationManager::class.java) ?: return
+            nm.deleteNotificationChannel(CHANNEL_RESULTS)
+            nm.createNotificationChannel(NotificationChannel(
+                CHANNEL_RESULTS, "Download Results",
+                if (enabled) NotificationManager.IMPORTANCE_DEFAULT
+                else NotificationManager.IMPORTANCE_LOW,
+            ).apply { description = "Download complete or failed notifications" })
+        }
     }
 
     private val activeTasks = mutableSetOf<String>()

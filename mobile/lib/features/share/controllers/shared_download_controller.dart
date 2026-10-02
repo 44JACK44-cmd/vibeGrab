@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../data/models/analyze_response.dart';
 import '../../../data/models/media_info.dart';
 import '../../../data/models/format_option.dart';
+import '../../../data/models/app_settings.dart';
+import '../../../core/utils/format_picker.dart';
 import '../../../services/local_extraction_service.dart';
 import '../../../services/api_service.dart';
 import '../../../services/connectivity_service.dart';
@@ -91,7 +94,7 @@ class SharedDownloadController extends ChangeNotifier {
       }
       _audioFormats = _result!.formats.where((f) => f.type == 'audio').toList();
       _videoFormats = _result!.formats.where((f) => f.type == 'video').toList();
-      _selectDefaultFormat();
+      await _selectDefaultFormat();
       _status = SharedSheetStatus.ready;
     } on NetworkException catch (e) {
       _error = (e.type == 'connection' || e.type == 'timeout')
@@ -123,16 +126,17 @@ class SharedDownloadController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _selectDefaultFormat() {
-    if (_videoFormats.isNotEmpty) {
-      final preferred = _videoFormats.firstWhere(
-        (f) => f.quality == '720p',
-        orElse: () => _videoFormats.first,
-      );
-      _selectedFormat = preferred;
-    } else if (_audioFormats.isNotEmpty) {
-      _selectedFormat = _audioFormats.first;
-    }
+  Future<void> _selectDefaultFormat() async {
+    String quality = '720p';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      quality = prefs.getString(AppSettingKeys.defaultQuality) ?? '720p';
+    } catch (_) {}
+    _selectedFormat = FormatPicker.pick(
+      video: _videoFormats,
+      audio: _audioFormats,
+      quality: quality,
+    );
   }
 
   void reset() {

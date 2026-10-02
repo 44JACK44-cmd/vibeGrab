@@ -95,6 +95,11 @@ class MainActivity : FlutterActivity() {
                     result.success(pendingNotificationAction)
                     pendingNotificationAction = null
                 }
+                "setResultsSound" -> {
+                    val enabled = call.arguments as? Boolean ?: true
+                    DownloadNotificationService.applyResultsSound(this, enabled)
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }

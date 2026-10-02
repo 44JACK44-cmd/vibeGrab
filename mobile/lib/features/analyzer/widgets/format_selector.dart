@@ -7,12 +7,14 @@ class FormatSelector extends StatelessWidget {
   final List<FormatOption> audioFormats;
   final List<FormatOption> videoFormats;
   final ValueChanged<FormatOption> onSelected;
+  final String? recommendedId;
 
   const FormatSelector({
     super.key,
     required this.audioFormats,
     required this.videoFormats,
     required this.onSelected,
+    this.recommendedId,
   });
 
   @override
@@ -28,6 +30,7 @@ class FormatSelector extends StatelessWidget {
           const SizedBox(height: 8),
           ...videoFormats.map((f) => _FormatTile(
             format: f,
+            recommended: recommendedId != null && recommendedId == f.id,
             onTap: () => onSelected(f),
             accentColor: cs.primary,
             actionLabel: loc.downloadAsVideo,
@@ -48,6 +51,7 @@ class FormatSelector extends StatelessWidget {
           const SizedBox(height: 8),
           ...audioFormats.map((f) => _FormatTile(
             format: f,
+            recommended: recommendedId != null && recommendedId == f.id,
             onTap: () => onSelected(f),
             accentColor: cs.secondary,
             actionLabel: loc.downloadAsMusic,
@@ -81,16 +85,19 @@ class _FormatTile extends StatelessWidget {
   final VoidCallback onTap;
   final Color accentColor;
   final String actionLabel;
+  final bool recommended;
 
   const _FormatTile({
     required this.format,
     required this.onTap,
     required this.accentColor,
     required this.actionLabel,
+    this.recommended = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final loc = AppLocalizations.of(context);
     final cs = Theme.of(context).colorScheme;
     final isAudio = format.type == 'audio';
 
@@ -140,6 +147,31 @@ class _FormatTile extends StatelessWidget {
                             fontSize: 11,
                             color: AppColors.warning,
                             fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                      if (recommended) ...[
+                        const SizedBox(height: 4),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: accentColor.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.star_rounded, size: 12, color: accentColor),
+                              const SizedBox(width: 4),
+                              Text(
+                                loc.recommendedFormat,
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  color: accentColor,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ],

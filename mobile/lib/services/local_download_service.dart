@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../core/constants/api_constants.dart';
+import '../data/models/app_settings.dart';
 import '../data/models/download_task.dart';
 import '../services/storage_service.dart';
 import '../services/local_extraction_service.dart';
@@ -692,8 +694,14 @@ class LocalDownloadService {
       final sink = file.openWrite();
       int bytesDownloaded = 0;
       int chunkCount = 0;
+      int limitBps = 0;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        limitBps = (prefs.getInt(AppSettingKeys.speedLimitKbps) ?? 0) * 1024;
+      } catch (_) {}
+      final paceSw = Stopwatch()..start();
 
-      _log('HTTP: Starting SINGLE stream consumption...');
+      _log('HTTP: Starting SINGLE stream consumption... limitKbps=${limitBps ~/ 1024}');
 
       await for (final chunk in response) {
         if (!_activeDownloads.containsKey(task.id)) {
@@ -708,6 +716,14 @@ class LocalDownloadService {
         chunkCount++;
         final progress = effectiveTotal > 0 ? bytesDownloaded / effectiveTotal : 0.0;
         onProgress(progress, bytesDownloaded);
+
+        if (limitBps > 0) {
+          final targetMs = bytesDownloaded * 1000.0 / limitBps;
+          final waitMs = targetMs - paceSw.elapsedMilliseconds;
+          if (waitMs >= 20) {
+            await Future<void>.delayed(Duration(milliseconds: waitMs.round()));
+          }
+        }
 
         if (chunkCount % 50 == 0 || bytesDownloaded == effectiveTotal) {
           _log('HTTP: ${(progress * 100).toStringAsFixed(1)}% (${(bytesDownloaded / 1024 / 1024).toStringAsFixed(1)} MB) chunks=$chunkCount time=${sw.elapsedMilliseconds}ms');
