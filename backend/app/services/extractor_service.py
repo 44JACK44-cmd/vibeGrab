@@ -34,7 +34,7 @@ def _best_thumbnail(data: dict) -> str | None:
     thumbnails = data.get("thumbnails", [])
     if thumbnails:
         for t in thumbnails:
-            if t.get("height", 0) >= 360:
+            if (t.get("height") or 0) >= 360:
                 return t.get("url")
         return thumbnails[-1].get("url")
     return data.get("thumbnail")
@@ -116,13 +116,14 @@ def _pick_best_formats(raw_formats: list[dict]) -> list[FormatOption]:
         height = fmt.get("height")
 
         if normalized.type == "audio":
-            abr = fmt.get("abr", 0)
+            abr = fmt.get("abr") or 0
             key = normalized.quality or ""
             if key not in audio_by_quality or abr > 0:
                 audio_by_quality[key] = normalized
 
         elif normalized.has_audio and height:
-            if height not in video_combined or fmt.get("filesize", 0) or 0 > 0:
+            size = fmt.get("filesize") or fmt.get("filesize_approx") or 0
+            if height not in video_combined or size > 0:
                 video_combined[height] = normalized
 
         elif not normalized.has_audio and height:
@@ -131,7 +132,15 @@ def _pick_best_formats(raw_formats: list[dict]) -> list[FormatOption]:
 
     formats: list[FormatOption] = []
 
-    for q in sorted(audio_by_quality.keys(), reverse=True):
+    def _audio_sort_key(q: str) -> int:
+        if q.endswith("kbps"):
+            try:
+                return int(q[:-4])
+            except ValueError:
+                return 0
+        return 0
+
+    for q in sorted(audio_by_quality.keys(), key=_audio_sort_key, reverse=True):
         formats.append(audio_by_quality[q])
 
     for h in sorted(video_combined.keys(), reverse=True):

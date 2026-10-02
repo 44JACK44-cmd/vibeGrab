@@ -70,7 +70,7 @@ def _best_thumbnail(data: dict) -> str | None:
     thumbnails = data.get("thumbnails", [])
     if thumbnails:
         for t in thumbnails:
-            if t.get("height", 0) >= 360:
+            if (t.get("height") or 0) >= 360:
                 return t.get("url")
         return thumbnails[-1].get("url")
     return data.get("thumbnail")
