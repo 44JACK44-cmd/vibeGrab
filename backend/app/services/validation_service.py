@@ -1,13 +1,16 @@
+import ipaddress
 import re
 from urllib.parse import urlparse, parse_qs
-from app.core.config import settings
 from app.core.logging import logger
 
 
-SUPPORTED_HOSTS = set(settings.ALLOWED_DOMAINS)
-
 URL_PATTERN = re.compile(
     r"https?://(?:www\.)?[\w\-]+(\.[\w\-]+)+(/[\w\-._~:/?#\[\]@!$&\'()*+,;=%]*)?"
+)
+
+_BLOCKED_HOST_SUFFIXES = (
+    ".localhost", ".local", ".internal", ".lan", ".home",
+    ".test", ".example", ".invalid",
 )
 
 
@@ -48,6 +51,28 @@ def normalize_url(url: str) -> str:
     return url
 
 
+def _is_forbidden_host(hostname: str) -> bool:
+    """Block localhost / private / reserved targets (SSRF guard).
+
+    Everything else is allowed: yt-dlp decides whether the site is supported.
+    """
+    host = hostname.lower().rstrip(".")
+    if host == "localhost" or host.endswith(_BLOCKED_HOST_SUFFIXES):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
 def validate_url(url: str) -> bool:
     parsed = urlparse(url)
 
@@ -58,14 +83,7 @@ def validate_url(url: str) -> bool:
     if not hostname:
         return False
 
-    if hostname in SUPPORTED_HOSTS:
-        return True
-
-    for supported in SUPPORTED_HOSTS:
-        if hostname.endswith("." + supported):
-            return True
-
-    return False
+    return not _is_forbidden_host(hostname)
 
 
 def get_source(url: str) -> str:
@@ -85,6 +103,16 @@ def get_source(url: str) -> str:
         "vimeo.com": "vimeo",
         "dailymotion.com": "dailymotion",
         "soundcloud.com": "soundcloud",
+        "kwai.com": "kwai",
+        "kuaishou.com": "kuaishou",
+        "reddit.com": "reddit",
+        "pinterest.com": "pinterest",
+        "twitch.tv": "twitch",
+        "snapchat.com": "snapchat",
+        "linkedin.com": "linkedin",
+        "9gag.com": "9gag",
+        "ted.com": "ted",
+        "bilibili.com": "bilibili",
     }
 
     for domain, source in source_map.items():

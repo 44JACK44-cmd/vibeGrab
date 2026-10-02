@@ -75,7 +75,24 @@ def test_validate_soundcloud():
 
 
 def test_validate_unknown_domain():
-    assert validate_url("https://example.com/video") is False
+    assert validate_url("https://example.com/video") is True
+
+
+def test_validate_kwai():
+    assert validate_url("https://www.kwai.com/@user/video/123") is True
+    assert validate_url("https://v.kwai.com/u/abc") is True
+
+
+def test_validate_blocks_localhost():
+    assert validate_url("http://localhost:8000/api") is False
+    assert validate_url("http://foo.local/x") is False
+
+
+def test_validate_blocks_private_ip():
+    assert validate_url("http://192.168.1.10/x") is False
+    assert validate_url("http://10.0.0.5/x") is False
+    assert validate_url("http://127.0.0.1/x") is False
+    assert validate_url("http://169.254.1.1/x") is False
 
 
 def test_validate_no_scheme():

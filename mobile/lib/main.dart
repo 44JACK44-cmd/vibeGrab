@@ -19,6 +19,7 @@ import 'services/pip_service.dart';
 import 'services/local_extraction_service.dart';
 import 'services/local_download_service.dart';
 import 'services/trash_service.dart';
+import 'services/api_service.dart';
 import 'features/analyzer/controllers/analyze_controller.dart';
 import 'features/downloads/controllers/downloads_controller.dart';
 import 'features/explore/controllers/explore_controller.dart';
@@ -211,14 +212,23 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      DownloadNotificationService().requestPermission();
-      context.read<MediaEngine>().initAudioService().then((_) {
-        debugPrint('[MainShell] AudioService initialized');
-      }).catchError((e) {
-        debugPrint('[MainShell] AudioService init failed: $e');
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (!mounted) return;
+        context.read<MediaEngine>().initAudioService().then((_) {
+          debugPrint('[MainShell] AudioService initialized');
+        }).catchError((e) {
+          debugPrint('[MainShell] AudioService init failed: $e');
+        });
+        context.read<DownloadsController>().init();
+        context.read<LibraryController>().loadLibrary();
+        ApiService().checkHealth().then((ok) {
+          debugPrint('[MainShell] Backend warmup: $ok');
+        });
       });
-      context.read<DownloadsController>().init();
-      context.read<LibraryController>().loadLibrary();
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (!mounted) return;
+        DownloadNotificationService().requestPermission();
+      });
     });
   }
 

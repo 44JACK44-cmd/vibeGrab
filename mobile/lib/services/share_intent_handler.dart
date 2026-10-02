@@ -82,6 +82,11 @@ class ShareIntentHandler {
     'linkedin.com', 'www.linkedin.com',
     'pinterest.com', 'www.pinterest.com',
     'twitch.tv', 'www.twitch.tv',
+    'kwai.com', 'www.kwai.com', 'v.kwai.com', 'vm.kwai.com', 'k.kwai.com',
+    'kuaishou.com', 'www.kuaishou.com',
+    'dailymotion.com', 'www.dailymotion.com', 'dai.ly',
+    'v.redd.it',
+    '9gag.com', 'www.9gag.com',
   };
 
   static String? detectPlatform(String url) {

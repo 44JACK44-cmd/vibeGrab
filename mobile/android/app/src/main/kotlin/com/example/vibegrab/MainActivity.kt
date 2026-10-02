@@ -142,12 +142,16 @@ class MainActivity : FlutterActivity() {
         localMediaChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getDeviceMedia" -> {
-                    try {
-                        val mediaList = queryDeviceMedia()
-                        result.success(mediaList)
-                    } catch (e: Exception) {
-                        result.error("MEDIA_QUERY_ERROR", e.message, null)
-                    }
+                    Thread {
+                        try {
+                            val mediaList = queryDeviceMedia()
+                            runOnUiThread { result.success(mediaList) }
+                        } catch (e: Exception) {
+                            runOnUiThread {
+                                result.error("MEDIA_QUERY_ERROR", e.message, null)
+                            }
+                        }
+                    }.start()
                 }
                 "getMediaContentUri" -> {
                     try {
