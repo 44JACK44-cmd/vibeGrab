@@ -18,6 +18,7 @@ import 'services/media_metadata_service.dart';
 import 'services/pip_service.dart';
 import 'services/local_extraction_service.dart';
 import 'services/local_download_service.dart';
+import 'services/trash_service.dart';
 import 'features/analyzer/controllers/analyze_controller.dart';
 import 'features/downloads/controllers/downloads_controller.dart';
 import 'features/explore/controllers/explore_controller.dart';
@@ -52,6 +53,8 @@ Future<void> main() async {
     await StorageService.instance.init();
 
     await ApiConfig.init();
+
+    TrashService.instance.purgeExpired().catchError((_) {});
 
     ConnectivityService.instance.init();
 

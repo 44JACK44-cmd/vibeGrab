@@ -5,6 +5,8 @@ import '../../../data/models/library_file.dart';
 import '../../../services/local_media_service.dart';
 import '../../../services/storage_service.dart';
 import '../../../services/media_metadata_service.dart';
+import '../../../services/trash_service.dart';
+import '../../../services/vault_service.dart';
 
 enum LibraryFilter { all, videos, audio, favorites, history }
 
@@ -288,19 +290,7 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> deleteFile(String filename) async {
     try {
-      StorageService.instance.deleteFile(filename);
-      final baseName = filename.contains('.')
-          ? filename.substring(0, filename.lastIndexOf('.'))
-          : filename;
-      final storage = StorageService.instance;
-      final metaFile = storage.getFile('$baseName.meta.json');
-      if (metaFile != null && metaFile.existsSync()) {
-        await metaFile.delete();
-      }
-      final jpgFile = storage.getFile('$baseName.jpg');
-      if (jpgFile != null && jpgFile.existsSync()) {
-        await jpgFile.delete();
-      }
+      await TrashService.instance.moveToTrash(filename);
       _allFiles.removeWhere((f) => f.filename == filename);
       await _meta.removeFileData(filename);
       if (_allFiles.isEmpty) {
@@ -310,6 +300,22 @@ class LibraryController extends ChangeNotifier {
     } catch (e) {
       _errorKey = 'errorFailedDeleteFile';
       notifyListeners();
+    }
+  }
+
+  Future<bool> vaultFile(String filename) async {
+    try {
+      final moved = await VaultService.instance.moveToVault(filename);
+      if (moved == null) return false;
+      _allFiles.removeWhere((f) => f.filename == filename);
+      await _meta.removeFileData(filename);
+      if (_allFiles.isEmpty) {
+        _status = LibraryStatus.empty;
+      }
+      notifyListeners();
+      return true;
+    } catch (e) {
+      return false;
     }
   }
 

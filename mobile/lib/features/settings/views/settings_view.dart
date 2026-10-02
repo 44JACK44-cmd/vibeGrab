@@ -10,6 +10,8 @@ import '../../../services/api_service.dart';
 import '../../../services/download_notification_service.dart';
 import '../controllers/settings_controller.dart';
 import '../../downloads/controllers/downloads_controller.dart';
+import 'trash_view.dart';
+import 'vault_view.dart';
 
 enum _ServerStatus { checking, up, down }
 
@@ -166,6 +168,36 @@ class _SettingsViewState extends State<SettingsView> {
               _sectionHeader(loc.sectionServer, cs.primary),
               _buildBackendUrlTile(context, loc, text1, text2),
               _buildServerStatusTile(loc, cs, text1, text2),
+              const SizedBox(height: 24),
+              _sectionHeader(loc.sectionTools, cs.primary),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.delete_sweep_outlined, color: text2),
+                title: Text(loc.trash,
+                    style: TextStyle(color: text1, fontSize: 15)),
+                subtitle: Text(loc.trashHint,
+                    style: TextStyle(
+                        color: text2.withValues(alpha: 0.7), fontSize: 12)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const TrashView())),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.lock_outline, color: text2),
+                title: Text(loc.vault,
+                    style: TextStyle(color: text1, fontSize: 15)),
+                subtitle: Text(loc.vaultHint,
+                    style: TextStyle(
+                        color: text2.withValues(alpha: 0.7), fontSize: 12)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const VaultView())),
+              ),
               const SizedBox(height: 24),
               _sectionHeader(loc.sectionAbout, cs.primary),
               _buildAboutTile(cs, text1, text2),

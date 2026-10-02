@@ -26,6 +26,7 @@ dependencies:
   wakelock_plus: ^1.2.1
   connectivity_plus: ^6.0.3
   youtube_explode_dart: ^2.3.5
+  crypto: ^3.0.3
 
 dev_dependencies:
   flutter_test:

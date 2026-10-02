@@ -267,7 +267,20 @@ class _LibraryViewState extends State<LibraryView> {
             isFavorite: controller.meta.isFavorite(file.filename),
             onTap: () => _playFile(context, file),
             onToggleFavorite: () => controller.toggleFavorite(file.filename),
-            onDelete: () => controller.deleteFile(file.filename),
+            onDelete: () async {
+              await controller.deleteFile(file.filename);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(loc.movedToTrash)));
+              }
+            },
+            onVault: () async {
+              final ok = await controller.vaultFile(file.filename);
+              if (ok && context.mounted) {
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text(loc.vaultMoved)));
+              }
+            },
           );
         },
       ),
@@ -288,7 +301,20 @@ class _LibraryViewState extends State<LibraryView> {
             isFavorite: controller.meta.isFavorite(file.filename),
             onTap: () => _playFile(context, file),
             onToggleFavorite: () => controller.toggleFavorite(file.filename),
-            onDelete: () => controller.deleteFile(file.filename),
+            onDelete: () async {
+              await controller.deleteFile(file.filename);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(loc.movedToTrash)));
+              }
+            },
+            onVault: () async {
+              final ok = await controller.vaultFile(file.filename);
+              if (ok && context.mounted) {
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text(loc.vaultMoved)));
+              }
+            },
           );
         },
       ),

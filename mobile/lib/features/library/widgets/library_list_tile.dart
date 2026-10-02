@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/localization/app_localizations.dart';
 import '../../../data/models/library_file.dart';
 import '../../../services/media_metadata_service.dart';
 
@@ -11,6 +12,7 @@ class LibraryListTile extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onToggleFavorite;
   final VoidCallback? onDelete;
+  final VoidCallback? onVault;
 
   const LibraryListTile({
     super.key,
@@ -19,6 +21,7 @@ class LibraryListTile extends StatelessWidget {
     this.onTap,
     this.onToggleFavorite,
     this.onDelete,
+    this.onVault,
   });
 
   @override
@@ -102,11 +105,20 @@ class LibraryListTile extends StatelessWidget {
                 icon: Icon(Icons.more_vert, color: cs.onSurfaceVariant, size: 18),
                 onSelected: (value) {
                   if (value == 'delete') onDelete?.call();
+                  if (value == 'vault') onVault?.call();
                 },
                 itemBuilder: (_) => [
+                  if (onVault != null)
+                    PopupMenuItem(
+                      value: 'vault',
+                      child: Text(AppLocalizations.of(context).vaultMoveAction,
+                          style: const TextStyle(fontSize: 13)),
+                    ),
                   PopupMenuItem(
                     value: 'delete',
-                    child: Text('Delete', style: TextStyle(color: AppColors.error, fontSize: 13)),
+                    child: Text(AppLocalizations.of(context).delete,
+                        style:
+                            TextStyle(color: AppColors.error, fontSize: 13)),
                   ),
                 ],
                 padding: EdgeInsets.zero,

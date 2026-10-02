@@ -200,6 +200,30 @@ class AppLocalizations {
   String get checkNow => _get('checkNow');
   String get recommendedFormat => _get('recommendedFormat');
 
+  String get sectionTools => _get('sectionTools');
+  String get trash => _get('trash');
+  String get trashHint => _get('trashHint');
+  String get trashEmpty => _get('trashEmpty');
+  String get restore => _get('restore');
+  String get deleteForever => _get('deleteForever');
+  String get emptyTrash => _get('emptyTrash');
+  String get emptyTrashConfirm => _get('emptyTrashConfirm');
+  String get trashRestored => _get('trashRestored');
+  String get vault => _get('vault');
+  String get vaultHint => _get('vaultHint');
+  String get vaultEmpty => _get('vaultEmpty');
+  String get createPin => _get('createPin');
+  String get createPinHint => _get('createPinHint');
+  String get confirmPin => _get('confirmPin');
+  String get enterPin => _get('enterPin');
+  String get wrongPin => _get('wrongPin');
+  String get pinMismatch => _get('pinMismatch');
+  String get pinLocked => _get('pinLocked');
+  String get unlock => _get('unlock');
+  String get vaultMoveAction => _get('vaultMoveAction');
+  String get vaultMoved => _get('vaultMoved');
+  String get movedToTrash => _get('movedToTrash');
+
   String get backendUrl => _get('backendUrl');
   String get backendUrlHint => _get('backendUrlHint');
   String get backendUrlPlaceholder => _get('backendUrlPlaceholder');
