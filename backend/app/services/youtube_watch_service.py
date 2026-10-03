@@ -2,6 +2,8 @@ import json
 import re
 import threading
 import time
+import urllib.parse
+import urllib.request
 
 from app.core.logging import logger
 
@@ -9,11 +11,11 @@ _UA_COOKIES = {
     "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+000; SOCS=CAI",
     "Accept-Language": "en-US,en;q=0.9",
 }
-# Static innertube config: the watch HTML page gets HTTP 429 from datacenter
-# IPs (Render), but the /youtubei/v1/next API works with the public web key.
-# clientVersion must match yt-dlp's current real WEB value, and (like yt-dlp)
-# we must NOT send the ?key= param nor an empty X-Goog-Visitor-Id header,
-# otherwise YouTube answers 403 from datacenter IPs.
+# Static innertube config. clientVersion must match yt-dlp's real WEB value
+# and (like yt-dlp) we omit ?key= and never send an empty X-Goog-Visitor-Id.
+# Even so, YouTube answers 403 ("Sorry..." bot page) to /next from datacenter
+# IPs (Render), so get_related/get_comments fall back to a Invidious instance
+# (which fetches YouTube from its own IP) and then to yt-dlp.
 _STATIC_CONFIG = {
     "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
     "visitor": "",
@@ -26,6 +28,17 @@ _STATIC_CONFIG = {
         }
     },
 }
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+)
+# Invidious instances used when the direct innertube call is blocked.
+_INVIDIOUS_BASES = ["https://invidious.f5.si"]
+# After an innertube 403/429, skip it for this long (avoid a ~10s penalty
+# on every request while YouTube is blocking our datacenter IP).
+_NEXT_FAIL_UNTIL = 0.0
+_NEXT_FAIL_TTL = 120.0
 
 _YT_INITIAL_RE = re.compile(r"var ytInitialData = ({.+?});</script>", re.S)
 _API_KEY_RE = re.compile(r'"INNERTUBE_API_KEY":"([^"]+)"')
@@ -367,14 +380,130 @@ def _post_next(bundle: dict, payload: dict) -> dict:
     return resp.json()
 
 
+def _invidious_get(
+    path: str, params: dict | None = None, timeout: float = 20
+) -> dict:
+    last: Exception | None = None
+    for base in _INVIDIOUS_BASES:
+        url = f"{base}{path}"
+        if params:
+            url = f"{url}?{urllib.parse.urlencode(params)}"
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": _BROWSER_UA, "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except Exception as exc:  # noqa: BLE001 - collect and report last error
+            last = exc
+    raise WatchError(502, f"invidious fallback failed: {last}")
+
+
+def _fmt_duration(seconds: int) -> str | None:
+    if seconds <= 0:
+        return None
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _invidious_related(video_id: str) -> list[dict]:
+    logger.info(f"Invidious related fallback for {video_id}")
+    data = _invidious_get(f"/api/v1/videos/{video_id}")
+    items: list[dict] = []
+    for v in data.get("recommendedVideos") or []:
+        vid = v.get("videoId")
+        title = v.get("title") or ""
+        if not vid or vid == video_id or not title:
+            continue
+        try:
+            length = int(v.get("lengthSeconds") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        items.append(
+            {
+                "id": vid,
+                "title": title,
+                "channel": v.get("author"),
+                "views": v.get("viewCountText"),
+                "views_label": None,
+                "age": v.get("publishedText"),
+                "duration": _fmt_duration(length),
+                "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+            }
+        )
+    if not items:
+        raise WatchError(502, "invidious returned no related videos")
+    return items
+
+
+def _invidious_map_comments(data: dict) -> list[dict]:
+    items: list[dict] = []
+    for c in data.get("comments") or []:
+        text = c.get("content") or ""
+        if not text:
+            continue
+        author = c.get("author") or ""
+        try:
+            likes_int = int(c.get("likeCount") or 0)
+        except (TypeError, ValueError):
+            likes_int = 0
+        items.append(
+            {
+                "author": author,
+                "avatar": c.get("authorThumbnail"),
+                "text": text,
+                "published": c.get("publishedText"),
+                "likes": _format_count(likes_int) if likes_int else None,
+                "replies": None,
+                "verified": bool(c.get("verified")),
+                "pinned_text": (
+                    f"Pinned by {author}" if c.get("isPinned") else None
+                ),
+            }
+        )
+    return items
+
+
+def _invidious_comments(video_id: str) -> tuple[list[dict], str | None]:
+    logger.info(f"Invidious comments fallback for {video_id}")
+    data = _invidious_get(f"/api/v1/comments/{video_id}")
+    items = _invidious_map_comments(data)
+    cont = data.get("continuation")
+    return items, f"iv:{cont}" if cont else None
+
+
 def get_related(video_id: str) -> list[dict]:
+    global _NEXT_FAIL_UNTIL
+
     cache_key = f"related:{video_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    bundle = _bundle(video_id)
-    payload = _post_next(bundle, {"context": bundle["context"], "videoId": video_id})
-    items = parse_related(payload, exclude_id=video_id)
+
+    items: list[dict] = []
+    fallback = False
+    if time.time() < _NEXT_FAIL_UNTIL:
+        logger.info("Innertube recently blocked, going straight to fallback")
+        fallback = True
+    else:
+        try:
+            bundle = _bundle(video_id)
+            payload = _post_next(
+                bundle, {"context": bundle["context"], "videoId": video_id}
+            )
+            items = parse_related(payload, exclude_id=video_id)
+            _NEXT_FAIL_UNTIL = 0.0
+        except WatchError as exc:
+            _NEXT_FAIL_UNTIL = time.time() + _NEXT_FAIL_TTL
+            logger.warning(f"Innertube related failed ({exc.detail[:80]})")
+            fallback = True
+    if fallback:
+        items = _invidious_related(video_id)
+
     _cache_put(cache_key, items, _TTL_RELATED)
     logger.info(f"Related for {video_id}: {len(items)} items")
     return items
@@ -435,35 +564,68 @@ def _yt_dlp_comments(video_id: str) -> tuple[list[dict], str | None]:
 
 
 def get_comments(video_id: str, token: str | None = None) -> tuple[list[dict], str | None]:
+    global _NEXT_FAIL_UNTIL
+
     cache_key = f"comments:{video_id}:{token or ''}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
-    try:
-        bundle = _bundle(video_id)
-        if token:
-            next_payload = _post_next(
-                bundle, {"context": bundle["context"], "continuation": token}
+    # Continuation token issued by the invidious fallback -> stay there.
+    if token and token.startswith("iv:"):
+        data = _invidious_get(
+            f"/api/v1/comments/{video_id}", {"continuation": token[3:]}
+        )
+        items = _invidious_map_comments(data)
+        cont = data.get("continuation")
+        next_token = f"iv:{cont}" if cont else None
+        _cache_put(cache_key, (items, next_token), _TTL_COMMENTS)
+        logger.info(f"Comments for {video_id}: {len(items)} items (fallback page)")
+        return items, next_token
+
+    items: list[dict] = []
+    next_token: str | None = None
+    fallback = False
+    if time.time() < _NEXT_FAIL_UNTIL and not token:
+        logger.info("Innertube recently blocked, going straight to fallback")
+        fallback = True
+    else:
+        try:
+            bundle = _bundle(video_id)
+            if token:
+                next_payload = _post_next(
+                    bundle, {"context": bundle["context"], "continuation": token}
+                )
+                _NEXT_FAIL_UNTIL = 0.0
+                items, next_token = parse_comments(next_payload)
+            else:
+                first = _post_next(
+                    bundle, {"context": bundle["context"], "videoId": video_id}
+                )
+                _NEXT_FAIL_UNTIL = 0.0
+                comment_token = extract_comment_token(first)
+                if not comment_token:
+                    _cache_put(cache_key, ([], None), _TTL_COMMENTS)
+                    return [], None
+                next_payload = _post_next(
+                    bundle, {"context": bundle["context"], "continuation": comment_token}
+                )
+                items, next_token = parse_comments(next_payload)
+        except WatchError as exc:
+            _NEXT_FAIL_UNTIL = time.time() + _NEXT_FAIL_TTL
+            logger.warning(f"Innertube comments failed ({exc.detail[:80]})")
+            if token:
+                raise  # cannot continue an innertube page from another source
+            fallback = True
+
+    if fallback:
+        try:
+            items, next_token = _invidious_comments(video_id)
+        except WatchError as exc:
+            logger.warning(
+                f"Invidious comments failed ({exc.detail[:60]}), trying yt-dlp"
             )
-            items, next_token = parse_comments(next_payload)
-        else:
-            first = _post_next(
-                bundle, {"context": bundle["context"], "videoId": video_id}
-            )
-            comment_token = extract_comment_token(first)
-            if not comment_token:
-                _cache_put(cache_key, ([], None), _TTL_COMMENTS)
-                return [], None
-            next_payload = _post_next(
-                bundle, {"context": bundle["context"], "continuation": comment_token}
-            )
-            items, next_token = parse_comments(next_payload)
-    except WatchError as exc:
-        if token:
-            raise
-        logger.warning(f"Innertube comments failed ({exc.detail[:80]}), using yt-dlp")
-        items, next_token = _yt_dlp_comments(video_id)
+            items, next_token = _yt_dlp_comments(video_id)
 
     _cache_put(cache_key, (items, next_token), _TTL_COMMENTS)
     logger.info(f"Comments for {video_id}: {len(items)} items")
