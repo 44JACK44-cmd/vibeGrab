@@ -61,5 +61,20 @@ void main() {
       expect(enArb['appVersion'], isNot('v0.1.0'));
       expect(esArb['appVersion'], isNot('v0.1.0'));
     });
+
+    test('no mojibake (double-encoded accents) in values', () {
+      final mojibake = RegExp('[\u0080-\u009F\uFFFD]|Ã.|Â.|â€|Å.|Ë.');
+      for (final arb in [enArb, esArb]) {
+        for (final entry in arb.entries) {
+          if (entry.key.startsWith('@')) continue;
+          final match = mojibake.firstMatch(entry.value.toString());
+          expect(
+            match,
+            isNull,
+            reason: 'Key "${entry.key}" contains mojibake: ${entry.value}',
+          );
+        }
+      }
+    });
   });
 }
