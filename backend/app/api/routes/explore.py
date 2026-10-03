@@ -1,7 +1,10 @@
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Header
+from fastapi.responses import JSONResponse, StreamingResponse
 from app.schemas.explore import (
     CommentsResponse,
     ExploreSearchResponse,
@@ -22,6 +25,68 @@ from app.core.logging import logger
 router = APIRouter(prefix="/api/explore")
 
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+@router.get("/proxy")
+def proxy(u: str, range_header: str | None = Header(None, alias="Range")):
+    """Byte relay for googlevideo streams.
+
+    Some mobile networks block googlevideo directly; the phone downloads
+    through us instead. Range is forwarded so seeking keeps working.
+    """
+    target = urllib.parse.unquote(u)
+    parts = urllib.parse.urlsplit(target)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not (
+        host == "googlevideo.com" or host.endswith(".googlevideo.com")
+    ):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "detail": "Only googlevideo streams allowed"},
+        )
+
+    req_headers = {"User-Agent": "Mozilla/5.0 (Linux; Android 14) Chrome/140.0.0.0"}
+    if range_header:
+        req_headers["Range"] = range_header
+
+    try:
+        upstream = urllib.request.urlopen(
+            urllib.request.Request(target, headers=req_headers), timeout=30
+        )
+    except urllib.error.HTTPError as e:
+        return JSONResponse(
+            status_code=e.code,
+            content={"success": False, "detail": f"upstream {e.code}"},
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Proxy upstream failed: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": "upstream unavailable"},
+        )
+
+    def _gen():
+        try:
+            while True:
+                chunk = upstream.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    out_headers = {}
+    for h in ("Content-Length", "Content-Range", "Accept-Ranges"):
+        v = upstream.headers.get(h)
+        if v:
+            out_headers[h] = v
+
+    return StreamingResponse(
+        _gen(),
+        status_code=upstream.status,
+        media_type=upstream.headers.get("Content-Type", "application/octet-stream"),
+        headers=out_headers,
+    )
 
 
 @router.get("/search")

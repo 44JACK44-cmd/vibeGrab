@@ -55,6 +55,7 @@ class StreamUrlResponse(BaseModel):
     success: bool = True
     video: str | None = None
     audio: str | None = None
+    proxy: str | None = None
     title: str | None = None
     channel: str | None = None
     channel_avatar: str | None = None

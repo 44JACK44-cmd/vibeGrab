@@ -620,6 +620,12 @@ def get_stream_urls(video_id: str) -> dict:
     result = {
         "video": video_url,
         "audio": audio_url,
+        "proxy": (
+            "/api/explore/proxy?u="
+            + urllib.parse.quote(video_url, safe="")
+            if video_url
+            else None
+        ),
         "title": data.get("title"),
         "channel": data.get("author"),
         "channel_avatar": channel_avatar,
