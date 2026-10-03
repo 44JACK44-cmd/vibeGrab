@@ -49,3 +49,15 @@ class CommentsResponse(BaseModel):
     success: bool = True
     items: list[CommentItem]
     next_token: str | None = None
+
+
+class StreamUrlResponse(BaseModel):
+    success: bool = True
+    video: str | None = None
+    audio: str | None = None
+    title: str | None = None
+    channel: str | None = None
+    channel_avatar: str | None = None
+    comment_count: int | None = None
+    duration: int | None = None
+    description: str | None = None

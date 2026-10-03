@@ -6,9 +6,15 @@ from app.schemas.explore import (
     CommentsResponse,
     ExploreSearchResponse,
     RelatedResponse,
+    StreamUrlResponse,
 )
 from app.services.explore_service import search_videos
-from app.services.youtube_watch_service import WatchError, get_comments, get_related
+from app.services.youtube_watch_service import (
+    WatchError,
+    get_comments,
+    get_related,
+    get_stream_urls,
+)
 from app.core.logging import logger
 
 router = APIRouter(prefix="/api/explore")
@@ -85,4 +91,24 @@ def comments(v: str, token: str | None = None):
         return JSONResponse(
             status_code=502,
             content={"success": False, "detail": "Comments unavailable"},
+        )
+
+
+@router.get("/stream-url")
+def stream_url(v: str):
+    invalid = _validate_video_id(v)
+    if invalid:
+        return invalid
+    try:
+        return StreamUrlResponse(**get_stream_urls(v))
+    except WatchError as e:
+        return JSONResponse(
+            status_code=e.status,
+            content={"success": False, "detail": e.detail},
+        )
+    except Exception as e:
+        logger.error(f"Stream url failed for {v}: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": "Stream urls unavailable"},
         )

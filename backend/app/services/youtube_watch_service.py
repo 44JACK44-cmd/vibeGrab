@@ -563,6 +563,75 @@ def _yt_dlp_comments(video_id: str) -> tuple[list[dict], str | None]:
     return items, None
 
 
+def get_stream_urls(video_id: str) -> dict:
+    """Playable stream URLs (via Invidious) + channel/comment metadata.
+
+    googlevideo URLs obtained this way are NOT IP-locked, so the phone can
+    play them directly — this is the playback fallback when YouTube blocks
+    the device-side youtube_explode request.
+    """
+    cache_key = f"stream:{video_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    data = _invidious_get(f"/api/v1/videos/{video_id}")
+
+    def _int(v) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    video_url = None
+    muxed = [
+        f
+        for f in (data.get("formatStreams") or [])
+        if f.get("url") and "mp4" in (f.get("container") or f.get("type") or "")
+    ]
+    if muxed:
+        muxed.sort(key=lambda f: _int(f.get("itag")))
+        video_url = muxed[-1].get("url")
+
+    audio_url = None
+    audio_fmts = [
+        f
+        for f in (data.get("adaptiveFormats") or [])
+        if f.get("url") and (f.get("type") or "").startswith("audio/")
+    ]
+    if audio_fmts:
+        mp4_audio = [
+            f for f in audio_fmts if "mp4" in (f.get("type") or "").lower()
+        ]
+        pool = mp4_audio or audio_fmts
+        pool.sort(key=lambda f: _int(f.get("bitrate")))
+        audio_url = pool[-1].get("url")
+
+    if not video_url and not audio_url:
+        raise WatchError(502, "invidious returned no stream urls")
+
+    avatars = data.get("authorThumbnails") or []
+    channel_avatar = avatars[-1].get("url") if avatars else None
+
+    comment_count = data.get("commentCount")
+    if comment_count is not None:
+        comment_count = _int(comment_count) or None
+
+    result = {
+        "video": video_url,
+        "audio": audio_url,
+        "title": data.get("title"),
+        "channel": data.get("author"),
+        "channel_avatar": channel_avatar,
+        "comment_count": comment_count,
+        "duration": _int(data.get("lengthSeconds")) or None,
+        "description": (data.get("description") or "")[:500],
+    }
+    _cache_put(cache_key, result, 900)
+    logger.info(f"Stream urls for {video_id}: video={bool(video_url)} audio={bool(audio_url)}")
+    return result
+
+
 def get_comments(video_id: str, token: str | None = None) -> tuple[list[dict], str | None]:
     global _NEXT_FAIL_UNTIL
 
