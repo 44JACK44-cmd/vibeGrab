@@ -185,28 +185,43 @@ def extract_kwai(url: str, _hop: int = 0) -> tuple[MediaInfo, list[FormatOption]
 
 
 def extract_info(url: str) -> dict:
-    cmd = [
-        settings.YT_DLP_PATH,
-        "--dump-json",
-        "--no-download",
-        "--no-warnings",
-        "--no-playlist",
-        url,
-    ]
+    # From datacenter IPs YouTube rejects the web player page ("Failed to
+    # extract any player response"); the android/tv innertube clients still
+    # answer, so try them first and fall back to the default client.
+    last_error = ""
+    for client in ("android", "tv", None):
+        cmd = [
+            settings.YT_DLP_PATH,
+            "--dump-json",
+            "--no-download",
+            "--no-warnings",
+            "--no-playlist",
+        ]
+        if client:
+            cmd += ["--extractor-args", f"youtube:player_client={client}"]
+        cmd.append(url)
 
-    logger.info(f"Running extractor for: {url}")
+        logger.info(f"Running extractor for: {url} (client={client or 'default'})")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+        except subprocess.TimeoutExpired:
+            last_error = "yt-dlp timed out"
+            continue
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                return json.loads(result.stdout)
+            except json.JSONDecodeError:
+                last_error = "invalid json from yt-dlp"
+                continue
+        last_error = result.stderr.strip()[:500]
 
-    if result.returncode != 0:
-        raise Exception(f"yt-dlp error: {result.stderr.strip()}")
-
-    return json.loads(result.stdout)
+    raise Exception(f"yt-dlp error: {last_error}")
 
 
 def _best_thumbnail(data: dict) -> str | None:
