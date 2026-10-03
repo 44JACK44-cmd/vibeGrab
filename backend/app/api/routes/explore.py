@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from app.schemas.explore import (
     CommentsResponse,
     ExploreSearchResponse,
+    PlayUrlResponse,
     RelatedResponse,
     StreamUrlResponse,
 )
@@ -12,6 +13,7 @@ from app.services.explore_service import search_videos
 from app.services.youtube_watch_service import (
     WatchError,
     get_comments,
+    get_play_url,
     get_related,
     get_stream_urls,
 )
@@ -111,4 +113,24 @@ def stream_url(v: str):
         return JSONResponse(
             status_code=502,
             content={"success": False, "detail": "Stream urls unavailable"},
+        )
+
+
+@router.get("/play-url")
+def play_url(v: str):
+    invalid = _validate_video_id(v)
+    if invalid:
+        return invalid
+    try:
+        return PlayUrlResponse(**get_play_url(v))
+    except WatchError as e:
+        return JSONResponse(
+            status_code=e.status,
+            content={"success": False, "detail": e.detail},
+        )
+    except Exception as e:
+        logger.error(f"Play url failed for {v}: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": "Play url unavailable"},
         )

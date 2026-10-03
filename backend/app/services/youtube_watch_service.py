@@ -632,6 +632,53 @@ def get_stream_urls(video_id: str) -> dict:
     return result
 
 
+def get_play_url(video_id: str) -> dict:
+    """Relay info: server-side yt-dlp format for /api/fetch streaming.
+
+    Used when the phone cannot reach googlevideo directly: the app plays
+    through our /api/fetch relay (server -> YouTube -> phone).
+    """
+    cache_key = f"play:{video_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    from app.services.extractor_service import extract_info
+
+    watch_url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        data = extract_info(watch_url)
+    except Exception as exc:  # noqa: BLE001 - surface as WatchError
+        raise WatchError(502, str(exc)[:400]) from exc
+
+    fmts = data.get("formats") or []
+    progressive = [
+        f
+        for f in fmts
+        if f.get("acodec")
+        and f.get("acodec") != "none"
+        and f.get("vcodec")
+        and f.get("vcodec") != "none"
+        and f.get("ext") == "mp4"
+    ]
+    small = [f for f in progressive if (f.get("height") or 9999) <= 480]
+    pool = small or progressive
+    if not pool:
+        raise WatchError(502, "no progressive format available")
+    pool.sort(key=lambda f: (f.get("height") or 0))
+    chosen = pool[-1]
+
+    result = {
+        "url": watch_url,
+        "format_id": str(chosen.get("format_id")),
+        "ext": str(chosen.get("ext") or "mp4"),
+        "height": chosen.get("height"),
+    }
+    _cache_put(cache_key, result, 900)
+    logger.info(f"Play url for {video_id}: format={result['format_id']}")
+    return result
+
+
 def get_comments(video_id: str, token: str | None = None) -> tuple[list[dict], str | None]:
     global _NEXT_FAIL_UNTIL
 

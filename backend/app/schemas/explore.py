@@ -61,3 +61,11 @@ class StreamUrlResponse(BaseModel):
     comment_count: int | None = None
     duration: int | None = None
     description: str | None = None
+
+
+class PlayUrlResponse(BaseModel):
+    success: bool = True
+    url: str
+    format_id: str
+    ext: str
+    height: int | None = None
