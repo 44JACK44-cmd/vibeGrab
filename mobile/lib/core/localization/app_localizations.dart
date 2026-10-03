@@ -338,6 +338,10 @@ class AppLocalizations {
   String get loadMoreComments => _get('loadMoreComments');
   String get relatedVideos => _get('relatedVideos');
   String get piPNotAvailable => _get('piPNotAvailable');
+  String get playbackFailed => _get('playbackFailed');
+  String get linkCopied => _get('linkCopied');
+  String get showMore => _get('showMore');
+  String get showLess => _get('showLess');
 
   String get shareDownloadTitle => _get('shareDownloadTitle');
   String get shareAnalyzing => _get('shareAnalyzing');

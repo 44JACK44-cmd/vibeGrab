@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../../../core/theme/app_colors.dart';
@@ -39,12 +40,21 @@ class _VideoDetailViewState extends State<VideoDetailView> {
   bool _commentsLoading = true;
   bool _commentsFailed = false;
   bool _commentsLoadingMore = false;
+  bool _commentsExpanded = false;
+
+  String? _channelAvatar;
+  int? _commentCount;
+  String? _description;
+  bool _descExpanded = false;
+  bool _liked = false;
+  bool _disliked = false;
 
   @override
   void initState() {
     super.initState();
     _loadRelated();
     _loadComments();
+    _loadMeta();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       context.read<MediaEngine>().playExploreVideo(widget.video);
@@ -123,6 +133,23 @@ class _VideoDetailViewState extends State<VideoDetailView> {
     }
   }
 
+  Future<void> _loadMeta() async {
+    final videoId = _videoId;
+    if (videoId.isEmpty) return;
+    try {
+      final s = await _api.fetchStreamUrls(videoId);
+      if (!mounted) return;
+      setState(() {
+        _channelAvatar = s.channelAvatar;
+        _commentCount = s.commentCount;
+        final desc = s.description?.trim();
+        _description = (desc == null || desc.isEmpty) ? null : desc;
+      });
+    } catch (_) {
+      // Meta is optional; playback falls back on its own.
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final loc = AppLocalizations.of(context);
@@ -133,13 +160,14 @@ class _VideoDetailViewState extends State<VideoDetailView> {
       body: Column(
         children: [
           _buildPlayerArea(),
+          _buildErrorBanner(),
           Expanded(
             child: SingleChildScrollView(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Padding(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -149,22 +177,29 @@ class _VideoDetailViewState extends State<VideoDetailView> {
                             color: cs.onSurface,
                             fontSize: 18,
                             fontWeight: FontWeight.w600,
+                            height: 1.25,
                           ),
                         ),
-                        const SizedBox(height: 8),
-                        _buildMetaRow(cs),
-                        const SizedBox(height: 16),
-                        _buildPlayButton(loc, cs),
-                        const SizedBox(height: 8),
-                        _buildDownloadButton(loc),
-                        const SizedBox(height: 16),
-                        if (_showFormats) _buildFormatSection(cs),
+                        const SizedBox(height: 6),
+                        _buildMetaLine(cs),
+                        const SizedBox(height: 12),
+                        _buildChannelRow(cs),
+                        if (_description != null) ...[
+                          const SizedBox(height: 8),
+                          _buildDescription(cs, loc),
+                        ],
+                        const SizedBox(height: 14),
+                        _buildButtonsRow(loc, cs),
+                        if (_showFormats) ...[
+                          const SizedBox(height: 14),
+                          _buildFormatSection(cs),
+                        ],
                       ],
                     ),
                   ),
-                  const Divider(height: 1),
+                  const SizedBox(height: 16),
                   _buildCommentsSection(loc, cs),
-                  const Divider(height: 1),
+                  const SizedBox(height: 8),
                   if (_related.isNotEmpty || _relatedLoading)
                     _buildRelatedSection(loc, cs),
                   const SizedBox(height: 24),
@@ -174,6 +209,63 @@ class _VideoDetailViewState extends State<VideoDetailView> {
           ),
         ],
       ),
+    );
+  }
+
+  // --- Playback error ---
+
+  Widget _buildErrorBanner() {
+    return Consumer<MediaEngine>(
+      builder: (context, engine, _) {
+        final isThis = engine.currentMediaId == widget.video.url;
+        if (!isThis || engine.playbackError == null) {
+          return const SizedBox.shrink();
+        }
+        final loc = AppLocalizations.of(context);
+        final cs = Theme.of(context).colorScheme;
+        return Container(
+          margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+          decoration: BoxDecoration(
+            color: cs.errorContainer,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.error_outline, color: cs.onErrorContainer, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      loc.playbackFailed,
+                      style: TextStyle(
+                        color: cs.onErrorContainer,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      engine.playbackError ?? '',
+                      style: TextStyle(
+                        color: cs.onErrorContainer,
+                        fontSize: 11,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              TextButton(
+                onPressed: () => engine.playExploreVideo(widget.video),
+                child: Text(loc.playVideo),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -398,96 +490,196 @@ class _VideoDetailViewState extends State<VideoDetailView> {
 
   // --- Info ---
 
-  Widget _buildMetaRow(ColorScheme cs) {
+  Widget _buildMetaLine(ColorScheme cs) {
     final video = widget.video;
-    final parts = <Widget>[];
-    if (video.channel != null && video.channel!.isNotEmpty) {
-      parts.add(Icon(Icons.person_outline, size: 16, color: cs.onSurfaceVariant));
-      parts.add(const SizedBox(width: 4));
-      parts.add(Flexible(
-        child: Text(
-          video.channel!,
-          style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-      ));
-      parts.add(const SizedBox(width: 12));
-    }
-    if (video.viewCountFormatted.isNotEmpty) {
-      parts.add(Text(
-        video.viewCountFormatted,
-        style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
-      ));
-      parts.add(const SizedBox(width: 12));
-    }
-    if (video.age != null && video.age!.isNotEmpty) {
-      parts.add(Text(
-        video.age!,
-        style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
-      ));
-      parts.add(const SizedBox(width: 12));
-    }
-    if (video.durationFormatted.isNotEmpty) {
-      parts.add(Text(
-        video.durationFormatted,
-        style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
-      ));
-    }
-
-    return Row(children: parts);
-  }
-
-  Widget _buildPlayButton(AppLocalizations loc, ColorScheme cs) {
-    return Consumer<MediaEngine>(
-      builder: (context, engine, _) {
-        final isThis = engine.currentMediaId == widget.video.url;
-        final playingThis = isThis && engine.isPlaying;
-        return SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: () {
-              if (isThis) {
-                engine.togglePlayPause();
-              } else {
-                engine.playExploreVideo(widget.video);
-              }
-            },
-            icon: Icon(
-              playingThis ? Icons.pause_circle_outline : Icons.play_circle_outline,
-              size: 20,
-            ),
-            label: Text(playingThis ? loc.pauseVideo : loc.playVideo),
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(double.infinity, 44),
-              side: BorderSide(color: cs.primary),
-              foregroundColor: cs.primary,
-            ),
-          ),
-        );
-      },
+    final parts = <String>[
+      if (video.viewCountFormatted.isNotEmpty) video.viewCountFormatted,
+      if (video.age != null && video.age!.isNotEmpty) video.age!,
+      if (video.durationFormatted.isNotEmpty) video.durationFormatted,
+    ];
+    if (parts.isEmpty) return const SizedBox.shrink();
+    return Text(
+      parts.join(' · '),
+      style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
     );
   }
 
-  Widget _buildDownloadButton(AppLocalizations loc) {
-    return Consumer<AnalyzeController>(
-      builder: (context, analyzeCtrl, _) {
-        return SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: analyzeCtrl.isLoading ? null : () => _startAnalyze(),
-            icon: analyzeCtrl.isLoading
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      color: Colors.white,
-                      strokeWidth: 2,
-                    ),
-                  )
-                : const Icon(Icons.download),
-            label: Text(analyzeCtrl.isLoading ? loc.analyzing : loc.downloadVideo),
+  Widget _buildChannelRow(ColorScheme cs) {
+    final video = widget.video;
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 18,
+          backgroundColor: cs.surfaceContainerHighest,
+          backgroundImage: _channelAvatar != null
+              ? NetworkImage(_channelAvatar!)
+              : null,
+          onBackgroundImageError: (_, __) {},
+          child: _channelAvatar == null
+              ? Icon(Icons.person, size: 20, color: cs.onSurfaceVariant)
+              : null,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            video.channel ?? '',
+            style: TextStyle(
+              color: cs.onSurface,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
+        ),
+        _actionIcon(
+          cs,
+          _liked ? Icons.thumb_up : Icons.thumb_up_alt_outlined,
+          _liked,
+          () => setState(() {
+            _liked = !_liked;
+            if (_liked) _disliked = false;
+          }),
+          'like',
+        ),
+        _actionIcon(
+          cs,
+          _disliked ? Icons.thumb_down : Icons.thumb_down_alt_outlined,
+          _disliked,
+          () => setState(() {
+            _disliked = !_disliked;
+            if (_disliked) _liked = false;
+          }),
+          'dislike',
+        ),
+        _actionIcon(
+          cs,
+          Icons.share_outlined,
+          false,
+          _shareLink,
+          'share',
+        ),
+      ],
+    );
+  }
+
+  Widget _actionIcon(
+      ColorScheme cs, IconData icon, bool active, VoidCallback onTap, String tip) {
+    return IconButton(
+      onPressed: onTap,
+      tooltip: tip,
+      icon: Icon(
+        icon,
+        size: 22,
+        color: active ? cs.primary : cs.onSurfaceVariant,
+      ),
+      visualDensity: VisualDensity.compact,
+    );
+  }
+
+  void _shareLink() {
+    Clipboard.setData(ClipboardData(text: widget.video.url));
+    final loc = AppLocalizations.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(loc.linkCopied),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 1),
+    ));
+  }
+
+  Widget _buildDescription(ColorScheme cs, AppLocalizations loc) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          _description!,
+          style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13, height: 1.35),
+          maxLines: _descExpanded ? null : 2,
+          overflow: _descExpanded ? null : TextOverflow.ellipsis,
+        ),
+        if (_description!.length > 80)
+          GestureDetector(
+            onTap: () => setState(() => _descExpanded = !_descExpanded),
+            child: Text(
+              _descExpanded ? loc.showLess : loc.showMore,
+              style: TextStyle(
+                color: cs.onSurface,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  String _formatCompact(int n) {
+    if (n >= 1000000) {
+      final v = n / 1000000;
+      return '${v.toStringAsFixed(v < 10 ? 1 : 0)} M'.replaceAll('.0 M', ' M');
+    }
+    if (n >= 1000) {
+      final v = n / 1000;
+      return '${v.toStringAsFixed(v < 10 ? 1 : 0)} K'.replaceAll('.0 K', ' K');
+    }
+    return '$n';
+  }
+
+  Widget _buildButtonsRow(AppLocalizations loc, ColorScheme cs) {
+    return Consumer2<MediaEngine, AnalyzeController>(
+      builder: (context, engine, analyzeCtrl, _) {
+        final isThis = engine.currentMediaId == widget.video.url;
+        final playingThis = isThis && engine.isPlaying;
+        return Row(
+          children: [
+            Expanded(
+              flex: 3,
+              child: FilledButton.icon(
+                onPressed: () {
+                  if (isThis) {
+                    engine.togglePlayPause();
+                  } else {
+                    engine.playExploreVideo(widget.video);
+                  }
+                },
+                icon: Icon(
+                  playingThis
+                      ? Icons.pause_circle_outline
+                      : Icons.play_circle_outline,
+                  size: 20,
+                ),
+                label: Text(playingThis ? loc.pauseVideo : loc.playVideo),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(0, 46),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 2,
+              child: OutlinedButton.icon(
+                onPressed:
+                    analyzeCtrl.isLoading ? null : () => _startAnalyze(),
+                icon: analyzeCtrl.isLoading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.download, size: 20),
+                label: Text(
+                  analyzeCtrl.isLoading ? loc.analyzing : loc.downloadVideo,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, 46),
+                  side: BorderSide(color: cs.outline),
+                  foregroundColor: cs.onSurface,
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
@@ -562,58 +754,136 @@ class _VideoDetailViewState extends State<VideoDetailView> {
 
   Widget _buildCommentsSection(AppLocalizations loc, ColorScheme cs) {
     return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => setState(() => _commentsExpanded = !_commentsExpanded),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: cs.surfaceContainerHighest.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.mode_comment_outlined, size: 20, color: cs.onSurface),
-              const SizedBox(width: 8),
+              Row(
+                children: [
+                  Text(
+                    loc.commentsTitle,
+                    style: TextStyle(
+                      color: cs.onSurface,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (_commentCount != null) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      _formatCompact(_commentCount!),
+                      style: TextStyle(
+                        color: cs.onSurfaceVariant,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                  const Spacer(),
+                  Icon(
+                    _commentsExpanded
+                        ? Icons.expand_less
+                        : Icons.expand_more,
+                    color: cs.onSurfaceVariant,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              if (_commentsLoading)
+                _buildCommentsSkeleton(cs)
+              else if (_commentsFailed)
+                Text(
+                  loc.commentsUnavailable,
+                  style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
+                )
+              else if (_comments.isEmpty)
+                Text(
+                  loc.commentsEmpty,
+                  style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
+                )
+              else if (!_commentsExpanded)
+                _buildCommentPreview(_comments.first, cs)
+              else ...[
+                for (final comment in _comments) _buildCommentTile(comment, cs),
+                if (_commentsToken != null)
+                  Center(
+                    child: _commentsLoadingMore
+                        ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          )
+                        : TextButton(
+                            onPressed: () => _loadComments(loadMore: true),
+                            child: Text(loc.loadMoreComments),
+                          ),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCommentPreview(CommentItem comment, ColorScheme cs) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        CircleAvatar(
+          radius: 14,
+          backgroundColor: cs.surfaceContainer,
+          backgroundImage: comment.avatar != null
+              ? NetworkImage(comment.avatar!)
+              : null,
+          onBackgroundImageError: (_, __) {},
+          child: comment.avatar == null
+              ? Icon(Icons.person, size: 16, color: cs.onSurfaceVariant)
+              : null,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Text(
-                loc.commentsTitle,
+                comment.text,
                 style: TextStyle(
                   color: cs.onSurface,
-                  fontSize: 16,
+                  fontSize: 13,
+                  height: 1.3,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 2),
+              Text(
+                comment.author,
+                style: TextStyle(
+                  color: cs.onSurfaceVariant,
+                  fontSize: 11,
                   fontWeight: FontWeight.w600,
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          if (_commentsLoading)
-            _buildCommentsSkeleton(cs)
-          else if (_commentsFailed)
-            Text(
-              loc.commentsUnavailable,
-              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
-            )
-          else if (_comments.isEmpty)
-            Text(
-              loc.commentsEmpty,
-              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
-            )
-          else ...[
-            for (final comment in _comments) _buildCommentTile(comment, cs),
-            if (_commentsToken != null)
-              Center(
-                child: _commentsLoadingMore
-                    ? const Padding(
-                        padding: EdgeInsets.all(12),
-                        child: SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      )
-                    : TextButton(
-                        onPressed: () => _loadComments(loadMore: true),
-                        child: Text(loc.loadMoreComments),
-                      ),
-              ),
-          ],
-        ],
-      ),
+        ),
+      ],
     );
   }
 

@@ -190,7 +190,7 @@
   "preferBestQualityHint": "Auto-select highest quality format",
   "saveMetadata": "Save metadata",
   "saveMetadataHint": "Keep title, thumbnail, and source info",
-  "appVersion": "v1.1.3",
+  "appVersion": "v1.1.4",
   "backendUrl": "Backend URL",
   "backendUrlHint": "URL of the VibeGrab backend server. Use http://10.0.2.2:8000 for emulator, or your PC's local IP for a real device.",
   "backendUrlPlaceholder": "http://192.168.1.x:8000",
@@ -298,5 +298,9 @@
   "shareSaved": "Saved to your library",
   "shareDownloadingText": "Downloading…",
   "shareSavingFailed": "The download failed. Try again.",
-  "shareClose": "Close"
+  "shareClose": "Close",
+  "playbackFailed": "Could not play the video",
+  "linkCopied": "Link copied",
+  "showMore": "more",
+  "showLess": "Show less"
 }

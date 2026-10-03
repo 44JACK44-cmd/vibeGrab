@@ -3,13 +3,16 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
 import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import '../core/constants/api_constants.dart';
 import '../data/models/media_state.dart';
 import '../data/models/library_file.dart';
 import '../data/models/explore_video.dart';
+import '../data/models/stream_urls.dart';
 import '../services/storage_service.dart';
 import '../services/media_metadata_service.dart';
 import '../services/vibe_grab_audio_handler.dart';
@@ -39,6 +42,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   DateTime? pipExitedAt;
   Timer? _pipConfirmTimer;
   Timer? _playWatchdog;
+  String? playbackError;
   bool get isInPiP => _isInPiP || _isPiPEntering;
 
   double get progress {
@@ -483,6 +487,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _queue.add(item);
     _currentIndex = _queue.length - 1;
     _completionHandled = false;
+    playbackError = null;
 
     _state = _state.copyWith(
       mediaId: video.url,
@@ -498,12 +503,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
     // Never stay stuck loading/buffering: force idle if play stalls.
     _playWatchdog?.cancel();
-    _playWatchdog = Timer(const Duration(seconds: 40), () {
+    _playWatchdog = Timer(const Duration(seconds: 45), () {
       final s = _state;
       if (s.mediaId == video.url &&
           (s.status == MediaStatus.loading ||
               s.status == MediaStatus.buffering)) {
         debugPrint('[MediaEngine] Play watchdog fired for ${video.url}');
+        playbackError ??= 'timeout';
         _state = s.copyWith(status: MediaStatus.idle);
         _syncPlaybackStateToHandler();
         notifyListeners();
@@ -521,53 +527,104 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       final videoId = _parseVideoIdFromUrl(youtubeUrl);
       if (videoId == null) {
         debugPrint('[MediaEngine] Invalid YouTube URL: $youtubeUrl');
-        _state = _state.copyWith(status: MediaStatus.idle);
-        notifyListeners();
+        _failPlayback('URL inválida');
         return;
       }
 
-      manifest = await _ytc.videos.streamsClient.getManifest(videoId)
-          .timeout(const Duration(seconds: 20), onTimeout: () {
-        throw TimeoutException('Stream manifest timed out');
-      });
+      // 1) Direct from device (fast when YouTube accepts us).
+      try {
+        manifest = await _ytc.videos.streamsClient.getManifest(videoId)
+            .timeout(const Duration(seconds: 10), onTimeout: () {
+          throw TimeoutException('Stream manifest timed out');
+        });
 
-      final muxedStream = _bestMuxedStream(manifest);
-      if (muxedStream == null) {
-        debugPrint('[MediaEngine] No muxed streams for $youtubeUrl, audio fallback');
-        await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
-        return;
+        final muxedStream = _bestMuxedStream(manifest);
+        if (muxedStream != null) {
+          final started =
+              await _tryStartNetworkVideo(muxedStream.url, youtubeUrl, mediaItem);
+          if (started) return;
+        }
+      } catch (e) {
+        debugPrint('[MediaEngine] Device stream path failed: $e');
       }
 
-      _stopCurrentSilent();
-      _state = _state.copyWith(
-        mediaId: youtubeUrl,
-        title: mediaItem.title,
-        artist: mediaItem.artist ?? 'YouTube',
-        thumbnail: mediaItem.artUri?.toString(),
-        mediaType: MediaType.video,
-        status: MediaStatus.buffering,
-      );
-      _syncToAudioHandler(mediaItem);
-      notifyListeners();
-
-      final started = await _startNetworkVideo(muxedStream.url, youtubeUrl);
-      if (!started) {
-        debugPrint('[MediaEngine] Network video failed, audio fallback');
-        await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
-        return;
+      // 2) Backend stream urls (Invidious) — works when YouTube blocks us.
+      final urls = await _fetchStreamUrls(videoId);
+      if (urls != null && urls.video != null) {
+        final started = await _tryStartNetworkVideo(
+            Uri.parse(urls.video!), youtubeUrl, mediaItem);
+        if (started) return;
       }
 
-      MediaMetadataService().recordPlay(
-        filename: youtubeUrl,
-        title: mediaItem.title,
-        thumbnail: mediaItem.artUri?.toString(),
-        fileType: 'video',
-        source: mediaItem.artist,
-      );
+      // 3) Audio-only: backend url, then device manifest.
+      if (urls != null && urls.audio != null) {
+        final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
+            streamUri: Uri.parse(urls.audio!));
+        if (ok) return;
+      }
+      if (manifest != null) {
+        final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
+            manifest: manifest);
+        if (ok) return;
+      }
+
+      _failPlayback('No playable stream');
     } catch (e) {
       debugPrint('[MediaEngine] YouTube video play error: $e');
-      await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
+      _failPlayback(e.toString());
     }
+  }
+
+  Future<bool> _tryStartNetworkVideo(
+      Uri streamUrl, String youtubeUrl, MediaItem mediaItem) async {
+    _stopCurrentSilent();
+    _state = _state.copyWith(
+      mediaId: youtubeUrl,
+      title: mediaItem.title,
+      artist: mediaItem.artist ?? 'YouTube',
+      thumbnail: mediaItem.artUri?.toString(),
+      mediaType: MediaType.video,
+      status: MediaStatus.buffering,
+    );
+    _syncToAudioHandler(mediaItem);
+    notifyListeners();
+
+    final started = await _startNetworkVideo(streamUrl, youtubeUrl);
+    if (!started) return false;
+
+    MediaMetadataService().recordPlay(
+      filename: youtubeUrl,
+      title: mediaItem.title,
+      thumbnail: mediaItem.artUri?.toString(),
+      fileType: 'video',
+      source: mediaItem.artist,
+    );
+    return true;
+  }
+
+  void _failPlayback(String reason) {
+    playbackError = reason;
+    _state = _state.copyWith(status: MediaStatus.idle);
+    _syncPlaybackStateToHandler();
+    notifyListeners();
+  }
+
+  Future<StreamUrls?> _fetchStreamUrls(String videoId) async {
+    try {
+      final response = await http
+          .get(Uri.parse('${ApiConfig.exploreStreamUrl}?v=$videoId'))
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        if (data['success'] != false) {
+          return StreamUrls.fromJson(data);
+        }
+        debugPrint('[MediaEngine] stream-url error: ${data['detail']}');
+      }
+    } catch (e) {
+      debugPrint('[MediaEngine] stream-url fallback failed: $e');
+    }
+    return null;
   }
 
   MuxedStreamInfo? _bestMuxedStream(StreamManifest manifest) {
@@ -643,34 +700,34 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   // --- YouTube Audio Playback ---
 
-  Future<void> _playYouTubeAudio(String youtubeUrl, MediaItem mediaItem,
-      {StreamManifest? manifest}) async {
+  Future<bool> _playYouTubeAudio(String youtubeUrl, MediaItem mediaItem,
+      {StreamManifest? manifest, Uri? streamUri}) async {
     try {
-      final videoId = _parseVideoIdFromUrl(youtubeUrl);
-      if (videoId == null) {
-        debugPrint('[MediaEngine] Invalid YouTube URL: $youtubeUrl');
-        _state = _state.copyWith(status: MediaStatus.idle);
-        notifyListeners();
-        return;
+      Uri streamUrl;
+      if (streamUri != null) {
+        streamUrl = streamUri;
+      } else {
+        final videoId = _parseVideoIdFromUrl(youtubeUrl);
+        if (videoId == null) {
+          debugPrint('[MediaEngine] Invalid YouTube URL: $youtubeUrl');
+          return false;
+        }
+
+        final resolved = manifest ??
+            await _ytc.videos.streamsClient.getManifest(videoId)
+                .timeout(const Duration(seconds: 10), onTimeout: () {
+              throw TimeoutException('Stream manifest timed out');
+            });
+
+        final audioStreams = resolved.audioOnly.toList()
+          ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+
+        if (audioStreams.isEmpty) {
+          debugPrint('[MediaEngine] No audio streams found for $youtubeUrl');
+          return false;
+        }
+        streamUrl = audioStreams.first.url;
       }
-
-      final resolved = manifest ??
-          await _ytc.videos.streamsClient.getManifest(videoId)
-              .timeout(const Duration(seconds: 15), onTimeout: () {
-            throw TimeoutException('Stream manifest timed out');
-          });
-
-      final audioStreams = resolved.audioOnly.toList()
-        ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
-
-      if (audioStreams.isEmpty) {
-        debugPrint('[MediaEngine] No audio streams found for $youtubeUrl');
-        _state = _state.copyWith(status: MediaStatus.idle);
-        notifyListeners();
-        return;
-      }
-
-      final streamUrl = audioStreams.first.url;
 
       _stopCurrentSilent();
       _state = _state.copyWith(
@@ -701,11 +758,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         fileType: 'audio',
         source: mediaItem.artist,
       );
+      return true;
     } catch (e) {
       debugPrint('[MediaEngine] YouTube audio play error: $e');
-      _state = _state.copyWith(status: MediaStatus.idle);
-      _syncPlaybackStateToHandler();
-      notifyListeners();
+      return false;
     }
   }
 

@@ -50,4 +50,5 @@ class ApiConfig {
   static String get exploreSearchUrl => '$baseUrl$exploreEndpoint/search';
   static String get exploreRelatedUrl => '$baseUrl$exploreEndpoint/related';
   static String get exploreCommentsUrl => '$baseUrl$exploreEndpoint/comments';
+  static String get exploreStreamUrl => '$baseUrl$exploreEndpoint/stream-url';
 }

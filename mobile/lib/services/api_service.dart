@@ -9,6 +9,7 @@ import '../data/models/app_settings.dart';
 import '../data/models/explore_video.dart';
 import '../data/models/related_video.dart';
 import '../data/models/comment_item.dart';
+import '../data/models/stream_urls.dart';
 
 class NetworkException implements Exception {
   final String message;
@@ -328,6 +329,29 @@ class ApiService {
         );
       }
       throw NetworkException('Comments failed', statusCode: response.statusCode);
+    } catch (e) {
+      throw NetworkException.fromError(e);
+    }
+  }
+
+  Future<StreamUrls> fetchStreamUrls(String videoId) async {
+    try {
+      final response = await _client
+          .get(Uri.parse('${ApiConfig.exploreStreamUrl}?v=$videoId'))
+          .timeout(_longTimeout);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == false) {
+          throw NetworkException(
+            data['detail']?.toString() ?? 'Stream urls failed',
+            statusCode: response.statusCode,
+          );
+        }
+        return StreamUrls.fromJson(data as Map<String, dynamic>);
+      }
+      throw NetworkException('Stream urls failed',
+          statusCode: response.statusCode);
     } catch (e) {
       throw NetworkException.fromError(e);
     }
