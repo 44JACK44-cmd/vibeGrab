@@ -65,6 +65,11 @@ class ShareIntentHandler {
     _lastProcessedUrl = null;
   }
 
+  void exitOverlay() {
+    _lastProcessedUrl = null;
+    _overlayController.value = false;
+  }
+
   static String sanitizeUrl(String url) {
     var cleaned = url.trim();
     cleaned = cleaned.replaceAll(RegExp(r'[\u200B\u200C\u200D\uFEFF]'), '');

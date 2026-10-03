@@ -37,6 +37,25 @@ class StorageService {
   String? get customDirUri => _customDirUri;
   bool get hasCustomDir => _customDirUri != null && _customDirUri!.isNotEmpty;
 
+  Directory? _thumbDir;
+  Directory get thumbDir {
+    _thumbDir ??= Directory('${_appDir.path}/thumbs');
+    if (!_thumbDir!.existsSync()) {
+      _thumbDir!.createSync(recursive: true);
+    }
+    return _thumbDir!;
+  }
+
+  File? getThumbFile(String baseName) {
+    for (final ext in const ['jpg', 'png', 'jpeg']) {
+      final f = File('${thumbDir.path}${Platform.pathSeparator}$baseName.$ext');
+      if (f.existsSync()) return f;
+    }
+    return getFile('$baseName.jpg') ??
+        getFile('$baseName.png') ??
+        getFile('$baseName.jpeg');
+  }
+
   Future<void> init() async {
     if (_initialized) return;
     _appDir = await getApplicationDocumentsDirectory();
@@ -219,19 +238,24 @@ class StorageService {
         return null;
       }
       _log('External storage root: $rootPath');
-      final downloadsDir = Directory('$rootPath/Download/VibeGrab');
-      if (!await downloadsDir.exists()) {
-        await downloadsDir.create(recursive: true);
+      for (final sub in const ['Movies/VibeGrab', 'Download/VibeGrab']) {
+        final dir = Directory('$rootPath/$sub');
+        try {
+          if (!await dir.exists()) {
+            await dir.create(recursive: true);
+          }
+          final testFile = File('${dir.path}/.vibegrab_test');
+          await testFile.writeAsString('test');
+          final content = await testFile.readAsString();
+          await testFile.delete();
+          if (content == 'test') {
+            _log('Public media dir verified: ${dir.path}');
+            return dir;
+          }
+        } catch (e) {
+          _log('Public media dir write test failed: ${dir.path} — $e');
+        }
       }
-      final testFile = File('${downloadsDir.path}/.vibegrab_test');
-      await testFile.writeAsString('test');
-      final content = await testFile.readAsString();
-      await testFile.delete();
-      if (content == 'test') {
-        _log('Phone Downloads verified: ${downloadsDir.path}');
-        return downloadsDir;
-      }
-      _log('Phone Downloads write test failed');
       return null;
     } catch (e) {
       _log('Failed to get phone downloads dir: $e');

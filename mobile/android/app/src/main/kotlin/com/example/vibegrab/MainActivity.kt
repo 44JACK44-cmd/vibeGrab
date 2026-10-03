@@ -343,6 +343,39 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
                 }
+                "backgroundOverlay" -> {
+                    runOnUiThread {
+                        try {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                            window.setBackgroundDrawableResource(android.R.color.black)
+                        } catch (e: Exception) {
+                            android.util.Log.w("VibeGrab", "backgroundOverlay cleanup failed: ${e.message}")
+                        }
+                        moveTaskToBack(true)
+                        result.success(true)
+                    }
+                }
+                "scanMedia" -> {
+                    val paths = call.argument<List<String>>("paths")
+                    try {
+                        if (paths != null && paths.isNotEmpty()) {
+                            android.media.MediaScannerConnection.scanFile(
+                                this,
+                                paths.toTypedArray(),
+                                paths.map { p ->
+                                    android.webkit.MimeTypeMap.getSingleton()
+                                        .getMimeTypeFromExtension(p.substringAfterLast('.', ""))
+                                        ?: "*/*"
+                                }.toTypedArray(),
+                                null
+                            )
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        android.util.Log.w("VibeGrab", "scanMedia failed: ${e.message}")
+                        result.success(false)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -630,14 +663,19 @@ class MainActivity : FlutterActivity() {
         val src = File(path)
         if (!src.exists()) return false
         val isVideo = mime.startsWith("video")
+        val isAudio = mime.startsWith("audio")
 
         if (Build.VERSION.SDK_INT >= 29) {
-            val collection = if (isVideo) {
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-            } else {
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            val collection = when {
+                isVideo -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                isAudio -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                else -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             }
-            val relativePath = if (isVideo) "Movies/VibeGrab" else "Pictures/VibeGrab"
+            val relativePath = when {
+                isVideo -> "Movies/VibeGrab"
+                isAudio -> "Music/VibeGrab"
+                else -> "Pictures/VibeGrab"
+            }
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
                 put(MediaStore.MediaColumns.MIME_TYPE, mime)
@@ -666,10 +704,10 @@ class MainActivity : FlutterActivity() {
         }
 
         return try {
-            val baseDir = if (isVideo) {
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
-            } else {
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+            val baseDir = when {
+                isVideo -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
+                isAudio -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+                else -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
             }
             val dir = File(baseDir, "VibeGrab")
             dir.mkdirs()

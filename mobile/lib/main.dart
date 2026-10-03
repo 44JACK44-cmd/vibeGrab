@@ -57,6 +57,15 @@ Future<void> main() async {
 
     await ApiConfig.init();
 
+    Future.delayed(const Duration(milliseconds: 400), () {
+      ApiService().checkHealth().then((ok) {
+        debugPrint('[Main] Backend warmup: $ok');
+      }).catchError((e) {
+        debugPrint('[Main] Backend warmup failed: $e');
+        return false;
+      });
+    });
+
     TrashService.instance.purgeExpired().catchError((_) {});
 
     ConnectivityService.instance.init();

@@ -91,6 +91,7 @@ class LocalDownloadService {
       onProgress: onProgress,
       task: task,
       headers: _directHeaders,
+      responseTimeout: const Duration(seconds: 60),
     );
 
     if (result.status == DownloadStatus.completed) {
@@ -636,6 +637,7 @@ class LocalDownloadService {
     required Function(double progress, int bytesDownloaded) onProgress,
     required DownloadTask task,
     Map<String, String> headers = _youTubeHeaders,
+    Duration responseTimeout = const Duration(seconds: 30),
   }) async {
     _log('HTTP GET: ${url.host}${url.path.substring(0, url.path.length.clamp(0, 40))}...');
     final sw = Stopwatch()..start();
@@ -643,6 +645,7 @@ class LocalDownloadService {
     final httpClient = HttpClient();
     httpClient.connectionTimeout = const Duration(seconds: 30);
     httpClient.idleTimeout = const Duration(seconds: 30);
+    IOSink? sink;
 
     try {
       _log('Creating HTTP request...');
@@ -663,9 +666,9 @@ class LocalDownloadService {
 
       _log('HTTP: Sending request with Range: bytes=0-...');
       final response = await request.close().timeout(
-        const Duration(seconds: 30),
+        responseTimeout,
         onTimeout: () {
-          _log('HTTP: getResponse timed out (30s)');
+          _log('HTTP: getResponse timed out (${responseTimeout.inSeconds}s)');
           throw TimeoutException('Server response timed out');
         },
       );
@@ -691,7 +694,8 @@ class LocalDownloadService {
       _log('HTTP: effectiveTotal=$effectiveTotal (${(effectiveTotal / 1024 / 1024).toStringAsFixed(1)} MB)');
 
       final file = File(filePath);
-      final sink = file.openWrite();
+      final fileSink = file.openWrite();
+      sink = fileSink;
       int bytesDownloaded = 0;
       int chunkCount = 0;
       int limitBps = 0;
@@ -703,15 +707,16 @@ class LocalDownloadService {
 
       _log('HTTP: Starting SINGLE stream consumption... limitKbps=${limitBps ~/ 1024}');
 
-      await for (final chunk in response) {
+      await for (final chunk
+          in response.timeout(const Duration(seconds: 60))) {
         if (!_activeDownloads.containsKey(task.id)) {
           _log('HTTP: Download cancelled');
-          await sink.close();
+          await fileSink.close();
           await file.delete().catchError((_) {});
           throw Exception('Download cancelled');
         }
 
-        sink.add(chunk);
+        fileSink.add(chunk);
         bytesDownloaded += chunk.length;
         chunkCount++;
         final progress = effectiveTotal > 0 ? bytesDownloaded / effectiveTotal : 0.0;
@@ -730,7 +735,7 @@ class LocalDownloadService {
         }
       }
 
-      await sink.close();
+      await fileSink.close();
       sw.stop();
 
       _log('HTTP: Stream finished, closing file...');
@@ -753,6 +758,9 @@ class LocalDownloadService {
       );
     } catch (e) {
       sw.stop();
+      try {
+        await sink?.close();
+      } catch (_) {}
       _log('[ERROR] HTTP EXCEPTION: $e time=${sw.elapsedMilliseconds}ms');
       if (e is TimeoutException) {
         return task.copyWith(status: 'failed', error: 'Connection timed out', errorCode: 'connectionTimeout');

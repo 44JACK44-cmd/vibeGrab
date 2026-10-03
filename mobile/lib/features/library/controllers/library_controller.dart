@@ -187,10 +187,7 @@ class LibraryController extends ChangeNotifier {
           ? file.filename.substring(0, file.filename.lastIndexOf('.'))
           : file.filename;
 
-      final localThumb = storage.getFile('$baseName.jpg');
-      final localThumbPng = storage.getFile('$baseName.png');
-      final localThumbJpeg = storage.getFile('$baseName.jpeg');
-      final foundLocalThumb = localThumb ?? localThumbPng ?? localThumbJpeg;
+      final foundLocalThumb = storage.getThumbFile(baseName);
 
       if (file.thumbnail != null && file.thumbnail!.isNotEmpty && file.thumbnailPath != null) {
         if (foundLocalThumb != null && foundLocalThumb.existsSync()) continue;
@@ -250,7 +247,7 @@ class LibraryController extends ChangeNotifier {
       final baseName = file.filename.contains('.')
           ? file.filename.substring(0, file.filename.lastIndexOf('.'))
           : file.filename;
-      final existingJpg = storage.getFile('$baseName.jpg');
+      final existingJpg = storage.getThumbFile(baseName);
       if (existingJpg != null && existingJpg.existsSync()) continue;
 
       final url = file.thumbnail!;
@@ -260,7 +257,7 @@ class LibraryController extends ChangeNotifier {
         final response = await request.close().timeout(const Duration(seconds: 10));
         if (response.statusCode == 200) {
           final bytes = await response.fold<List<int>>([], (prev, chunk) => prev..addAll(chunk));
-          final jpgPath = '${storage.downloadPath}${Platform.pathSeparator}$baseName.jpg';
+          final jpgPath = '${storage.thumbDir.path}${Platform.pathSeparator}$baseName.jpg';
           await File(jpgPath).writeAsBytes(bytes);
           final idx = _allFiles.indexWhere((f) => f.filename == file.filename);
           if (idx != -1) {

@@ -15,7 +15,7 @@ class SharedDownloadSheet extends StatefulWidget {
 
   const SharedDownloadSheet({super.key, this.overlay = false});
 
-  static Future<void> show(
+  static Future<dynamic> show(
     BuildContext context,
     SharedDownloadController controller, {
     bool overlay = false,
@@ -159,6 +159,11 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
               loc.sharePreparingDownload,
               style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
             ),
+            const SizedBox(height: 20),
+            FilledButton.tonal(
+              onPressed: () => Navigator.of(context).pop('background'),
+              child: Text(loc.shareClose),
+            ),
           ],
         ),
       );
@@ -243,6 +248,11 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
           Text(
             loc.shareDownloadingText,
             style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+          ),
+          const SizedBox(height: 20),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(context).pop('background'),
+            child: Text(loc.shareClose),
           ),
         ],
       ),

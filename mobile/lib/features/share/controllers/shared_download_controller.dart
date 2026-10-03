@@ -87,7 +87,13 @@ class SharedDownloadController extends ChangeNotifier {
 
     try {
       if (LocalExtractionService.supportsPlatform(sanitized)) {
-        _result = await _extraction.extractMedia(sanitized);
+        _result = await _firstSuccess<AnalyzeResponse>([
+          _extraction.extractMedia(sanitized),
+          _api.analyze(sanitized),
+        ]);
+        if (_result!.media.source.isNotEmpty) {
+          _platform = _result!.media.source;
+        }
       } else {
         _result = await _api.analyze(sanitized);
         _platform = _result!.media.source;
@@ -109,6 +115,26 @@ class SharedDownloadController extends ChangeNotifier {
       _cancelCompleter = null;
       notifyListeners();
     }
+  }
+
+  Future<T> _firstSuccess<T>(List<Future<T>> futures) {
+    final completer = Completer<T>();
+    var remaining = futures.length;
+    Object? firstError;
+    StackTrace? firstStack;
+    for (final future in futures) {
+      future.then((value) {
+        if (!completer.isCompleted) completer.complete(value);
+      }, onError: (Object e, StackTrace st) {
+        firstError ??= e;
+        firstStack ??= st;
+        remaining--;
+        if (remaining == 0 && !completer.isCompleted) {
+          completer.completeError(firstError!, firstStack);
+        }
+      });
+    }
+    return completer.future;
   }
 
   void cancelAnalysis() {

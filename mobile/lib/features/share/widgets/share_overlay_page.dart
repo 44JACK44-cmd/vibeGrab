@@ -49,11 +49,19 @@ class _ShareOverlayPageState extends State<ShareOverlayPage> {
       return;
     }
 
-    await SharedDownloadSheet.show(context, controller, overlay: true);
+    final dynamic sheetResult =
+        await SharedDownloadSheet.show(context, controller, overlay: true);
 
-    if (mounted) {
-      controller.reset();
+    controller.reset();
+
+    if (sheetResult == 'background') {
+      handler.exitOverlay();
+      const MethodChannel('com.example.vibegrab/app')
+          .invokeMethod('backgroundOverlay')
+          .catchError((_) {});
+      return;
     }
+
     _close();
   }
 

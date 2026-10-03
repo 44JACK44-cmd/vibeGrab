@@ -77,10 +77,7 @@ class LocalMediaService {
       String? source;
       String? thumbPath;
 
-      final localJpg = storage.getFile('$baseName.jpg');
-      final localPng = storage.getFile('$baseName.png');
-      final localJpeg = storage.getFile('$baseName.jpeg');
-      final foundLocalThumb = localJpg ?? localPng ?? localJpeg;
+      final foundLocalThumb = storage.getThumbFile(baseName);
       if (foundLocalThumb != null && foundLocalThumb.existsSync()) {
         thumbPath = foundLocalThumb.path;
       }

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../data/models/download_task.dart';
 import '../../../services/local_download_service.dart';
@@ -72,19 +73,66 @@ class DownloadsController extends ChangeNotifier {
     }
 
     if (savedTasks.isNotEmpty) {
+      final List<DownloadTask> reQueued = [];
       for (final task in savedTasks) {
         if (task.isActive && !_tasks.any((t) => t.id == task.id)) {
-          _tasks.add(task.copyWith(status: 'queued'));
+          final reset = task.copyWith(status: 'queued', progress: 0.0, step: null);
+          _tasks.add(reset);
+          reQueued.add(reset);
           _log('Re-queued active task: ${task.id}');
         } else if (!task.isActive && !_tasks.any((t) => t.id == task.id)) {
           _tasks.add(task);
         }
       }
       notifyListeners();
+      for (final task in reQueued) {
+        _enqueueDownload(task);
+      }
     }
 
+    _migrateLegacyThumbnails();
     _loadLocalFiles();
     _retryStuckTasks();
+  }
+
+  void _migrateLegacyThumbnails() {
+    try {
+      final storage = StorageService.instance;
+      final dirPath = storage.downloadPath;
+      if (dirPath.isEmpty) return;
+      final dir = Directory(dirPath);
+      if (!dir.existsSync()) return;
+      final entries = dir.listSync().whereType<File>().toList();
+      final mediaBaseNames = <String>{};
+      for (final f in entries) {
+        final name = f.path.split(Platform.pathSeparator).last;
+        final dot = name.lastIndexOf('.');
+        if (dot <= 0) continue;
+        final ext = name.substring(dot + 1).toLowerCase();
+        if (ext == 'jpg' || ext == 'json') continue;
+        mediaBaseNames.add(name.substring(0, dot));
+      }
+      int moved = 0;
+      for (final f in entries) {
+        final name = f.path.split(Platform.pathSeparator).last;
+        if (!name.toLowerCase().endsWith('.jpg')) continue;
+        final baseName = name.substring(0, name.length - 4);
+        if (!mediaBaseNames.contains(baseName)) continue;
+        final dest =
+            File('${storage.thumbDir.path}${Platform.pathSeparator}$name');
+        if (dest.existsSync()) {
+          f.deleteSync();
+        } else {
+          f.renameSync(dest.path);
+        }
+        moved++;
+      }
+      if (moved > 0) {
+        _log('Migrated $moved legacy thumbnails to private thumbs dir');
+      }
+    } catch (e) {
+      _log('migrateLegacyThumbnails error: $e');
+    }
   }
 
   void updateMaxConcurrent(int value) {
@@ -292,6 +340,7 @@ class DownloadsController extends ChangeNotifier {
           _log('COMPLETED: ${task.id} -> ${updatedTask.filePath}');
           _notifService.showCompleted(taskId: task.id, title: task.title);
           _saveMetadata(_tasks[i]);
+          _publishToGallery(_tasks[i]);
         } else if (updatedTask.status == DownloadStatus.failed) {
           _log('FAILED: ${task.id} -> ${updatedTask.error}');
           _notifService.showFailed(taskId: task.id, title: task.title, error: updatedTask.error ?? 'Unknown error');
@@ -347,7 +396,6 @@ class DownloadsController extends ChangeNotifier {
       if (task.thumbnail != null && task.thumbnail!.isNotEmpty) {
         _downloadThumbnailLocal(
           thumbnailUrl: task.thumbnail!,
-          dir: dir,
           baseName: baseName,
         );
       }
@@ -361,9 +409,67 @@ class DownloadsController extends ChangeNotifier {
     return idMatch?.group(1);
   }
 
+  static const _appChannel = MethodChannel('com.example.vibegrab/app');
+  static const _statusChannel = MethodChannel('com.example.vibegrab/status');
+
+  static String _mimeForPath(String path) {
+    final ext = path.contains('.') ? path.split('.').last.toLowerCase() : '';
+    switch (ext) {
+      case 'mp4':
+      case 'm4v':
+        return 'video/mp4';
+      case 'webm':
+        return 'video/webm';
+      case 'mkv':
+        return 'video/x-matroska';
+      case 'mov':
+        return 'video/quicktime';
+      case 'avi':
+        return 'video/x-msvideo';
+      case 'm4a':
+        return 'audio/mp4';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'opus':
+        return 'audio/opus';
+      case 'wav':
+        return 'audio/wav';
+      case 'flac':
+        return 'audio/flac';
+      case 'aac':
+        return 'audio/aac';
+      default:
+        return 'video/mp4';
+    }
+  }
+
+  Future<void> _publishToGallery(DownloadTask task) async {
+    final path = task.filePath;
+    if (path == null || path.isEmpty) return;
+    final normalized = path.replaceAll('\\', '/');
+    try {
+      final isPublic = normalized.startsWith('/storage/') ||
+          normalized.startsWith('/sdcard/') ||
+          normalized.startsWith('/mnt/');
+      if (isPublic) {
+        await _appChannel.invokeMethod('scanMedia', {'paths': [path]});
+        _log('Gallery scan requested: $path');
+      } else {
+        final name = normalized.split('/').last;
+        final ok = await _statusChannel.invokeMethod<bool>('saveToGallery', {
+          'path': path,
+          'name': name,
+          'mime': _mimeForPath(path),
+        });
+        _log('saveToGallery copy ok=$ok path=$path');
+      }
+    } catch (e) {
+      _log('publishToGallery error: $e');
+    }
+  }
+
   Future<void> _downloadThumbnailLocal({
     required String thumbnailUrl,
-    required String dir,
     required String baseName,
   }) async {
     _log('[THUMBNAIL] url available=true');
@@ -375,7 +481,8 @@ class DownloadsController extends ChangeNotifier {
       if (response.statusCode == 200) {
         _log('[THUMBNAIL] response=200');
         final bytes = await response.fold<List<int>>([], (prev, chunk) => prev..addAll(chunk));
-        final jpgPath = '$dir${Platform.pathSeparator}$baseName.jpg';
+        final jpgPath =
+            '${StorageService.instance.thumbDir.path}${Platform.pathSeparator}$baseName.jpg';
         await File(jpgPath).writeAsBytes(bytes);
         _log('[THUMBNAIL] saved path=$jpgPath');
         _log('[THUMBNAIL] size=${bytes.length}');
@@ -422,6 +529,13 @@ class DownloadsController extends ChangeNotifier {
         if (await jpgFile.exists()) {
           await jpgFile.delete();
         }
+        try {
+          final thumbJpg = File(
+              '${StorageService.instance.thumbDir.path}${Platform.pathSeparator}$baseName.jpg');
+          if (await thumbJpg.exists()) {
+            await thumbJpg.delete();
+          }
+        } catch (_) {}
       } catch (e) {
         _log('Error deleting file: $e');
       }
@@ -430,7 +544,6 @@ class DownloadsController extends ChangeNotifier {
     _tasks.removeAt(index);
     _persistence.saveTasks(_tasks);
     if (task.isActive) {
-      _activeCount--;
       _reprocessQueue();
     }
     notifyListeners();
