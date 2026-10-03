@@ -488,14 +488,141 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       title: video.title,
       artist: video.channel,
       thumbnail: video.thumbnail,
-      mediaType: MediaType.audio,
+      mediaType: MediaType.video,
       status: MediaStatus.loading,
     );
     _syncToAudioHandler(item);
     _syncQueueToHandler();
     notifyListeners();
 
-    await _playYouTubeAudio(video.url, item);
+    await _playYouTubeVideo(video.url, item);
+  }
+
+  // --- YouTube Video Playback ---
+
+  Future<void> _playYouTubeVideo(String youtubeUrl, MediaItem mediaItem) async {
+    try {
+      final videoId = _parseVideoIdFromUrl(youtubeUrl);
+      if (videoId == null) {
+        debugPrint('[MediaEngine] Invalid YouTube URL: $youtubeUrl');
+        _state = _state.copyWith(status: MediaStatus.idle);
+        notifyListeners();
+        return;
+      }
+
+      final manifest = await _ytc.videos.streamsClient.getManifest(videoId)
+          .timeout(const Duration(seconds: 12), onTimeout: () {
+        throw TimeoutException('Stream manifest timed out');
+      });
+
+      final muxedStream = _bestMuxedStream(manifest);
+      if (muxedStream == null) {
+        debugPrint('[MediaEngine] No muxed streams for $youtubeUrl, audio fallback');
+        await _playYouTubeAudio(youtubeUrl, mediaItem);
+        return;
+      }
+
+      _stopCurrentSilent();
+      _state = _state.copyWith(
+        mediaId: youtubeUrl,
+        title: mediaItem.title,
+        artist: mediaItem.artist ?? 'YouTube',
+        thumbnail: mediaItem.artUri?.toString(),
+        mediaType: MediaType.video,
+        status: MediaStatus.buffering,
+      );
+      _syncToAudioHandler(mediaItem);
+      notifyListeners();
+
+      final started = await _startNetworkVideo(muxedStream.url, youtubeUrl);
+      if (!started) {
+        debugPrint('[MediaEngine] Network video failed, audio fallback');
+        await _playYouTubeAudio(youtubeUrl, mediaItem);
+        return;
+      }
+
+      MediaMetadataService().recordPlay(
+        filename: youtubeUrl,
+        title: mediaItem.title,
+        thumbnail: mediaItem.artUri?.toString(),
+        fileType: 'video',
+        source: mediaItem.artist,
+      );
+    } catch (e) {
+      debugPrint('[MediaEngine] YouTube video play error: $e');
+      await _playYouTubeAudio(youtubeUrl, mediaItem);
+    }
+  }
+
+  MuxedStreamInfo? _bestMuxedStream(StreamManifest manifest) {
+    final muxed = manifest.muxed.toList();
+    if (muxed.isEmpty) return null;
+    muxed.sort((a, b) {
+      final heightDiff =
+          b.videoResolution.height.compareTo(a.videoResolution.height);
+      if (heightDiff != 0) return heightDiff;
+      return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+    });
+    final upTo480 = muxed.where((s) => s.videoResolution.height <= 480).toList();
+    if (upTo480.isNotEmpty) return upTo480.first;
+    final upTo720 = muxed.where((s) => s.videoResolution.height <= 720).toList();
+    if (upTo720.isNotEmpty) return upTo720.first;
+    return muxed.last;
+  }
+
+  Future<bool> _startNetworkVideo(
+    Uri streamUrl,
+    String mediaId, {
+    Duration startAt = Duration.zero,
+  }) async {
+    await _videoController?.dispose();
+    _videoController = VideoPlayerController.networkUrl(streamUrl);
+
+    try {
+      await _videoController!.initialize().timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw TimeoutException('Video initialization timed out'),
+      );
+    } catch (e) {
+      debugPrint('[MediaEngine] Network video init error: $e');
+      await _videoController?.dispose();
+      _videoController = null;
+      return false;
+    }
+
+    if (_videoController!.value.hasError) {
+      debugPrint(
+          '[MediaEngine] Network video error: ${_videoController!.value.errorDescription}');
+      await _videoController?.dispose();
+      _videoController = null;
+      return false;
+    }
+
+    if (startAt > Duration.zero) {
+      await _videoController!.seekTo(startAt);
+    }
+
+    _videoController!.addListener(() {
+      if (_videoController == null || !_videoController!.value.isInitialized) return;
+      if (_videoController!.value.hasError) return;
+      final pos = _videoController!.value.position;
+      final dur = _videoController!.value.duration;
+      _state = _state.copyWith(position: pos, duration: dur);
+      _savePosition(mediaId, pos);
+      _syncPlaybackStateToHandler();
+
+      if (!_completionHandled && pos >= dur && dur > Duration.zero) {
+        _completionHandled = true;
+        _handlePlaybackComplete();
+      }
+      notifyListeners();
+    });
+
+    _state = _state.copyWith(status: MediaStatus.playing, position: startAt);
+    _syncPlaybackStateToHandler();
+    notifyListeners();
+    await _videoController!.play();
+    return true;
   }
 
   // --- YouTube Audio Playback ---
@@ -786,7 +913,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _videoController = null;
 
     final uri = _resolvePlaybackUriById(_state.mediaId!);
-    if (uri == null) return;
+    if (uri == null) {
+      await _startBackgroundAudioForYouTube(savedPosition);
+      return;
+    }
 
     final item = _createMediaItemFromState();
     try {
@@ -848,7 +978,54 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         } catch (e) {
           debugPrint('[MediaEngine] Screen on video restore error: $e');
         }
+      } else {
+        await _restoreNetworkVideoFromYouTube(savedPosition);
       }
+    }
+  }
+
+  Future<void> _startBackgroundAudioForYouTube(Duration savedPosition) async {
+    final mediaId = _state.mediaId;
+    if (mediaId == null) return;
+    final videoId = _parseVideoIdFromUrl(mediaId);
+    if (videoId == null) return;
+    try {
+      final manifest = await _ytc.videos.streamsClient
+          .getManifest(videoId)
+          .timeout(const Duration(seconds: 10));
+      final audioStreams = manifest.audioOnly.toList()
+        ..sort((a, b) =>
+            b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+      if (audioStreams.isEmpty) return;
+
+      final item = _createMediaItemFromState();
+      await _player.setAudioSource(
+          AudioSource.uri(audioStreams.first.url, tag: item));
+      await _player.seek(savedPosition);
+      await _player.play();
+      _wireAudioSubscriptions(mediaId);
+      _isAudioBackgroundActive = true;
+      _syncPlaybackStateToHandler();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[MediaEngine] YouTube background audio error: $e');
+    }
+  }
+
+  Future<void> _restoreNetworkVideoFromYouTube(Duration savedPosition) async {
+    final mediaId = _state.mediaId;
+    if (mediaId == null) return;
+    final videoId = _parseVideoIdFromUrl(mediaId);
+    if (videoId == null) return;
+    try {
+      final manifest = await _ytc.videos.streamsClient
+          .getManifest(videoId)
+          .timeout(const Duration(seconds: 12));
+      final muxedStream = _bestMuxedStream(manifest);
+      if (muxedStream == null) return;
+      await _startNetworkVideo(muxedStream.url, mediaId, startAt: savedPosition);
+    } catch (e) {
+      debugPrint('[MediaEngine] YouTube video restore error: $e');
     }
   }
 

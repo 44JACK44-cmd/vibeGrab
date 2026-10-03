@@ -4,7 +4,6 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_animations.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../data/models/explore_video.dart';
-import '../../../services/media_engine.dart';
 import '../controllers/explore_controller.dart';
 import '../widgets/search_result_card.dart';
 import '../widgets/recent_searches.dart';
@@ -699,8 +698,7 @@ class _ExploreViewState extends State<ExploreView> {
   }
 
   void _playVideo(BuildContext context, ExploreVideo video) {
-    final engine = context.read<MediaEngine>();
-    engine.playExploreVideo(video);
+    _openVideoDetail(video);
   }
 
   void _openVideoDetail(ExploreVideo video) {

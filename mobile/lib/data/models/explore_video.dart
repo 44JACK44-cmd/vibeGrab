@@ -7,6 +7,8 @@ class ExploreVideo {
   final int? duration;
   final String? durationString;
   final int? viewCount;
+  final String? viewsLabel;
+  final String? age;
 
   const ExploreVideo({
     required this.id,
@@ -17,6 +19,8 @@ class ExploreVideo {
     this.duration,
     this.durationString,
     this.viewCount,
+    this.viewsLabel,
+    this.age,
   });
 
   factory ExploreVideo.fromJson(Map<String, dynamic> json) {
@@ -29,10 +33,13 @@ class ExploreVideo {
       duration: json['duration'],
       durationString: json['duration_string'],
       viewCount: json['view_count'],
+      viewsLabel: json['views_label'],
+      age: json['age'],
     );
   }
 
   String get viewCountFormatted {
+    if (viewsLabel != null && viewsLabel!.isNotEmpty) return viewsLabel!;
     if (viewCount == null) return '';
     if (viewCount! >= 1000000000) return '${(viewCount! / 1000000000).toStringAsFixed(1)}B views';
     if (viewCount! >= 1000000) return '${(viewCount! / 1000000).toStringAsFixed(1)}M views';

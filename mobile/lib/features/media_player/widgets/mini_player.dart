@@ -186,7 +186,7 @@ class MiniPlayer extends StatelessWidget {
         PageRouteBuilder(
           pageBuilder: (_, __, ___) => ChangeNotifierProvider.value(
             value: engine,
-            child: const _VideoPlayerFullScreen(),
+            child: const VideoPlayerFullScreen(),
           ),
           transitionDuration: const Duration(milliseconds: 400),
           reverseTransitionDuration: const Duration(milliseconds: 300),
@@ -228,8 +228,8 @@ class MiniPlayer extends StatelessWidget {
   }
 }
 
-class _VideoPlayerFullScreen extends StatelessWidget {
-  const _VideoPlayerFullScreen();
+class VideoPlayerFullScreen extends StatelessWidget {
+  const VideoPlayerFullScreen({super.key});
 
   @override
   Widget build(BuildContext context) {

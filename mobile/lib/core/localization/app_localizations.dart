@@ -331,6 +331,13 @@ class AppLocalizations {
   String get noResultsHint => _get('noResultsHint');
   String get downloadVideo => _get('downloadVideo');
   String get playVideo => _get('playVideo');
+  String get pauseVideo => _get('pauseVideo');
+  String get commentsTitle => _get('commentsTitle');
+  String get commentsEmpty => _get('commentsEmpty');
+  String get commentsUnavailable => _get('commentsUnavailable');
+  String get loadMoreComments => _get('loadMoreComments');
+  String get relatedVideos => _get('relatedVideos');
+  String get piPNotAvailable => _get('piPNotAvailable');
 
   String get shareDownloadTitle => _get('shareDownloadTitle');
   String get shareAnalyzing => _get('shareAnalyzing');

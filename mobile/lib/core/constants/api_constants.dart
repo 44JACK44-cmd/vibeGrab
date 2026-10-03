@@ -48,4 +48,6 @@ class ApiConfig {
   static String libraryStreamUrl(String filename) => '$baseUrl$libraryEndpoint/$filename/stream';
   static String libraryDeleteUrl(String filename) => '$baseUrl$libraryEndpoint/$filename';
   static String get exploreSearchUrl => '$baseUrl$exploreEndpoint/search';
+  static String get exploreRelatedUrl => '$baseUrl$exploreEndpoint/related';
+  static String get exploreCommentsUrl => '$baseUrl$exploreEndpoint/comments';
 }

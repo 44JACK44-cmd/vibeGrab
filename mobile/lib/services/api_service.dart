@@ -7,6 +7,8 @@ import '../data/models/download_task.dart';
 import '../data/models/library_file.dart';
 import '../data/models/app_settings.dart';
 import '../data/models/explore_video.dart';
+import '../data/models/related_video.dart';
+import '../data/models/comment_item.dart';
 
 class NetworkException implements Exception {
   final String message;
@@ -271,6 +273,61 @@ class ApiService {
             .toList();
       }
       throw NetworkException('Search failed', statusCode: response.statusCode);
+    } catch (e) {
+      throw NetworkException.fromError(e);
+    }
+  }
+
+  Future<List<RelatedVideo>> fetchRelated(String videoId) async {
+    try {
+      final response = await _client
+          .get(Uri.parse('${ApiConfig.exploreRelatedUrl}?v=$videoId'))
+          .timeout(_longTimeout);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == false) {
+          throw NetworkException(
+            data['detail']?.toString() ?? 'Related failed',
+            statusCode: response.statusCode,
+          );
+        }
+        return (data['items'] as List)
+            .map((v) => RelatedVideo.fromJson(v))
+            .toList();
+      }
+      throw NetworkException('Related failed', statusCode: response.statusCode);
+    } catch (e) {
+      throw NetworkException.fromError(e);
+    }
+  }
+
+  Future<CommentsPage> fetchComments(String videoId, {String? token}) async {
+    try {
+      final buffer = StringBuffer('${ApiConfig.exploreCommentsUrl}?v=$videoId');
+      if (token != null && token.isNotEmpty) {
+        buffer.write('&token=${Uri.encodeComponent(token)}');
+      }
+      final response = await _client
+          .get(Uri.parse(buffer.toString()))
+          .timeout(_longTimeout);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == false) {
+          throw NetworkException(
+            data['detail']?.toString() ?? 'Comments failed',
+            statusCode: response.statusCode,
+          );
+        }
+        return CommentsPage(
+          items: (data['items'] as List)
+              .map((v) => CommentItem.fromJson(v))
+              .toList(),
+          nextToken: data['next_token'] as String?,
+        );
+      }
+      throw NetworkException('Comments failed', statusCode: response.statusCode);
     } catch (e) {
       throw NetworkException.fromError(e);
     }
