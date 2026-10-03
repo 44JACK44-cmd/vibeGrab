@@ -9,6 +9,21 @@ _UA_COOKIES = {
     "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+000; SOCS=CAI",
     "Accept-Language": "en-US,en;q=0.9",
 }
+# Static innertube config: the watch HTML page gets HTTP 429 from datacenter
+# IPs (Render), but the /youtubei/v1/next API works with the public web key.
+_STATIC_CONFIG = {
+    "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+    "visitor": "",
+    "context": {
+        "client": {
+            "clientName": "WEB",
+            "clientVersion": "2.20261001.00.00",
+            "hl": "en",
+            "gl": "US",
+        }
+    },
+}
+
 _YT_INITIAL_RE = re.compile(r"var ytInitialData = ({.+?});</script>", re.S)
 _API_KEY_RE = re.compile(r'"INNERTUBE_API_KEY":"([^"]+)"')
 _VISITOR_RE = re.compile(r'"VISITOR_DATA":"([^"]+)"')
@@ -306,53 +321,14 @@ def parse_comments(next_payload: dict) -> tuple[list[dict], str | None]:
     return items, next_token
 
 
-def _fetch_watch(video_id: str) -> dict:
+def _bundle(video_id: str) -> dict:
     if not _VIDEO_ID_RE.fullmatch(video_id or ""):
         raise WatchError(400, "Invalid video id")
-    cache_key = f"watch:{video_id}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    from curl_cffi import requests as cffi_requests
-
-    watch_url = f"https://www.youtube.com/watch?v={video_id}"
-    try:
-        resp = cffi_requests.get(
-            watch_url,
-            impersonate="chrome",
-            headers=dict(_UA_COOKIES),
-            timeout=20,
-        )
-    except Exception as exc:
-        raise WatchError(502, f"YouTube request failed: {exc}") from exc
-    if resp.status_code >= 400:
-        raise WatchError(502, f"YouTube page HTTP {resp.status_code}")
-
-    html = resp.text
-    m = _YT_INITIAL_RE.search(html)
-    if not m:
-        raise WatchError(502, "Could not read YouTube page")
-    try:
-        initial = json.loads(m.group(1))
-    except json.JSONDecodeError as exc:
-        raise WatchError(502, "Could not parse YouTube page") from exc
-
-    try:
-        config = extract_innertube(html)
-    except WatchError:
-        raise
-
-    bundle = {
+    return {
+        **_STATIC_CONFIG,
         "video_id": video_id,
-        "watch_url": watch_url,
-        "initial": initial,
-        "api_key": config["api_key"],
-        "visitor": config["visitor"],
-        "context": config["context"],
+        "watch_url": f"https://www.youtube.com/watch?v={video_id}",
     }
-    _cache_put(cache_key, bundle, _TTL_WATCH)
-    return bundle
 
 
 def _post_next(bundle: dict, payload: dict) -> dict:
@@ -393,8 +369,9 @@ def get_related(video_id: str) -> list[dict]:
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    bundle = _fetch_watch(video_id)
-    items = parse_related(bundle["initial"], exclude_id=video_id)
+    bundle = _bundle(video_id)
+    payload = _post_next(bundle, {"context": bundle["context"], "videoId": video_id})
+    items = parse_related(payload, exclude_id=video_id)
     _cache_put(cache_key, items, _TTL_RELATED)
     logger.info(f"Related for {video_id}: {len(items)} items")
     return items
@@ -406,7 +383,7 @@ def get_comments(video_id: str, token: str | None = None) -> tuple[list[dict], s
     if cached is not None:
         return cached
 
-    bundle = _fetch_watch(video_id)
+    bundle = _bundle(video_id)
     if token:
         next_payload = _post_next(
             bundle, {"context": bundle["context"], "continuation": token}
