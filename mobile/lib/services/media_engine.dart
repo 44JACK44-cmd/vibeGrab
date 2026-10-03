@@ -43,6 +43,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   Timer? _pipConfirmTimer;
   Timer? _playWatchdog;
   String? playbackError;
+  String? _lastVideoError;
+  String? _lastAudioError;
+  String? _lastStreamError;
   bool get isInPiP => _isInPiP || _isPiPEntering;
 
   double get progress {
@@ -523,6 +526,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<void> _playYouTubeVideo(String youtubeUrl, MediaItem mediaItem) async {
     StreamManifest? manifest;
+    final errs = <String>[];
+    void fail(String step) {
+      errs.add(step);
+      final detail = errs.join(' · ');
+      _failPlayback(detail.length > 240 ? '${detail.substring(0, 240)}…' : detail);
+    }
+
     try {
       final videoId = _parseVideoIdFromUrl(youtubeUrl);
       if (videoId == null) {
@@ -543,40 +553,67 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           final started =
               await _tryStartNetworkVideo(muxedStream.url, youtubeUrl, mediaItem);
           if (started) return;
+          errs.add('directo: ${_lastVideoError ?? "init falló"}');
+        } else {
+          errs.add('directo: sin mp4');
         }
       } catch (e) {
         debugPrint('[MediaEngine] Device stream path failed: $e');
+        errs.add('directo: ${_short(e.toString())}');
       }
 
-      // 2) Backend stream urls (Invidious) — works when YouTube blocks us.
+      // 2) Backend stream urls (Invidious).
       final urls = await _fetchStreamUrls(videoId);
-      if (urls != null && urls.video != null) {
-        final started = await _tryStartNetworkVideo(
-            Uri.parse(urls.video!), youtubeUrl, mediaItem);
-        if (started) return;
-      }
+      if (urls == null) {
+        errs.add('servidor: ${_lastStreamError ?? "sin url"}');
+      } else {
+        // 2a) Relay through our server: works when the network blocks
+        // googlevideo (Range forwarded, seeking keeps working).
+        if (urls.proxy != null) {
+          final started = await _tryStartNetworkVideo(
+              Uri.parse('${ApiConfig.baseUrl}${urls.proxy!}'),
+              youtubeUrl,
+              mediaItem,
+              initTimeout: const Duration(seconds: 30));
+          if (started) return;
+          errs.add('relé: ${_lastVideoError ?? "init falló"}');
+        }
 
-      // 3) Audio-only: backend url, then device manifest.
-      if (urls != null && urls.audio != null) {
-        final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
-            streamUri: Uri.parse(urls.audio!));
-        if (ok) return;
+        // 2b) Direct googlevideo url.
+        if (urls.video != null) {
+          final started = await _tryStartNetworkVideo(
+              Uri.parse(urls.video!), youtubeUrl, mediaItem);
+          if (started) return;
+          errs.add('video: ${_lastVideoError ?? "init falló"}');
+        }
+
+        // 3) Audio-only: backend url, then device manifest.
+        if (urls.audio != null) {
+          final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
+              streamUri: Uri.parse(urls.audio!));
+          if (ok) return;
+          errs.add('audio: ${_lastAudioError ?? "falló"}');
+        }
       }
       if (manifest != null) {
         final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
             manifest: manifest);
         if (ok) return;
+        errs.add('audio directo: ${_lastAudioError ?? "falló"}');
       }
 
-      _failPlayback('No playable stream');
+      fail('no reproducible');
     } catch (e) {
       debugPrint('[MediaEngine] YouTube video play error: $e');
-      _failPlayback(e.toString());
+      _failPlayback(_short(e.toString()));
     }
   }
 
+  static String _short(String s) => s.length > 70 ? s.substring(0, 70) : s;
+
   Future<bool> _tryStartNetworkVideo(
-      Uri streamUrl, String youtubeUrl, MediaItem mediaItem) async {
+      Uri streamUrl, String youtubeUrl, MediaItem mediaItem,
+      {Duration initTimeout = const Duration(seconds: 15)}) async {
     _stopCurrentSilent();
     _state = _state.copyWith(
       mediaId: youtubeUrl,
@@ -589,7 +626,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _syncToAudioHandler(mediaItem);
     notifyListeners();
 
-    final started = await _startNetworkVideo(streamUrl, youtubeUrl);
+    final started =
+        await _startNetworkVideo(streamUrl, youtubeUrl, initTimeout: initTimeout);
     if (!started) return false;
 
     MediaMetadataService().recordPlay(
@@ -610,6 +648,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   Future<StreamUrls?> _fetchStreamUrls(String videoId) async {
+    _lastStreamError = null;
     try {
       final response = await http
           .get(Uri.parse('${ApiConfig.exploreStreamUrl}?v=$videoId'))
@@ -620,9 +659,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           return StreamUrls.fromJson(data);
         }
         debugPrint('[MediaEngine] stream-url error: ${data['detail']}');
+        _lastStreamError = _short('${data['detail'] ?? 'error'}');
+      } else {
+        _lastStreamError = 'http ${response.statusCode}';
       }
     } catch (e) {
       debugPrint('[MediaEngine] stream-url fallback failed: $e');
+      _lastStreamError = _short(e.toString());
     }
     return null;
   }
@@ -647,17 +690,26 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     Uri streamUrl,
     String mediaId, {
     Duration startAt = Duration.zero,
+    Duration initTimeout = const Duration(seconds: 15),
   }) async {
+    _lastVideoError = null;
     await _videoController?.dispose();
-    _videoController = VideoPlayerController.networkUrl(streamUrl);
+    _videoController = VideoPlayerController.networkUrl(
+      streamUrl,
+      httpHeaders: const {
+        'User-Agent':
+            'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
+      },
+    );
 
     try {
       await _videoController!.initialize().timeout(
-        const Duration(seconds: 15),
+        initTimeout,
         onTimeout: () => throw TimeoutException('Video initialization timed out'),
       );
     } catch (e) {
       debugPrint('[MediaEngine] Network video init error: $e');
+      _lastVideoError = _short(e.toString());
       await _videoController?.dispose();
       _videoController = null;
       return false;
@@ -666,6 +718,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (_videoController!.value.hasError) {
       debugPrint(
           '[MediaEngine] Network video error: ${_videoController!.value.errorDescription}');
+      _lastVideoError =
+          _videoController!.value.errorDescription ?? 'video error';
       await _videoController?.dispose();
       _videoController = null;
       return false;
@@ -742,7 +796,14 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       notifyListeners();
 
       await _player
-          .setAudioSource(AudioSource.uri(streamUrl, tag: mediaItem))
+          .setAudioSource(AudioSource.uri(
+            streamUrl,
+            tag: mediaItem,
+            headers: const {
+              'User-Agent':
+                  'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
+            },
+          ))
           .timeout(const Duration(seconds: 20));
       _wireAudioSubscriptions(youtubeUrl);
 
@@ -761,6 +822,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       return true;
     } catch (e) {
       debugPrint('[MediaEngine] YouTube audio play error: $e');
+      _lastAudioError = _short(e.toString());
       return false;
     }
   }

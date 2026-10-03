@@ -1,6 +1,7 @@
 class StreamUrls {
   final String? video;
   final String? audio;
+  final String? proxy;
   final String? title;
   final String? channel;
   final String? channelAvatar;
@@ -11,6 +12,7 @@ class StreamUrls {
   const StreamUrls({
     this.video,
     this.audio,
+    this.proxy,
     this.title,
     this.channel,
     this.channelAvatar,
@@ -22,6 +24,7 @@ class StreamUrls {
   factory StreamUrls.fromJson(Map<String, dynamic> json) => StreamUrls(
         video: json['video'] as String?,
         audio: json['audio'] as String?,
+        proxy: json['proxy'] as String?,
         title: json['title'] as String?,
         channel: json['channel'] as String?,
         channelAvatar: json['channel_avatar'] as String?,
