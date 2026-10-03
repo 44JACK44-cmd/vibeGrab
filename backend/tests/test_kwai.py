@@ -7,6 +7,7 @@ from app.services.extractor_service import (
     is_kwai_url,
     parse_kwai_page,
     _iso_to_seconds,
+    _resolve_kwai_target,
 )
 
 FIXTURE_HTML = """
@@ -28,8 +29,40 @@ def test_is_kwai_url_variants():
     assert is_kwai_url("https://v.kwai.com/u/abc") is True
     assert is_kwai_url("https://k.kwai.com/p/AbC") is True
     assert is_kwai_url("https://v.kuaishou.com/1a23vvd1") is True
+    assert is_kwai_url("https://kwai-video.com/p/fJSPUCEv") is True
+    assert is_kwai_url("https://m.kwai.com/photo/1/2") is True
     assert is_kwai_url("https://www.youtube.com/watch?v=abc") is False
     assert is_kwai_url("not a url") is False
+
+
+def test_resolve_kwai_target_from_redirect_query():
+    final_url = (
+        "https://kwai-share.onelink.me/doYv?pid=H5"
+        "&af_sub1=%7B%22shareInfo%22%3A%7B%22target_url%22%3A%22"
+        "https%3A%2F%2Fm.kwai.com%2Fphoto%2F150001293514308%2F5229392174934693014"
+        "%3FuserId%3D150001293514308%22%7D%7D"
+    )
+    target = _resolve_kwai_target(final_url, "<html></html>")
+    assert target is not None
+    assert target.startswith("https://m.kwai.com/photo/150001293514308/")
+    assert "userId=150001293514308" in target
+
+
+def test_resolve_kwai_target_from_page_js():
+    page = (
+        "<script>var app_link = 'ikwai://work/5229392174934693014?"
+        "target_url=https://m.kwai.com/photo/150001293514308/5229392174934693014"
+        "?userId=150001293514308&photoId=5229392174934693014&short_key=fJSPUCEv';"
+        "</script>"
+    )
+    target = _resolve_kwai_target("https://kwai-share.onelink.me/doYv", page)
+    assert target is not None
+    assert "m.kwai.com/photo/150001293514308/5229392174934693014" in target
+    assert "short_key=fJSPUCEv" in target
+
+
+def test_resolve_kwai_target_none_for_unrelated_page():
+    assert _resolve_kwai_target("https://example.com/x", "<html>hi</html>") is None
 
 
 def test_iso_duration():

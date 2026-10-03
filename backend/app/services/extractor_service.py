@@ -2,12 +2,13 @@ import subprocess
 import json
 import re
 import html as htmllib
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, unquote
 from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.analyze import MediaInfo, FormatOption
 
 _KWAI_HOST_SUFFIXES = ("kwai.com", "kuaishou.com")
+_KWAI_HOST_SUBSTRINGS = ("kwai", "kuaishou")
 _KWAI_MOBILE_UA = (
     "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -20,7 +21,11 @@ def is_kwai_url(url: str) -> bool:
         host = (urlparse(url).hostname or "").lower()
     except Exception:
         return False
-    return host.endswith(_KWAI_HOST_SUFFIXES)
+    if not host:
+        return False
+    if host.endswith(_KWAI_HOST_SUFFIXES):
+        return True
+    return any(token in host for token in _KWAI_HOST_SUBSTRINGS)
 
 
 def _iso_to_seconds(value: str | None) -> int | None:
@@ -88,7 +93,39 @@ def parse_kwai_page(page_html: str, url: str) -> dict:
     }
 
 
-def extract_kwai(url: str) -> tuple[MediaInfo, list[FormatOption]]:
+_KWAI_IN_TEXT = re.compile(
+    r'https?://(?:[\w-]+\.)*(?:kwai|kuaishou)\.com[^"\'\s<>\\]*'
+)
+
+
+def _resolve_kwai_target(final_url: str, page_text: str) -> str | None:
+    """Recover the real Kwai page URL from short-link redirect pages.
+
+    Short links (kwai-video.com/p/...) bounce through an AppsFlyer
+    onelink page that embeds the target URL either percent-encoded in
+    the query string or raw inside its JS.
+    """
+    try:
+        query = parse_qs(urlparse(final_url).query)
+        for key in ("af_sub1", "target_url", "deep_link_value", "af_dp"):
+            for value in query.get(key, []):
+                for m in _KWAI_IN_TEXT.finditer(unquote(value)):
+                    candidate = m.group(0).rstrip("\\,;")
+                    if is_kwai_url(candidate):
+                        return candidate
+    except Exception:
+        pass
+
+    for text in (page_text, unquote(page_text)):
+        m = _KWAI_IN_TEXT.search(text)
+        if m:
+            candidate = m.group(0).rstrip("\\,;")
+            if is_kwai_url(candidate):
+                return candidate
+    return None
+
+
+def extract_kwai(url: str, _hop: int = 0) -> tuple[MediaInfo, list[FormatOption]]:
     from curl_cffi import requests as cffi_requests
 
     logger.info(f"Running Kwai extractor for: {url}")
@@ -102,7 +139,16 @@ def extract_kwai(url: str) -> tuple[MediaInfo, list[FormatOption]]:
     if response.status_code >= 400:
         raise Exception(f"Kwai page returned HTTP {response.status_code}")
 
-    meta = parse_kwai_page(response.text, url)
+    final_url = str(getattr(response, "url", None) or url)
+
+    try:
+        meta = parse_kwai_page(response.text, final_url)
+    except Exception:
+        target = _resolve_kwai_target(final_url, response.text)
+        if target and _hop < 3 and target.rstrip("/") != url.rstrip("/"):
+            logger.info(f"Kwai short link resolved to: {target}")
+            return extract_kwai(target, _hop=_hop + 1)
+        raise
 
     size_bytes = None
     try:
