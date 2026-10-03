@@ -38,6 +38,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   bool _isPiPEntering = false;
   DateTime? pipExitedAt;
   Timer? _pipConfirmTimer;
+  Timer? _playWatchdog;
   bool get isInPiP => _isInPiP || _isPiPEntering;
 
   double get progress {
@@ -495,12 +496,27 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _syncQueueToHandler();
     notifyListeners();
 
+    // Never stay stuck loading/buffering: force idle if play stalls.
+    _playWatchdog?.cancel();
+    _playWatchdog = Timer(const Duration(seconds: 40), () {
+      final s = _state;
+      if (s.mediaId == video.url &&
+          (s.status == MediaStatus.loading ||
+              s.status == MediaStatus.buffering)) {
+        debugPrint('[MediaEngine] Play watchdog fired for ${video.url}');
+        _state = s.copyWith(status: MediaStatus.idle);
+        _syncPlaybackStateToHandler();
+        notifyListeners();
+      }
+    });
+
     await _playYouTubeVideo(video.url, item);
   }
 
   // --- YouTube Video Playback ---
 
   Future<void> _playYouTubeVideo(String youtubeUrl, MediaItem mediaItem) async {
+    StreamManifest? manifest;
     try {
       final videoId = _parseVideoIdFromUrl(youtubeUrl);
       if (videoId == null) {
@@ -510,15 +526,15 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         return;
       }
 
-      final manifest = await _ytc.videos.streamsClient.getManifest(videoId)
-          .timeout(const Duration(seconds: 12), onTimeout: () {
+      manifest = await _ytc.videos.streamsClient.getManifest(videoId)
+          .timeout(const Duration(seconds: 20), onTimeout: () {
         throw TimeoutException('Stream manifest timed out');
       });
 
       final muxedStream = _bestMuxedStream(manifest);
       if (muxedStream == null) {
         debugPrint('[MediaEngine] No muxed streams for $youtubeUrl, audio fallback');
-        await _playYouTubeAudio(youtubeUrl, mediaItem);
+        await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
         return;
       }
 
@@ -537,7 +553,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       final started = await _startNetworkVideo(muxedStream.url, youtubeUrl);
       if (!started) {
         debugPrint('[MediaEngine] Network video failed, audio fallback');
-        await _playYouTubeAudio(youtubeUrl, mediaItem);
+        await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
         return;
       }
 
@@ -550,7 +566,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       );
     } catch (e) {
       debugPrint('[MediaEngine] YouTube video play error: $e');
-      await _playYouTubeAudio(youtubeUrl, mediaItem);
+      await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
     }
   }
 
@@ -627,7 +643,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   // --- YouTube Audio Playback ---
 
-  Future<void> _playYouTubeAudio(String youtubeUrl, MediaItem mediaItem) async {
+  Future<void> _playYouTubeAudio(String youtubeUrl, MediaItem mediaItem,
+      {StreamManifest? manifest}) async {
     try {
       final videoId = _parseVideoIdFromUrl(youtubeUrl);
       if (videoId == null) {
@@ -637,12 +654,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         return;
       }
 
-      final manifest = await _ytc.videos.streamsClient.getManifest(videoId)
-          .timeout(const Duration(seconds: 10), onTimeout: () {
-        throw TimeoutException('Stream manifest timed out');
-      });
+      final resolved = manifest ??
+          await _ytc.videos.streamsClient.getManifest(videoId)
+              .timeout(const Duration(seconds: 15), onTimeout: () {
+            throw TimeoutException('Stream manifest timed out');
+          });
 
-      final audioStreams = manifest.audioOnly.toList()
+      final audioStreams = resolved.audioOnly.toList()
         ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
 
       if (audioStreams.isEmpty) {
@@ -666,7 +684,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _syncToAudioHandler(mediaItem);
       notifyListeners();
 
-      await _player.setAudioSource(AudioSource.uri(streamUrl, tag: mediaItem));
+      await _player
+          .setAudioSource(AudioSource.uri(streamUrl, tag: mediaItem))
+          .timeout(const Duration(seconds: 20));
       _wireAudioSubscriptions(youtubeUrl);
 
       _state = _state.copyWith(status: MediaStatus.playing, position: Duration.zero);
@@ -1285,6 +1305,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   void dispose() {
     _completionDebounce?.cancel();
     _pipConfirmTimer?.cancel();
+    _playWatchdog?.cancel();
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();

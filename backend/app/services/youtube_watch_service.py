@@ -11,13 +11,16 @@ _UA_COOKIES = {
 }
 # Static innertube config: the watch HTML page gets HTTP 429 from datacenter
 # IPs (Render), but the /youtubei/v1/next API works with the public web key.
+# clientVersion must match yt-dlp's current real WEB value, and (like yt-dlp)
+# we must NOT send the ?key= param nor an empty X-Goog-Visitor-Id header,
+# otherwise YouTube answers 403 from datacenter IPs.
 _STATIC_CONFIG = {
     "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
     "visitor": "",
     "context": {
         "client": {
             "clientName": "WEB",
-            "clientVersion": "2.20261001.00.00",
+            "clientVersion": "2.20260708.00.00",
             "hl": "en",
             "gl": "US",
         }
@@ -334,21 +337,20 @@ def _bundle(video_id: str) -> dict:
 def _post_next(bundle: dict, payload: dict) -> dict:
     from curl_cffi import requests as cffi_requests
 
-    url = (
-        "https://www.youtube.com/youtubei/v1/next"
-        f"?key={bundle['api_key']}&prettyPrint=false"
+    url = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false"
+    client_version = (
+        bundle["context"].get("client", {}).get("clientVersion", "")
     )
     headers = {
         "Content-Type": "application/json",
         "Origin": "https://www.youtube.com",
-        "Referer": bundle["watch_url"],
         "X-Youtube-Client-Name": "1",
-        "X-Youtube-Client-Version": bundle["context"]
-        .get("client", {})
-        .get("clientVersion", ""),
-        "X-Goog-Visitor-Id": bundle.get("visitor") or "",
+        "X-Youtube-Client-Version": client_version,
         **_UA_COOKIES,
     }
+    visitor = bundle.get("visitor") or ""
+    if visitor:
+        headers["X-Goog-Visitor-Id"] = visitor
     try:
         resp = cffi_requests.post(
             url,
@@ -360,7 +362,8 @@ def _post_next(bundle: dict, payload: dict) -> dict:
     except Exception as exc:
         raise WatchError(502, f"YouTube API request failed: {exc}") from exc
     if resp.status_code >= 400:
-        raise WatchError(502, f"YouTube API HTTP {resp.status_code}")
+        snippet = (resp.text or "")[:300]
+        raise WatchError(502, f"YouTube API HTTP {resp.status_code}: {snippet}")
     return resp.json()
 
 
@@ -377,30 +380,90 @@ def get_related(video_id: str) -> list[dict]:
     return items
 
 
+def _format_count(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K".replace(".0K", "K")
+    return str(n)
+
+
+def _yt_dlp_comments(video_id: str) -> tuple[list[dict], str | None]:
+    """Fallback when innertube /next is blocked (403 from datacenter IPs)."""
+    import subprocess
+
+    from app.core.config import settings
+
+    cmd = [
+        settings.YT_DLP_PATH,
+        "--skip-download",
+        "--write-comments",
+        "--extractor-args",
+        "youtube:max_comments=20,all,all;comment_sort=top",
+        "--dump-single-json",
+        f"https://www.youtube.com/watch?v={video_id}",
+    ]
+    logger.info(f"yt-dlp comments fallback for {video_id}")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise WatchError(
+            502, f"yt-dlp comments error: {result.stderr.strip()[:200]}"
+        )
+    data = json.loads(result.stdout or "{}")
+    items: list[dict] = []
+    for c in (data.get("comments") or [])[:20]:
+        text = c.get("text") or ""
+        if not text:
+            continue
+        likes = c.get("like_count")
+        author = c.get("author") or ""
+        items.append(
+            {
+                "author": author,
+                "avatar": c.get("author_thumbnail"),
+                "text": text,
+                "published": c.get("_time_text"),
+                "likes": _format_count(int(likes)) if likes else None,
+                "replies": None,
+                "verified": bool(c.get("author_is_verified")),
+                "pinned_text": (
+                    f"Pinned by {author}" if c.get("is_pinned") else None
+                ),
+            }
+        )
+    return items, None
+
+
 def get_comments(video_id: str, token: str | None = None) -> tuple[list[dict], str | None]:
     cache_key = f"comments:{video_id}:{token or ''}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
-    bundle = _bundle(video_id)
-    if token:
-        next_payload = _post_next(
-            bundle, {"context": bundle["context"], "continuation": token}
-        )
-        items, next_token = parse_comments(next_payload)
-    else:
-        first = _post_next(
-            bundle, {"context": bundle["context"], "videoId": video_id}
-        )
-        comment_token = extract_comment_token(first)
-        if not comment_token:
-            _cache_put(cache_key, ([], None), _TTL_COMMENTS)
-            return [], None
-        next_payload = _post_next(
-            bundle, {"context": bundle["context"], "continuation": comment_token}
-        )
-        items, next_token = parse_comments(next_payload)
+    try:
+        bundle = _bundle(video_id)
+        if token:
+            next_payload = _post_next(
+                bundle, {"context": bundle["context"], "continuation": token}
+            )
+            items, next_token = parse_comments(next_payload)
+        else:
+            first = _post_next(
+                bundle, {"context": bundle["context"], "videoId": video_id}
+            )
+            comment_token = extract_comment_token(first)
+            if not comment_token:
+                _cache_put(cache_key, ([], None), _TTL_COMMENTS)
+                return [], None
+            next_payload = _post_next(
+                bundle, {"context": bundle["context"], "continuation": comment_token}
+            )
+            items, next_token = parse_comments(next_payload)
+    except WatchError as exc:
+        if token:
+            raise
+        logger.warning(f"Innertube comments failed ({exc.detail[:80]}), using yt-dlp")
+        items, next_token = _yt_dlp_comments(video_id)
 
     _cache_put(cache_key, (items, next_token), _TTL_COMMENTS)
     logger.info(f"Comments for {video_id}: {len(items)} items")
