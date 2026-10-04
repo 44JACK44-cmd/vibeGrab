@@ -575,7 +575,9 @@ def get_stream_urls(video_id: str) -> dict:
     if cached is not None:
         return cached
 
-    data = _invidious_get(f"/api/v1/videos/{video_id}")
+    # local=true: Invidious serves the bytes itself, so the URLs point at
+    # its host instead of googlevideo (which blocks our datacenter IP).
+    data = _invidious_get(f"/api/v1/videos/{video_id}?local=true")
 
     def _int(v) -> int:
         try:
@@ -650,7 +652,8 @@ def get_relay_sources(video_id: str) -> dict:
     if cached is not None:
         return cached
 
-    data = _invidious_get(f"/api/v1/videos/{video_id}")
+    # local=true so ffmpeg pulls from Invidious (googlevideo blocks us).
+    data = _invidious_get(f"/api/v1/videos/{video_id}?local=true")
 
     def _h(f) -> int:
         try:

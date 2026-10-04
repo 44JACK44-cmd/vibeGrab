@@ -41,12 +41,12 @@ def proxy(u: str, range_header: str | None = Header(None, alias="Range")):
     target = urllib.parse.unquote(u)
     parts = urllib.parse.urlsplit(target)
     host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not (
-        host == "googlevideo.com" or host.endswith(".googlevideo.com")
-    ):
+    allowed = host == "googlevideo.com" or host.endswith(".googlevideo.com")
+    allowed = allowed or host.endswith(".f5.si")
+    if parts.scheme != "https" or not allowed:
         return JSONResponse(
             status_code=400,
-            content={"success": False, "detail": "Only googlevideo streams allowed"},
+            content={"success": False, "detail": "Host not allowed for relay"},
         )
 
     req_headers = {"User-Agent": "Mozilla/5.0 (Linux; Android 14) Chrome/140.0.0.0"}
