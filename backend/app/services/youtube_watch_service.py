@@ -563,21 +563,110 @@ def _yt_dlp_comments(video_id: str) -> tuple[list[dict], str | None]:
     return items, None
 
 
-def get_stream_urls(video_id: str) -> dict:
-    """Playable stream URLs (via Invidious) + channel/comment metadata.
+def _innertube_android(video_id: str) -> dict:
+    """YouTube innertube player via the ANDROID client (TLS-impersonated).
 
-    googlevideo URLs obtained this way are NOT IP-locked, so the phone can
-    play them directly — this is the playback fallback when YouTube blocks
-    the device-side youtube_explode request.
+    Works from datacenter IPs where the web client is rejected, and needs
+    no third-party instance. Returns {} on any failure.
+    """
+    from curl_cffi import requests as cffi_requests
+
+    payload = {
+        "videoId": video_id,
+        "contentCheckOk": True,
+        "racyCheckOk": True,
+        "context": {
+            "client": {
+                "clientName": "ANDROID",
+                "clientVersion": "20.10.38",
+                "androidSdkVersion": 30,
+                "hl": "en",
+                "gl": "US",
+            }
+        },
+    }
+    try:
+        r = cffi_requests.post(
+            "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+            json=payload,
+            impersonate="chrome",
+            timeout=25,
+        )
+        if r.status_code != 200:
+            logger.info(f"innertube player HTTP {r.status_code} for {video_id}")
+            return {}
+        data = r.json()
+    except Exception as e:  # noqa: BLE001
+        logger.info(f"innertube player failed for {video_id}: {e}")
+        return {}
+    if (data.get("playabilityStatus") or {}).get("status") != "OK":
+        logger.info(
+            "innertube playability not OK: "
+            f"{(data.get('playabilityStatus') or {}).get('reason')}"
+        )
+        return {}
+    return data
+
+
+def _innertube_pick(video_id: str) -> dict:
+    """Extract muxed/adaptive urls + video details from the innertube player."""
+    d = _innertube_android(video_id)
+    if not d:
+        return {}
+    sd = d.get("streamingData") or {}
+    details = d.get("videoDetails") or {}
+
+    def _height(f) -> int:
+        try:
+            return int(f.get("height") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    out: dict = {"details": details}
+
+    muxed = [f for f in (sd.get("formats") or []) if f.get("url")]
+    if muxed:
+        small = [f for f in muxed if 0 < _height(f) <= 480]
+        pool = small or muxed
+        pool.sort(key=_height)
+        out["muxed"] = (pool[-1] if small else pool[0]).get("url")
+
+    adaptive = [f for f in (sd.get("adaptiveFormats") or []) if f.get("url")]
+    v_cands = [
+        f
+        for f in adaptive
+        if "video/mp4" in (f.get("mimeType") or "")
+        and "avc1" in (f.get("mimeType") or "")
+    ]
+    if v_cands:
+        small_v = [f for f in v_cands if 0 < _height(f) <= 480]
+        vpool = small_v or v_cands
+        vpool.sort(key=_height)
+        out["video"] = (vpool[-1] if small_v else vpool[0]).get("url")
+
+    a_cands = [f for f in adaptive if (f.get("mimeType") or "").startswith("audio/")]
+    if a_cands:
+        def _br(f) -> int:
+            try:
+                return int(f.get("bitrate") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        a_cands.sort(key=_br)
+        out["audio"] = a_cands[-1].get("url")
+    return out
+
+
+def get_stream_urls(video_id: str) -> dict:
+    """Playable stream URLs + channel/comment metadata.
+
+    Primary source: our own innertube request (no third-party dependency).
+    Invidious fills in avatar/comment count and acts as fallback.
     """
     cache_key = f"stream:{video_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-
-    # local=true: Invidious serves the bytes itself, so the URLs point at
-    # its host instead of googlevideo (which blocks our datacenter IP).
-    data = _invidious_get(f"/api/v1/videos/{video_id}?local=true")
 
     def _int(v) -> int:
         try:
@@ -586,38 +675,78 @@ def get_stream_urls(video_id: str) -> dict:
             return 0
 
     video_url = None
-    muxed = [
-        f
-        for f in (data.get("formatStreams") or [])
-        if f.get("url") and "mp4" in (f.get("container") or f.get("type") or "")
-    ]
-    if muxed:
-        muxed.sort(key=lambda f: _int(f.get("itag")))
-        video_url = muxed[-1].get("url")
-
     audio_url = None
-    audio_fmts = [
-        f
-        for f in (data.get("adaptiveFormats") or [])
-        if f.get("url") and (f.get("type") or "").startswith("audio/")
-    ]
-    if audio_fmts:
-        mp4_audio = [
-            f for f in audio_fmts if "mp4" in (f.get("type") or "").lower()
-        ]
-        pool = mp4_audio or audio_fmts
-        pool.sort(key=lambda f: _int(f.get("bitrate")))
-        audio_url = pool[-1].get("url")
+    title = channel = description = None
+    duration = None
+    channel_avatar = None
+    comment_count = None
+
+    it = _innertube_pick(video_id)
+    if it:
+        video_url = it.get("muxed")
+        audio_url = it.get("audio")
+        det = it.get("details") or {}
+        title = det.get("title")
+        channel = det.get("author")
+        duration = _int(det.get("lengthSeconds")) or None
+        description = (det.get("shortDescription") or "")[:500] or None
+        # Seed the relay cache so /relay never waits on Invidious.
+        if it.get("video") and it.get("audio"):
+            _cache_put(
+                f"relay:{video_id}",
+                {"video": it["video"], "audio": it["audio"]},
+                900,
+            )
+
+    # Invidious: avatar, comment count and any missing urls (best effort).
+    try:
+        # local=true: instance serves bytes itself (googlevideo may block).
+        data = _invidious_get(f"/api/v1/videos/{video_id}?local=true")
+
+        if not video_url:
+            muxed = [
+                f
+                for f in (data.get("formatStreams") or [])
+                if f.get("url")
+                and "mp4" in (f.get("container") or f.get("type") or "")
+            ]
+            if muxed:
+                muxed.sort(key=lambda f: _int(f.get("itag")))
+                video_url = muxed[-1].get("url")
+
+        if not audio_url:
+            audio_fmts = [
+                f
+                for f in (data.get("adaptiveFormats") or [])
+                if f.get("url") and (f.get("type") or "").startswith("audio/")
+            ]
+            if audio_fmts:
+                mp4_audio = [
+                    f for f in audio_fmts if "mp4" in (f.get("type") or "").lower()
+                ]
+                pool = mp4_audio or audio_fmts
+                pool.sort(key=lambda f: _int(f.get("bitrate")))
+                audio_url = pool[-1].get("url")
+
+        avatars = data.get("authorThumbnails") or []
+        channel_avatar = avatars[-1].get("url") if avatars else None
+
+        comment_count = data.get("commentCount")
+        if comment_count is not None:
+            comment_count = _int(comment_count) or None
+
+        title = title or data.get("title")
+        channel = channel or data.get("author")
+        duration = duration or (_int(data.get("lengthSeconds")) or None)
+        if not description:
+            description = (data.get("description") or "")[:500] or None
+    except Exception as e:  # noqa: BLE001
+        logger.info(f"invidious metadata unavailable for {video_id}: {e}")
+        if not video_url and not audio_url:
+            raise WatchError(502, "all stream sources failed") from e
 
     if not video_url and not audio_url:
-        raise WatchError(502, "invidious returned no stream urls")
-
-    avatars = data.get("authorThumbnails") or []
-    channel_avatar = avatars[-1].get("url") if avatars else None
-
-    comment_count = data.get("commentCount")
-    if comment_count is not None:
-        comment_count = _int(comment_count) or None
+        raise WatchError(502, "no stream urls")
 
     result = {
         "video": video_url,
@@ -628,12 +757,12 @@ def get_stream_urls(video_id: str) -> dict:
             if video_url
             else None
         ),
-        "title": data.get("title"),
-        "channel": data.get("author"),
+        "title": title,
+        "channel": channel,
         "channel_avatar": channel_avatar,
         "comment_count": comment_count,
-        "duration": _int(data.get("lengthSeconds")) or None,
-        "description": (data.get("description") or "")[:500],
+        "duration": duration,
+        "description": description,
     }
     _cache_put(cache_key, result, 900)
     logger.info(f"Stream urls for {video_id}: video={bool(video_url)} audio={bool(audio_url)}")
@@ -641,7 +770,7 @@ def get_stream_urls(video_id: str) -> dict:
     # Pre-solve the anti-bot cookie in the background while the user is
     # still looking at the video card, so pressing play doesn't wait for it.
     warm_url = video_url or audio_url
-    if warm_url:
+    if warm_url and ".f5.si" in warm_url:
 
         def _warm() -> None:
             try:
@@ -668,7 +797,17 @@ def get_relay_sources(video_id: str) -> dict:
     if cached is not None:
         return cached
 
-    # local=true so ffmpeg pulls from Invidious (googlevideo blocks us).
+    # Primary: adaptive pair from our own innertube request (seeded earlier
+    # by get_stream_urls, or fetched here as a fallback).
+    it = _innertube_pick(video_id)
+    if it and it.get("video") and it.get("audio"):
+        result = {"video": it["video"], "audio": it["audio"]}
+        _cache_put(cache_key, result, 900)
+        logger.info(f"Relay sources (innertube) for {video_id}")
+        return result
+
+    # Fallback: Invidious adaptive formats (local=true so ffmpeg pulls from
+    # the instance instead of googlevideo).
     data = _invidious_get(f"/api/v1/videos/{video_id}?local=true")
 
     def _h(f) -> int:
