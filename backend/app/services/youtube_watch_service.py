@@ -563,12 +563,16 @@ def _yt_dlp_comments(video_id: str) -> tuple[list[dict], str | None]:
     return items, None
 
 
+_IT_LAST_ERR = ""
+
+
 def _innertube_android(video_id: str) -> dict:
     """YouTube innertube player via the ANDROID client (TLS-impersonated).
 
     Works from datacenter IPs where the web client is rejected, and needs
     no third-party instance. Returns {} on any failure.
     """
+    global _IT_LAST_ERR
     from curl_cffi import requests as cffi_requests
 
     payload = {
@@ -593,18 +597,20 @@ def _innertube_android(video_id: str) -> dict:
             timeout=25,
         )
         if r.status_code != 200:
+            _IT_LAST_ERR = f"player http {r.status_code}: {r.text[:120]!r}"
             logger.info(f"innertube player HTTP {r.status_code} for {video_id}")
             return {}
         data = r.json()
     except Exception as e:  # noqa: BLE001
+        _IT_LAST_ERR = f"player exc {e!r}"[:200]
         logger.info(f"innertube player failed for {video_id}: {e}")
         return {}
-    if (data.get("playabilityStatus") or {}).get("status") != "OK":
-        logger.info(
-            "innertube playability not OK: "
-            f"{(data.get('playabilityStatus') or {}).get('reason')}"
-        )
+    status = data.get("playabilityStatus") or {}
+    if status.get("status") != "OK":
+        _IT_LAST_ERR = f"playability {status.get('status')}: {status.get('reason')!r}"[:200]
+        logger.info(f"innertube playability not OK: {status.get('reason')}")
         return {}
+    _IT_LAST_ERR = ""
     return data
 
 
@@ -743,7 +749,11 @@ def get_stream_urls(video_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         logger.info(f"invidious metadata unavailable for {video_id}: {e}")
         if not video_url and not audio_url:
-            raise WatchError(502, "all stream sources failed") from e
+            raise WatchError(
+                502,
+                f"all stream sources failed — innertube: {_IT_LAST_ERR or 'empty'}"
+                f" | invidious: {str(e)[:120]}",
+            ) from e
 
     if not video_url and not audio_url:
         raise WatchError(502, "no stream urls")
