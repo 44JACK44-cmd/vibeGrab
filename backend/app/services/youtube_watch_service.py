@@ -638,6 +638,72 @@ def get_stream_urls(video_id: str) -> dict:
     return result
 
 
+def get_relay_sources(video_id: str) -> dict:
+    """Adaptive video+audio URLs for server-side ffmpeg merge (/relay).
+
+    Many videos have no muxed format (formatStreams empty); those can only
+    be played by merging video and audio. The merge happens on our server so
+    the phone only needs to reach us.
+    """
+    cache_key = f"relay:{video_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    data = _invidious_get(f"/api/v1/videos/{video_id}")
+
+    def _h(f) -> int:
+        try:
+            return int(str(f.get("height") or f.get("qualityLabel") or "0").strip("p"))
+        except (TypeError, ValueError):
+            return 0
+
+    video_cands = [
+        f
+        for f in (data.get("adaptiveFormats") or [])
+        if f.get("url")
+        and "video/mp4" in (f.get("type") or "")
+        and "avc1" in (f.get("type") or "")
+    ]
+    if not video_cands:
+        raise WatchError(502, "no mp4 video format")
+    small = [f for f in video_cands if 0 < _h(f) <= 480]
+    vpool = small or video_cands
+    vpool.sort(key=_h)
+    video = vpool[0] if not small else vpool[-1]
+
+    audio_cands = [
+        f
+        for f in (data.get("adaptiveFormats") or [])
+        if f.get("url") and "audio/mp4" in (f.get("type") or "")
+    ]
+    if not audio_cands:
+        audio_cands = [
+            f
+            for f in (data.get("adaptiveFormats") or [])
+            if f.get("url") and (f.get("type") or "").startswith("audio/")
+        ]
+    if not audio_cands:
+        raise WatchError(502, "no audio format")
+
+    def _br(f) -> int:
+        try:
+            return int(f.get("bitrate") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    audio_cands.sort(key=_br)
+    audio = audio_cands[-1]
+
+    result = {"video": video.get("url"), "audio": audio.get("url")}
+    _cache_put(cache_key, result, 900)
+    logger.info(
+        f"Relay sources for {video_id}: v={_h(video)}p "
+        f"vlen={len(video.get('url') or '')} alen={len(audio.get('url') or '')}"
+    )
+    return result
+
+
 def get_play_url(video_id: str) -> dict:
     """Relay info: server-side yt-dlp format for /api/fetch streaming.
 
