@@ -668,11 +668,17 @@ def _relay_warm_kick(video_id: str) -> None:
     """Start the background merge for non-muxed videos (best effort)."""
     pair = _cache_get(f"relay:{video_id}")
     if not pair:
+        relay_warm._last_err[video_id] = "kick: relay pair not in cache"
+        return
+    if not pair.get("video") or not pair.get("audio"):
+        relay_warm._last_err[video_id] = f"kick: incomplete pair {sorted(pair)}"
         return
     try:
         relay_warm.start(video_id, pair)
+        relay_warm._last_err[video_id] = None
     except Exception as exc:  # noqa: BLE001
         logger.info(f"relay warm skipped for {video_id}: {exc}")
+        relay_warm._last_err[video_id] = f"kick: {exc}"[:200]
 
 
 def get_stream_urls(video_id: str) -> dict:
