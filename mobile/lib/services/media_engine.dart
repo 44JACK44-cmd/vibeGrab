@@ -506,7 +506,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
     // Never stay stuck loading/buffering: force idle if play stalls.
     _playWatchdog?.cancel();
-    _playWatchdog = Timer(const Duration(seconds: 45), () {
+    _playWatchdog = Timer(const Duration(seconds: 60), () {
       final s = _state;
       if (s.mediaId == video.url &&
           (s.status == MediaStatus.loading ||
@@ -587,6 +587,17 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           errs.add('video: ${_lastVideoError ?? "init falló"}');
         }
 
+        // 2c) Server-side merge for videos without a combined format:
+        // ffmpeg joins video+audio and streams mp4 through us. Reached only
+        // when the previous attempts did not start playback (or were absent).
+        final relayStarted = await _tryStartNetworkVideo(
+            Uri.parse('${ApiConfig.baseUrl}/api/explore/relay?v=$videoId'),
+            youtubeUrl,
+            mediaItem,
+            initTimeout: const Duration(seconds: 40));
+        if (relayStarted) return;
+        errs.add('unión servidor: ${_lastVideoError ?? "init falló"}');
+
         // 3) Audio-only: backend url, then device manifest.
         if (urls.audio != null) {
           final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
@@ -629,6 +640,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final started =
         await _startNetworkVideo(streamUrl, youtubeUrl, initTimeout: initTimeout);
     if (!started) return false;
+    playbackError = null;
 
     MediaMetadataService().recordPlay(
       filename: youtubeUrl,
