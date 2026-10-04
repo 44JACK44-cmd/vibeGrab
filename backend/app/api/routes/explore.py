@@ -1,5 +1,6 @@
 import re
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -179,6 +180,30 @@ def relay(v: str):
                 pass
 
     return StreamingResponse(_gen(), media_type="video/mp4")
+
+
+@router.get("/_relay_debug")
+def relay_debug(v: str):
+    """Internal diagnostics for the warm relay state."""
+    e = relay_warm._entries.get(v)
+    out = {
+        "entries": list(relay_warm._entries.keys()),
+        "entry_exists": e is not None,
+        "last_err": relay_warm._last_err.get(v),
+    }
+    if e is not None:
+        with e["cv"]:
+            out.update(
+                held=e["held"],
+                size=e["size"],
+                chunks=len(e["chunks"]),
+                done=e["done"],
+                stop=e["stop"],
+                frozen=e["frozen"],
+                consumers=len(e["consumers"]),
+                age=round(time.time() - e["ts"], 1),
+            )
+    return out
 
 
 @router.get("/search")

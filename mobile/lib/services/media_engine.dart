@@ -530,7 +530,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     void fail(String step) {
       errs.add(step);
       final detail = errs.join(' · ');
-      _failPlayback(detail.length > 240 ? '${detail.substring(0, 240)}…' : detail);
+      _failPlayback(detail.length > 320 ? '${detail.substring(0, 320)}…' : detail);
     }
 
     try {
@@ -598,10 +598,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         if (relayStarted) return;
         errs.add('unión servidor: ${_lastVideoError ?? "init falló"}');
 
-        // 3) Audio-only: backend url, then device manifest.
+        // 3) Audio-only through our proxy (direct audio hits the anti-bot
+        // page on the phone), then device manifest.
         if (urls.audio != null) {
-          final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
-              streamUri: Uri.parse(urls.audio!));
+          final audioUri = Uri.parse('${ApiConfig.baseUrl}/api/explore/proxy')
+              .replace(queryParameters: {'u': urls.audio!});
+          final ok =
+              await _playYouTubeAudio(youtubeUrl, mediaItem, streamUri: audioUri);
           if (ok) return;
           errs.add('audio: ${_lastAudioError ?? "falló"}');
         }

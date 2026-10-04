@@ -29,6 +29,7 @@ _MAX = 2                  # concurrent warm merges
 _lock = threading.Lock()
 _entries: dict[str, dict] = {}
 _cids = itertools.count(1)
+_last_err: dict[str, str] = {}
 
 
 def build_proc(sources: dict) -> subprocess.Popen:
@@ -137,6 +138,7 @@ def _worker(vid: str, sources: dict, entry: dict) -> None:
         proc = build_proc(sources)
     except Exception as e:  # noqa: BLE001
         logger.error(f"warm relay spawn failed for {vid}: {e}")
+        _last_err[vid] = f"spawn: {e}"[:200]
         _drop(vid, entry)
         return
     entry["proc"] = proc
@@ -184,6 +186,7 @@ def _worker(vid: str, sources: dict, entry: dict) -> None:
                 entry["cv"].notify_all()
     except Exception as e:  # noqa: BLE001
         logger.error(f"warm relay worker failed for {vid}: {e}")
+        _last_err[vid] = f"worker: {e}"[:200]
     finally:
         stall.cancel()
         with entry["cv"]:
