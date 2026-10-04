@@ -15,6 +15,7 @@ from app.schemas.explore import (
     RelatedResponse,
     StreamUrlResponse,
 )
+from app.services.anubis_client import ANTUBIS_UA, cookie_header, open_stream
 from app.services.explore_service import search_videos
 from app.services.youtube_watch_service import (
     WatchError,
@@ -49,14 +50,12 @@ def proxy(u: str, range_header: str | None = Header(None, alias="Range")):
             content={"success": False, "detail": "Host not allowed for relay"},
         )
 
-    req_headers = {"User-Agent": "Mozilla/5.0 (Linux; Android 14) Chrome/140.0.0.0"}
+    req_headers = {"User-Agent": ANTUBIS_UA}
     if range_header:
         req_headers["Range"] = range_header
 
     try:
-        upstream = urllib.request.urlopen(
-            urllib.request.Request(target, headers=req_headers), timeout=30
-        )
+        upstream = open_stream(target, req_headers, timeout=30)
     except urllib.error.HTTPError as e:
         return JSONResponse(
             status_code=e.code,
@@ -116,15 +115,27 @@ def relay(v: str):
             content={"success": False, "detail": "relay unavailable"},
         )
 
-    ua = "Mozilla/5.0 (Linux; Android 14) Chrome/140.0.0.0"
+    ua = ANTUBIS_UA
+    try:
+        ck = cookie_header(sources["video"])
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Anubis warmup failed: {e}")
+        ck = None
+    hdr_args = []
+    if ck:
+        hdr = f"Cookie: {ck}\r\nReferer: https://invidious.f5.si/\r\n"
+        hdr_args = ["-headers", hdr]
+
     proc = subprocess.Popen(
         [
             settings.FFMPEG_PATH,
             "-hide_banner",
             "-loglevel", "error",
             "-user_agent", ua,
+            *hdr_args,
             "-i", sources["video"],
             "-user_agent", ua,
+            *hdr_args,
             "-i", sources["audio"],
             "-c", "copy",
             "-f", "mp4",
