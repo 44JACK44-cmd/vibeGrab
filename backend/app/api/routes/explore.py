@@ -1,5 +1,4 @@
 import re
-import subprocess
 import threading
 import urllib.error
 import urllib.parse
@@ -7,7 +6,6 @@ import urllib.request
 
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse, StreamingResponse
-from app.core.config import settings
 from app.schemas.explore import (
     CommentsResponse,
     ExploreSearchResponse,
@@ -15,7 +13,8 @@ from app.schemas.explore import (
     RelatedResponse,
     StreamUrlResponse,
 )
-from app.services.anubis_client import ANTUBIS_UA, cookie_header, open_stream
+from app.services.anubis_client import ANTUBIS_UA, open_stream
+from app.services import relay_warm
 from app.services.explore_service import search_videos
 from app.services.youtube_watch_service import (
     WatchError,
@@ -101,6 +100,14 @@ def relay(v: str):
     invalid = _validate_video_id(v)
     if invalid:
         return invalid
+
+    # Warmed at stream-url time (user still on the video card): first bytes
+    # are already buffered, so ExoPlayer never hits its 8s first-byte limit.
+    if relay_warm.wait_first(v, timeout=8.0):
+        gen = relay_warm.stream(v)
+        if gen is not None:
+            return StreamingResponse(gen, media_type="video/mp4")
+
     try:
         sources = get_relay_sources(v)
     except WatchError as e:
@@ -115,38 +122,14 @@ def relay(v: str):
             content={"success": False, "detail": "relay unavailable"},
         )
 
-    ua = ANTUBIS_UA
     try:
-        ck = cookie_header(sources["video"])
+        proc = relay_warm.build_proc(sources)
     except Exception as e:  # noqa: BLE001
-        logger.error(f"Anubis warmup failed: {e}")
-        ck = None
-    hdr_args = []
-    if ck:
-        hdr = f"Cookie: {ck}\r\nReferer: https://invidious.f5.si/\r\n"
-        hdr_args = ["-headers", hdr]
-
-    proc = subprocess.Popen(
-        [
-            settings.FFMPEG_PATH,
-            "-hide_banner",
-            "-loglevel", "error",
-            "-probesize", "1048576",
-            "-analyzeduration", "1000000",
-            "-user_agent", ua,
-            *hdr_args,
-            "-i", sources["video"],
-            "-user_agent", ua,
-            *hdr_args,
-            "-i", sources["audio"],
-            "-c", "copy",
-            "-f", "mp4",
-            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-            "pipe:1",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+        logger.error(f"Relay ffmpeg spawn failed for {v}: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": "merge unavailable"},
+        )
 
     stderr_buf: list[bytes] = []
 

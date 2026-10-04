@@ -6,6 +6,7 @@ import urllib.parse
 import urllib.request
 
 from app.core.logging import logger
+from app.services import relay_warm
 
 _UA_COOKIES = {
     "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+000; SOCS=CAI",
@@ -663,6 +664,17 @@ def _innertube_pick(video_id: str) -> dict:
     return out
 
 
+def _relay_warm_kick(video_id: str) -> None:
+    """Start the background merge for non-muxed videos (best effort)."""
+    pair = _cache_get(f"relay:{video_id}")
+    if not pair:
+        return
+    try:
+        relay_warm.start(video_id, pair)
+    except Exception as exc:  # noqa: BLE001
+        logger.info(f"relay warm skipped for {video_id}: {exc}")
+
+
 def get_stream_urls(video_id: str) -> dict:
     """Playable stream URLs + channel/comment metadata.
 
@@ -672,6 +684,8 @@ def get_stream_urls(video_id: str) -> dict:
     cache_key = f"stream:{video_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
+        if not cached.get("video"):
+            _relay_warm_kick(video_id)
         return cached
 
     def _int(v) -> int:
@@ -776,6 +790,12 @@ def get_stream_urls(video_id: str) -> dict:
     }
     _cache_put(cache_key, result, 900)
     logger.info(f"Stream urls for {video_id}: video={bool(video_url)} audio={bool(audio_url)}")
+
+    # No muxed format → playback will go through /relay. Start the merge
+    # NOW while the user is still on the video card: by the time they press
+    # play the first bytes are buffered (ExoPlayer aborts after 8s).
+    if not video_url:
+        _relay_warm_kick(video_id)
 
     # Pre-solve the anti-bot cookie in the background while the user is
     # still looking at the video card, so pressing play doesn't wait for it.
