@@ -637,6 +637,22 @@ def get_stream_urls(video_id: str) -> dict:
     }
     _cache_put(cache_key, result, 900)
     logger.info(f"Stream urls for {video_id}: video={bool(video_url)} audio={bool(audio_url)}")
+
+    # Pre-solve the anti-bot cookie in the background while the user is
+    # still looking at the video card, so pressing play doesn't wait for it.
+    warm_url = video_url or audio_url
+    if warm_url:
+
+        def _warm() -> None:
+            try:
+                from app.services.anubis_client import cookie_header
+
+                cookie_header(warm_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.info(f"anubis warmup skipped: {exc}")
+
+        threading.Thread(target=_warm, daemon=True).start()
+
     return result
 
 

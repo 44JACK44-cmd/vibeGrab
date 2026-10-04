@@ -206,6 +206,10 @@ def _origin(url: str) -> str:
 def cookie_header(url: str) -> str | None:
     """Ensure a valid cookie for url (solving the challenge if needed) and
     return it as a 'name=value' header string for e.g. ffmpeg."""
+    with _lock:
+        if any("anubis-auth" in k for k in _cookies):
+            # auth cookie already solved in this process: skip the round trip
+            return _cookie_header_value()
     resp = open_stream(url)
     try:
         resp.read(1024)

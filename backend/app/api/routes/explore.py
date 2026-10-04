@@ -131,6 +131,8 @@ def relay(v: str):
             settings.FFMPEG_PATH,
             "-hide_banner",
             "-loglevel", "error",
+            "-probesize", "1048576",
+            "-analyzeduration", "1000000",
             "-user_agent", ua,
             *hdr_args,
             "-i", sources["video"],
@@ -164,7 +166,9 @@ def relay(v: str):
     # Kill ffmpeg if it never produces output (network stall from our side).
     stall_killer = threading.Timer(60.0, proc.kill)
     stall_killer.start()
-    first = proc.stdout.read(65536)
+    # read1 returns as soon as *any* bytes are available — ExoPlayer gives
+    # up after 8s without data, so never wait to fill a big buffer.
+    first = proc.stdout.read1(65536)
     stall_killer.cancel()
     if not first:
         proc.wait(timeout=30)
@@ -179,7 +183,7 @@ def relay(v: str):
         try:
             yield first
             while True:
-                chunk = proc.stdout.read(65536)
+                chunk = proc.stdout.read1(65536)
                 if not chunk:
                     break
                 yield chunk
