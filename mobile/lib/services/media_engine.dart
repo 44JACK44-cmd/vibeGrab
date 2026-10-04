@@ -628,7 +628,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   Future<bool> _tryStartNetworkVideo(
       Uri streamUrl, String youtubeUrl, MediaItem mediaItem,
       {Duration initTimeout = const Duration(seconds: 15)}) async {
-    _stopCurrentSilent();
+    await _stopCurrentSilent();
     _state = _state.copyWith(
       mediaId: youtubeUrl,
       title: mediaItem.title,
@@ -709,62 +709,72 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }) async {
     _lastVideoError = null;
     await _videoController?.dispose();
-    _videoController = VideoPlayerController.networkUrl(
+    final controller = VideoPlayerController.networkUrl(
       streamUrl,
       httpHeaders: const {
         'User-Agent':
             'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
       },
     );
+    _videoController = controller;
 
     try {
-      await _videoController!.initialize().timeout(
+      await controller.initialize().timeout(
         initTimeout,
         onTimeout: () => throw TimeoutException('Video initialization timed out'),
       );
     } catch (e) {
       debugPrint('[MediaEngine] Network video init error: $e');
       _lastVideoError = _short(e.toString());
-      await _videoController?.dispose();
-      _videoController = null;
+      await controller.dispose();
+      if (identical(_videoController, controller)) _videoController = null;
       return false;
     }
 
-    if (_videoController!.value.hasError) {
-      debugPrint(
-          '[MediaEngine] Network video error: ${_videoController!.value.errorDescription}');
-      _lastVideoError =
-          _videoController!.value.errorDescription ?? 'video error';
-      await _videoController?.dispose();
-      _videoController = null;
-      return false;
-    }
-
-    if (startAt > Duration.zero) {
-      await _videoController!.seekTo(startAt);
-    }
-
-    _videoController!.addListener(() {
-      if (_videoController == null || !_videoController!.value.isInitialized) return;
-      if (_videoController!.value.hasError) return;
-      final pos = _videoController!.value.position;
-      final dur = _videoController!.value.duration;
-      _state = _state.copyWith(position: pos, duration: dur);
-      _savePosition(mediaId, pos);
-      _syncPlaybackStateToHandler();
-
-      if (!_completionHandled && pos >= dur && dur > Duration.zero) {
-        _completionHandled = true;
-        _handlePlaybackComplete();
+    try {
+      if (controller.value.hasError) {
+        debugPrint(
+            '[MediaEngine] Network video error: ${controller.value.errorDescription}');
+        _lastVideoError =
+            controller.value.errorDescription ?? 'video error';
+        await controller.dispose();
+        if (identical(_videoController, controller)) _videoController = null;
+        return false;
       }
-      notifyListeners();
-    });
 
-    _state = _state.copyWith(status: MediaStatus.playing, position: startAt);
-    _syncPlaybackStateToHandler();
-    notifyListeners();
-    await _videoController!.play();
-    return true;
+      if (startAt > Duration.zero) {
+        await controller.seekTo(startAt);
+      }
+
+      controller.addListener(() {
+        if (!identical(_videoController, controller)) return;
+        if (!controller.value.isInitialized) return;
+        if (controller.value.hasError) return;
+        final pos = controller.value.position;
+        final dur = controller.value.duration;
+        _state = _state.copyWith(position: pos, duration: dur);
+        _savePosition(mediaId, pos);
+        _syncPlaybackStateToHandler();
+
+        if (!_completionHandled && pos >= dur && dur > Duration.zero) {
+          _completionHandled = true;
+          _handlePlaybackComplete();
+        }
+        notifyListeners();
+      });
+
+      _state = _state.copyWith(status: MediaStatus.playing, position: startAt);
+      _syncPlaybackStateToHandler();
+      notifyListeners();
+      await controller.play();
+      return true;
+    } catch (e) {
+      debugPrint('[MediaEngine] Network video start error: $e');
+      _lastVideoError = _short(e.toString());
+      await controller.dispose();
+      if (identical(_videoController, controller)) _videoController = null;
+      return false;
+    }
   }
 
   // --- YouTube Audio Playback ---
@@ -798,7 +808,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         streamUrl = audioStreams.first.url;
       }
 
-      _stopCurrentSilent();
+      await _stopCurrentSilent();
       _state = _state.copyWith(
         mediaId: youtubeUrl,
         title: mediaItem.title,
