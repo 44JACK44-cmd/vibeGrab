@@ -4,8 +4,10 @@ import 'dart:io';
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -24,6 +26,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   final AudioPlayer _player = AudioPlayer();
   VideoPlayerController? _videoController;
   VibeGrabAudioHandler? _audioHandler;
+  MediaStatus? _lastLoggedStatus;
+  bool? _lastLoggedPlaying;
   final YoutubeExplode _ytc = YoutubeExplode();
 
   MediaState _state = MediaState();
@@ -282,11 +286,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<void> initAudioService() async {
     try {
-      debugPrint('[MediaEngine] Initializing AudioService...');
+      debugPrint('[MEDIA_SESSION] Initializing AudioService...');
       PiPService.init();
       _audioHandler = VibeGrabAudioHandler(this);
-      // AudioServiceActivity already calls AudioService.init(), so only
-      // call init() here if the service is not yet connected
+      // AudioServiceActivity provides the shared engine (required so the
+      // plugin accepts this engine); the Dart side is initialized HERE.
       final isAlreadyInitialized = _isAudioServiceInitialized();
       if (!isAlreadyInitialized) {
         await AudioService.init(
@@ -296,23 +300,29 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
             androidNotificationChannelName: 'VibeGrab Audio',
             androidNotificationChannelDescription: 'VibeGrab media playback controls',
             androidNotificationIcon: 'drawable/ic_music_note',
-            androidNotificationOngoing: true,
-            androidStopForegroundOnPause: true,
+            // Android 12+: restarting the FGS from the background (system
+            // play button while app is backgrounded) throws
+            // ForegroundServiceStartNotAllowedException. Keeping the service
+            // foreground across a pause avoids that and keeps the media
+            // session + notification available while paused (audio_service
+            // README advice). The FGS notification itself is not dismissable
+            // while the service is in the foreground.
+            androidNotificationOngoing: false,
+            androidStopForegroundOnPause: false,
             preloadArtwork: true,
           ),
         );
-        debugPrint('[MediaEngine] AudioService initialized (first call)');
+        debugPrint('[MEDIA_SESSION] Service started (AudioService.init ok)');
       } else {
-        debugPrint('[MediaEngine] AudioService already connected (by AudioServiceActivity)');
+        debugPrint('[MEDIA_SESSION] AudioService already initialized');
       }
-      debugPrint('[MediaEngine] AudioService ready');
 
       // Official system audio session: audio focus, interruptions (calls),
       // becoming-noisy (headphones unplugged) and lock-screen/quick-panel
       // metadata all flow through audio_session + audio_service.
       _setupAudioSession();
     } catch (e) {
-      debugPrint('[MediaEngine] AudioService init FAILED: $e');
+      debugPrint('[MEDIA_SESSION] Service init FAILED: $e');
     }
   }
 
@@ -354,7 +364,49 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   void _syncToAudioHandler(MediaItem item) {
     debugPrint('[MediaEngine] Syncing to handler: ${item.title}, artUri=${item.artUri}');
     _audioHandler?.updateMediaItem(item);
+    _applyDefaultArtIfNeeded(item);
     _syncPlaybackStateToHandler();
+  }
+
+  // --- Default artwork (notification cover when none exists) ---
+
+  Future<Uri?>? _defaultArtUri;
+
+  /// Materializes assets/media_placeholder.png into the app documents
+  /// directory once, so Android can load it as a real file bitmap.
+  Future<Uri?> _ensureDefaultArt() {
+    return _defaultArtUri ??= () async {
+      try {
+        final bytes = await rootBundle.load('assets/media_placeholder.png');
+        final dir = await getApplicationDocumentsDirectory();
+        final file = File('${dir.path}/media_placeholder.png');
+        if (!await file.exists() ||
+            await file.length() != bytes.lengthInBytes) {
+          await file.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
+        }
+        debugPrint('[MEDIA_SESSION] Default artwork materialized');
+        return Uri.file(file.path);
+      } catch (e) {
+        debugPrint('[MEDIA_SESSION] Default artwork failed: $e');
+        return null;
+      }
+    }();
+  }
+
+  /// If the item has no cover yet, attach the default artwork as soon as it
+  /// is materialized (data may arrive after playback started).
+  void _applyDefaultArtIfNeeded(MediaItem item) {
+    if (item.artUri != null) return;
+    _ensureDefaultArt().then((uri) {
+      if (uri == null) return;
+      final current = _audioHandler?.mediaItem.value;
+      if (current != null &&
+          current.id == item.id &&
+          current.artUri == null) {
+        debugPrint('[MEDIA_SESSION] MediaItem art filled with default');
+        _audioHandler?.updateMediaItem(current.copyWith(artUri: uri));
+      }
+    }).catchError((_) {});
   }
 
   void _syncPlaybackStateToHandler() {
@@ -380,6 +432,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         break;
     }
     debugPrint('[MediaEngine] Sync playback state: playing=${_state.isPlaying}, status=${_state.status.name}, handler=${_audioHandler != null}');
+    if (kDebugMode && (_state.status != _lastLoggedStatus || _state.isPlaying != _lastLoggedPlaying)) {
+      _lastLoggedStatus = _state.status;
+      _lastLoggedPlaying = _state.isPlaying;
+      debugPrint('[MEDIA_SESSION] PlaybackState updated: playing=${_state.isPlaying}, state=${_state.status.name}');
+    }
     _audioHandler?.updatePlaybackState(
       playing: _state.isPlaying,
       processingState: procState,
@@ -396,6 +453,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _audioHandler?.queue.add(_queue);
     if (_currentIndex >= 0 && _currentIndex < _queue.length) {
       _audioHandler?.updateMediaItem(_queue[_currentIndex]);
+      _applyDefaultArtIfNeeded(_queue[_currentIndex]);
     }
   }
 

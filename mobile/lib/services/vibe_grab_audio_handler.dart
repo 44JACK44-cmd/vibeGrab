@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'session_snapshot.dart';
 
@@ -48,6 +49,12 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> updateMediaItem(MediaItem newMediaItem) {
+    final prev = mediaItem.value;
+    if (prev?.id != newMediaItem.id || prev?.duration != newMediaItem.duration) {
+      debugPrint('[MEDIA_SESSION] MediaItem updated: "${newMediaItem.title}" '
+          'by "${newMediaItem.artist}" dur=${newMediaItem.duration} '
+          'art=${newMediaItem.artUri ?? "none"}');
+    }
     mediaItem.add(newMediaItem);
     return Future.value();
   }
@@ -81,13 +88,20 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> play() => _engine.resume();
+  Future<void> play() {
+    debugPrint('[MEDIA_SESSION] Play (from system/app)');
+    return _engine.resume();
+  }
 
   @override
-  Future<void> pause() => _engine.pause();
+  Future<void> pause() {
+    debugPrint('[MEDIA_SESSION] Pause (from system/app)');
+    return _engine.pause();
+  }
 
   @override
   Future<void> stop() async {
+    debugPrint('[MEDIA_SESSION] Service stopped');
     await _engine.stop();
     playbackState.add(playbackState.value.copyWith(
       processingState: AudioProcessingState.idle,
@@ -96,13 +110,22 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> seek(Duration position) => _engine.seek(position);
+  Future<void> seek(Duration position) {
+    debugPrint('[MEDIA_SESSION] Seek -> $position');
+    return _engine.seek(position);
+  }
 
   @override
-  Future<void> skipToNext() => _engine.skipToNext();
+  Future<void> skipToNext() {
+    debugPrint('[MEDIA_SESSION] Next');
+    return _engine.skipToNext();
+  }
 
   @override
-  Future<void> skipToPrevious() => _engine.skipToPrevious();
+  Future<void> skipToPrevious() {
+    debugPrint('[MEDIA_SESSION] Previous');
+    return _engine.skipToPrevious();
+  }
 
   @override
   Future<void> setSpeed(double speed) => _engine.audioPlayer.setSpeed(speed);

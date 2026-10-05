@@ -19,7 +19,7 @@ import android.util.Rational
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
-import io.flutter.embedding.android.FlutterActivity
+import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
@@ -27,7 +27,12 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
-class MainActivity : FlutterActivity() {
+// MUST extend AudioServiceActivity (audio_service README): it provides the
+// shared "audio_service_engine" FlutterEngine to the audio_service plugin.
+// With a plain FlutterActivity the plugin detects a "wrong engine", every
+// AudioService.init() call throws and the Android MediaSession / media
+// notification is NEVER created.
+class MainActivity : AudioServiceActivity() {
     private val SHARE_CHANNEL = "com.example.vibegrab/share"
     private val DOWNLOAD_CHANNEL = "com.example.vibegrab/downloads"
     private val LOCAL_MEDIA_CHANNEL = "com.example.vibegrab/local_media"
