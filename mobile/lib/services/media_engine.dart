@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
@@ -16,6 +17,7 @@ import '../data/models/stream_urls.dart';
 import '../services/storage_service.dart';
 import '../services/media_metadata_service.dart';
 import '../services/vibe_grab_audio_handler.dart';
+import '../services/session_snapshot.dart';
 import '../services/pip_service.dart';
 
 class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
@@ -34,6 +36,118 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   AudioPlayer get audioPlayer => _player;
   Duration get position => _state.position;
   Duration get duration => _state.duration;
+
+  // --- OS media session snapshot (single source of truth) ---
+
+  final _sessionSnapshots = StreamController<SessionSnapshot>.broadcast();
+
+  @override
+  SessionSnapshot get currentSessionSnapshot => SessionSnapshot(
+        position: _state.position,
+        duration: _state.duration,
+        bufferedPosition:
+            _videoController != null ? Duration.zero : _player.bufferedPosition,
+        speed: _videoController != null ? 1.0 : _player.speed,
+      );
+
+  @override
+  Stream<SessionSnapshot> get sessionSnapshots => _sessionSnapshots.stream;
+
+  void _emitSessionSnapshot() {
+    if (!_sessionSnapshots.isClosed) {
+      _sessionSnapshots.add(currentSessionSnapshot);
+    }
+  }
+
+  // --- System audio session (focus, interruptions, headphones) ---
+
+  AudioSession? _audioSession;
+  final List<StreamSubscription<dynamic>> _audioSessionSubs = [];
+  bool _sessionActive = false;
+  bool _pausedByInterruption = false;
+  bool _ducked = false;
+  double _volBeforeDuck = 1.0;
+  double _videoVolBeforeDuck = 1.0;
+
+  void _activateAudioSession() {
+    if (_sessionActive) return;
+    _sessionActive = true;
+    _audioSession?.setActive(true).then((ok) {
+      if (!ok) debugPrint('[MediaEngine] AudioSession activate refused');
+    }).catchError((e) {
+      debugPrint('[MediaEngine] AudioSession activate error: $e');
+    });
+  }
+
+  void _deactivateAudioSession() {
+    if (!_sessionActive) return;
+    _sessionActive = false;
+    _pausedByInterruption = false;
+    _audioSession?.setActive(false).catchError((e) {
+      debugPrint('[MediaEngine] AudioSession deactivate error: $e');
+    });
+  }
+
+  void _onAudioInterruption(AudioInterruptionEvent event) {
+    try {
+      if (event.begin) {
+        switch (event.type) {
+          case AudioInterruptionType.duck:
+            _setDucking(true);
+            break;
+          case AudioInterruptionType.pause:
+            if (isPlaying) {
+              _pausedByInterruption = true;
+              pause();
+            }
+            break;
+          case AudioInterruptionType.unknown:
+            if (isPlaying) {
+              _pausedByInterruption = true;
+              pause();
+            }
+            break;
+        }
+      } else {
+        switch (event.type) {
+          case AudioInterruptionType.duck:
+            _setDucking(false);
+            break;
+          case AudioInterruptionType.pause:
+            if (_pausedByInterruption) {
+              _pausedByInterruption = false;
+              resume();
+            }
+            break;
+          case AudioInterruptionType.unknown:
+            // System interruption (e.g. call) ended: stay paused and let
+            // the user resume manually from app, notification or headset.
+            _pausedByInterruption = false;
+            break;
+        }
+      }
+    } catch (e) {
+      debugPrint('[MediaEngine] Interruption handling error: $e');
+    }
+  }
+
+  Future<void> _setDucking(bool duck) async {
+    try {
+      if (duck && !_ducked) {
+        _ducked = true;
+        _volBeforeDuck = _player.volume;
+        _videoVolBeforeDuck = _videoController?.value.volume ?? 1.0;
+        await _player.setVolume(_volBeforeDuck * 0.25);
+        await _videoController?.setVolume(_videoVolBeforeDuck * 0.25);
+      } else if (!duck && _ducked) {
+        _ducked = false;
+        await _player.setVolume(_volBeforeDuck);
+        await _videoController?.setVolume(_videoVolBeforeDuck);
+      }
+    } catch (e) {
+      debugPrint('[MediaEngine] Ducking error: $e');
+    }
+  }
 
   bool _isAudioBackgroundActive = false;
   bool get isAudioBackgroundActive => _isAudioBackgroundActive;
@@ -192,8 +306,39 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         debugPrint('[MediaEngine] AudioService already connected (by AudioServiceActivity)');
       }
       debugPrint('[MediaEngine] AudioService ready');
+
+      // Official system audio session: audio focus, interruptions (calls),
+      // becoming-noisy (headphones unplugged) and lock-screen/quick-panel
+      // metadata all flow through audio_session + audio_service.
+      _setupAudioSession();
     } catch (e) {
       debugPrint('[MediaEngine] AudioService init FAILED: $e');
+    }
+  }
+
+  Future<void> _setupAudioSession() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playback,
+        avAudioSessionCategoryOptions:
+            AVAudioSessionCategoryOptions.duckOthers,
+        androidAudioAttributes: AndroidAudioAttributes(
+          contentType: AndroidAudioContentType.music,
+          usage: AndroidAudioUsage.media,
+        ),
+        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+      ));
+      _audioSession = session;
+      _audioSessionSubs
+        ..add(session.interruptionEventStream.listen(_onAudioInterruption))
+        ..add(session.becomingNoisyEventStream.listen((_) {
+          debugPrint('[MediaEngine] Audio becoming noisy -> pause');
+          if (isPlaying) pause();
+        }));
+      debugPrint('[MediaEngine] AudioSession configured');
+    } catch (e) {
+      debugPrint('[MediaEngine] AudioSession setup failed: $e');
     }
   }
 
@@ -239,6 +384,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       playing: _state.isPlaying,
       processingState: procState,
     );
+    _emitSessionSnapshot();
+    if (_state.isPlaying) {
+      _activateAudioSession();
+    } else if (_state.status == MediaStatus.idle) {
+      _deactivateAudioSession();
+    }
   }
 
   void _syncQueueToHandler() {
@@ -422,6 +573,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           }
         } else {
           _state = _state.copyWith(status: MediaStatus.idle);
+          _syncPlaybackStateToHandler();
           notifyListeners();
         }
       }
@@ -901,6 +1053,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       final uri = _resolvePlaybackUri(file);
       if (uri == null) {
         _state = _state.copyWith(status: MediaStatus.idle);
+        _syncPlaybackStateToHandler();
         notifyListeners();
         return;
       }
@@ -910,6 +1063,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       } catch (e) {
         debugPrint('[MediaEngine] Audio source error: $e');
         _state = _state.copyWith(status: MediaStatus.idle);
+        _syncPlaybackStateToHandler();
         notifyListeners();
         return;
       }
@@ -936,6 +1090,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     } catch (e) {
       debugPrint('[MediaEngine] Audio source error: $e');
       _state = _state.copyWith(status: MediaStatus.idle);
+      _syncPlaybackStateToHandler();
       notifyListeners();
       return;
     }
@@ -962,6 +1117,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _state = _state.copyWith(status: MediaStatus.idle);
       await _videoController?.dispose();
       _videoController = null;
+      _syncPlaybackStateToHandler();
       notifyListeners();
       return;
     }
@@ -971,6 +1127,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _state = _state.copyWith(status: MediaStatus.idle);
       await _videoController?.dispose();
       _videoController = null;
+      _syncPlaybackStateToHandler();
       notifyListeners();
       return;
     }
@@ -1001,6 +1158,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final uri = _resolvePlaybackUri(file);
     if (uri == null) {
       _state = _state.copyWith(status: MediaStatus.idle);
+      _syncPlaybackStateToHandler();
       notifyListeners();
       return;
     }
@@ -1022,6 +1180,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     } catch (e) {
       debugPrint('[MediaEngine] Video init error: $e');
       _state = _state.copyWith(status: MediaStatus.idle);
+      _syncPlaybackStateToHandler();
       notifyListeners();
       return;
     }
@@ -1031,6 +1190,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _state = _state.copyWith(status: MediaStatus.idle);
       await _videoController?.dispose();
       _videoController = null;
+      _syncPlaybackStateToHandler();
       notifyListeners();
       return;
     }
@@ -1273,6 +1433,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         if (_audioHandler?.mediaItem.value != null) {
           _audioHandler?.updateMediaItem(_audioHandler!.mediaItem.value!.copyWith(duration: dur));
         }
+        _emitSessionSnapshot();
         notifyListeners();
       }
     });
@@ -1432,11 +1593,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<void> stop() async {
     await _stopCurrent();
-    _audioHandler?.updatePlaybackState(
-      playing: false,
-      processingState: AudioProcessingState.idle,
-    );
     _state = MediaState();
+    _syncPlaybackStateToHandler();
     _queue.clear();
     _currentIndex = -1;
     _audioHandler?.queue.add([]);
@@ -1452,6 +1610,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();
+    for (final sub in _audioSessionSubs) {
+      sub.cancel();
+    }
+    _sessionSnapshots.close();
     _stopCurrent();
     _audioHandler?.dispose();
     _ytc.close();

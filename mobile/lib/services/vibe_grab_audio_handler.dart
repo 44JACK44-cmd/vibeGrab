@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
+import 'session_snapshot.dart';
 
 abstract class MediaEngineDelegate {
   AudioPlayer get audioPlayer;
+  SessionSnapshot get currentSessionSnapshot;
+  Stream<SessionSnapshot> get sessionSnapshots;
   Future<void> resume();
   Future<void> pause();
   Future<void> stop();
@@ -12,73 +15,34 @@ abstract class MediaEngineDelegate {
   Future<void> skipToPrevious();
 }
 
+/// System media session adapter (Android MediaSession / notification /
+/// quick settings / lock screen / media buttons).
+///
+/// It owns NO playback state: it mirrors [MediaEngine] and delegates every
+/// action back to it, so the app and the OS can never disagree.
 class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
   final MediaEngineDelegate _engine;
-  StreamSubscription<Duration>? _posSub;
-  StreamSubscription<Duration?>? _durSub;
-  StreamSubscription<PlayerState>? _stateSub;
+  StreamSubscription<SessionSnapshot>? _snapSub;
 
   VibeGrabAudioHandler(this._engine) {
     _init();
   }
 
   void _init() {
-    _posSub = _engine.audioPlayer.positionStream.listen((pos) {
+    // MediaEngine emits a snapshot on every position/duration/state change
+    // for audio AND video — one stream feeds progress, duration and speed.
+    _snapSub = _engine.sessionSnapshots.listen((s) {
       playbackState.add(playbackState.value.copyWith(
-        updatePosition: pos,
+        updatePosition: s.position,
+        bufferedPosition: s.bufferedPosition,
+        speed: s.speed,
       ));
-    });
-
-    _durSub = _engine.audioPlayer.durationStream.listen((dur) {
-      if (dur != null && mediaItem.value != null) {
-        mediaItem.add(mediaItem.value!.copyWith(duration: dur));
+      final item = mediaItem.value;
+      if (item != null &&
+          s.duration > Duration.zero &&
+          item.duration != s.duration) {
+        mediaItem.add(item.copyWith(duration: s.duration));
       }
-    });
-
-    _stateSub = _engine.audioPlayer.playerStateStream.listen((ps) {
-      final playing = ps.playing;
-      final processingState = ps.processingState;
-
-      AudioProcessingState audioProcessingState;
-      switch (processingState) {
-        case ProcessingState.idle:
-          audioProcessingState = AudioProcessingState.idle;
-          break;
-        case ProcessingState.loading:
-          audioProcessingState = AudioProcessingState.loading;
-          break;
-        case ProcessingState.buffering:
-          audioProcessingState = AudioProcessingState.buffering;
-          break;
-        case ProcessingState.ready:
-          audioProcessingState = AudioProcessingState.ready;
-          break;
-        case ProcessingState.completed:
-          audioProcessingState = AudioProcessingState.completed;
-          break;
-      }
-
-      playbackState.add(playbackState.value.copyWith(
-        controls: [
-          MediaControl.skipToPrevious,
-          if (playing) MediaControl.pause else MediaControl.play,
-          MediaControl.skipToNext,
-          MediaControl.stop,
-        ],
-        systemActions: const {
-          MediaAction.seek,
-          MediaAction.seekForward,
-          MediaAction.seekBackward,
-          MediaAction.skipToNext,
-          MediaAction.skipToPrevious,
-        },
-        androidCompactActionIndices: const [0, 1, 2],
-        processingState: audioProcessingState,
-        playing: playing,
-        updatePosition: _engine.audioPlayer.position,
-        bufferedPosition: _engine.audioPlayer.bufferedPosition,
-        speed: _engine.audioPlayer.speed,
-      ));
     });
   }
 
@@ -92,6 +56,7 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
     required bool playing,
     required AudioProcessingState processingState,
   }) {
+    final s = _engine.currentSessionSnapshot;
     playbackState.add(playbackState.value.copyWith(
       controls: [
         MediaControl.skipToPrevious,
@@ -109,9 +74,9 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
       androidCompactActionIndices: const [0, 1, 2],
       processingState: processingState,
       playing: playing,
-      updatePosition: _engine.audioPlayer.position,
-      bufferedPosition: _engine.audioPlayer.bufferedPosition,
-      speed: _engine.audioPlayer.speed,
+      updatePosition: s.position,
+      bufferedPosition: s.bufferedPosition,
+      speed: s.speed,
     ));
   }
 
@@ -148,8 +113,6 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   void dispose() {
-    _posSub?.cancel();
-    _durSub?.cancel();
-    _stateSub?.cancel();
+    _snapSub?.cancel();
   }
 }
