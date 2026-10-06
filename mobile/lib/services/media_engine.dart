@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:video_player/video_player.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -28,6 +29,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   VibeGrabAudioHandler? _audioHandler;
   MediaStatus? _lastLoggedStatus;
   bool? _lastLoggedPlaying;
+
+  // --- Media session self-diagnostic (shown in Settings > About) ---
+  // not_run | running | ok | failed: <error>
+  String mediaSessionStatus = 'not_run';
+  bool? notificationPermission;
+  bool _initInFlight = false;
+  int _initAttempts = 0;
   final YoutubeExplode _ytc = YoutubeExplode();
 
   MediaState _state = MediaState();
@@ -284,15 +292,33 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   // --- AudioService Integration ---
 
-  Future<void> initAudioService() async {
+  Future<void> initAudioService({bool force = false}) async {
+    if (_initInFlight) return;
+    if (!force &&
+        (mediaSessionStatus == 'ok' || mediaSessionStatus == 'running')) {
+      return;
+    }
+    _initInFlight = true;
+    mediaSessionStatus = 'running';
+    notifyListeners();
     try {
-      debugPrint('[MEDIA_SESSION] Initializing AudioService...');
+      debugPrint(
+          '[MEDIA_SESSION] Initializing AudioService (attempt ${_initAttempts + 1})...');
+      // Android 13+: the media notification needs POST_NOTIFICATIONS.
+      try {
+        notificationPermission = await Permission.notification.isGranted;
+        if (notificationPermission != true) {
+          await Permission.notification.request();
+          notificationPermission = await Permission.notification.isGranted;
+        }
+      } catch (e) {
+        debugPrint('[MEDIA_SESSION] Notification permission check failed: $e');
+      }
       PiPService.init();
-      _audioHandler = VibeGrabAudioHandler(this);
+      _audioHandler ??= VibeGrabAudioHandler(this);
       // AudioServiceActivity provides the shared engine (required so the
       // plugin accepts this engine); the Dart side is initialized HERE.
-      final isAlreadyInitialized = _isAudioServiceInitialized();
-      if (!isAlreadyInitialized) {
+      if (!_isAudioServiceInitialized()) {
         await AudioService.init(
           builder: () => _audioHandler!,
           config: const AudioServiceConfig(
@@ -311,18 +337,24 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
             androidStopForegroundOnPause: false,
             preloadArtwork: true,
           ),
-        );
-        debugPrint('[MEDIA_SESSION] Service started (AudioService.init ok)');
-      } else {
-        debugPrint('[MEDIA_SESSION] AudioService already initialized');
+        ).timeout(const Duration(seconds: 10));
       }
-
-      // Official system audio session: audio focus, interruptions (calls),
-      // becoming-noisy (headphones unplugged) and lock-screen/quick-panel
-      // metadata all flow through audio_session + audio_service.
       _setupAudioSession();
+      mediaSessionStatus = 'ok';
+      debugPrint('[MEDIA_SESSION] Service started (AudioService.init ok)');
     } catch (e) {
+      mediaSessionStatus = 'failed: $e';
       debugPrint('[MEDIA_SESSION] Service init FAILED: $e');
+      if (_initAttempts < 3) {
+        _initAttempts++;
+        final delay = Duration(seconds: 2 * _initAttempts);
+        debugPrint(
+            '[MEDIA_SESSION] Retrying in ${delay.inSeconds}s (attempt ${_initAttempts + 1})');
+        Future.delayed(delay, () => initAudioService(force: true));
+      }
+    } finally {
+      _initInFlight = false;
+      notifyListeners();
     }
   }
 
@@ -363,6 +395,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   void _syncToAudioHandler(MediaItem item) {
     debugPrint('[MediaEngine] Syncing to handler: ${item.title}, artUri=${item.artUri}');
+    // First play is the moment where the system session MUST be connected:
+    // retry initialization here if it is not ok yet.
+    if (mediaSessionStatus != 'ok') {
+      initAudioService();
+    }
     _audioHandler?.updateMediaItem(item);
     _applyDefaultArtIfNeeded(item);
     _syncPlaybackStateToHandler();

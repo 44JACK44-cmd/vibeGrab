@@ -266,6 +266,7 @@ class AppLocalizations {
   String get saveMetadata => _get('saveMetadata');
   String get saveMetadataHint => _get('saveMetadataHint');
   String get appVersion => _get('appVersion');
+  String get mediaSessionLabel => _get('mediaSessionLabel');
 
   String get language => _get('language');
   String get languageAuto => _get('languageAuto');

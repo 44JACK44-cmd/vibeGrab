@@ -7,6 +7,7 @@ import '../../../core/localization/language_provider.dart';
 import '../../../core/constants/api_constants.dart';
 import '../../../data/models/app_settings.dart';
 import '../../../services/api_service.dart';
+import '../../../services/media_engine.dart';
 import '../../../services/download_notification_service.dart';
 import '../../../services/update_service.dart';
 import '../controllers/settings_controller.dart';
@@ -218,6 +219,7 @@ class _SettingsViewState extends State<SettingsView> {
               const SizedBox(height: 24),
               _sectionHeader(loc.sectionAbout, cs.primary),
               _buildAboutTile(context, cs, text1, text2),
+              _buildMediaSessionTile(context, cs, text1, text2),
             ],
           );
         },
@@ -683,6 +685,46 @@ class _SettingsViewState extends State<SettingsView> {
           onTap: () => UpdateDialog.checkAndShow(context, manual: true),
         );
       },
+    );
+  }
+
+  Widget _buildMediaSessionTile(BuildContext context, ColorScheme cs, Color text1, Color text2) {
+    final engine = context.watch<MediaEngine>();
+    final st = engine.mediaSessionStatus;
+    final String label;
+    final Color color;
+    if (st == 'ok') {
+      label = 'OK — conectado con Android';
+      color = Colors.green;
+    } else if (st == 'running') {
+      label = 'Conectando...';
+      color = Colors.orange;
+    } else if (st == 'not_run') {
+      label = 'Sin iniciar';
+      color = Colors.redAccent;
+    } else {
+      label = st;
+      color = Colors.redAccent;
+    }
+    final notif = engine.notificationPermission;
+    final notifText = notif == null
+        ? ''
+        : notif
+            ? ' · notificaciones: OK'
+            : ' · notificaciones: BLOQUEADAS (activar en ajustes del sistema)';
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(Icons.music_note, color: color),
+      title: Text(AppLocalizations.of(context).mediaSessionLabel,
+          style: TextStyle(color: text1, fontSize: 15)),
+      subtitle: Text(
+        '$label$notifText',
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: color.withValues(alpha: 0.85), fontSize: 12),
+      ),
+      trailing: const Icon(Icons.refresh, size: 18),
+      onTap: () => engine.initAudioService(force: true),
     );
   }
 
