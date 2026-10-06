@@ -17,7 +17,7 @@ import '../../../services/api_service.dart';
 import '../../../features/analyzer/controllers/analyze_controller.dart';
 import '../../../features/downloads/controllers/downloads_controller.dart';
 import '../../analyzer/widgets/format_selector.dart';
-import '../../media_player/widgets/mini_player.dart';
+import '../../media_player/views/video_fullscreen_view.dart';
 
 class VideoDetailView extends StatefulWidget {
   final ExploreVideo video;
@@ -278,6 +278,17 @@ Future<void> _toggleLike() async {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
+                    if ((engine.playbackError ?? '').contains('servidor')) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        loc.playCheckConnection,
+                        style: TextStyle(
+                          color: cs.onErrorContainer,
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

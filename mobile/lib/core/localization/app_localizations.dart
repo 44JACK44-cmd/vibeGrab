@@ -503,6 +503,8 @@ class AppLocalizations {
   String get playStageServer => _get('playStageServer');
   String get playStageDirect => _get('playStageDirect');
   String get playStageAudio => _get('playStageAudio');
+
+  String get playCheckConnection => _get('playCheckConnection');
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

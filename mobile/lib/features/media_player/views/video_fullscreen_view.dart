@@ -1,26 +1,23 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
-import '../../../core/localization/app_localizations.dart';
 import '../../../services/display_service.dart';
 import '../../../services/media_engine.dart';
-import '../../../data/models/library_file.dart';
-import 'video_fullscreen_view.dart';
 import '../widgets/video_controls_controller.dart';
 import '../widgets/video_controls_overlay.dart';
 
-class VideoPlayerView extends StatefulWidget {
-  final LibraryFile file;
+/// Fullscreen video screen shared by local and Explorer playback.
+/// In PiP it renders only the video surface (system draws transport).
 
-  const VideoPlayerView({super.key, required this.file});
+class VideoPlayerFullScreen extends StatefulWidget {
+  const VideoPlayerFullScreen({super.key});
 
   @override
-  State<VideoPlayerView> createState() => _VideoPlayerViewState();
+  State<VideoPlayerFullScreen> createState() => _VideoPlayerFullScreenState();
 }
 
-class _VideoPlayerViewState extends State<VideoPlayerView> {
+class _VideoPlayerFullScreenState extends State<VideoPlayerFullScreen> {
   late final VideoControlsController _controls;
   bool _dragH = false;
   bool _dragV = false;
@@ -35,9 +32,13 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
   void initState() {
     super.initState();
     _controls = VideoControlsController();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      context.read<MediaEngine>().playFile(widget.file);
       _controls.canHide = () => context.read<MediaEngine>().isPlaying;
       _controls.show();
     });
@@ -65,13 +66,6 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
     return target;
   }
 
-  void _openFullscreen() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const VideoPlayerFullScreen()),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -87,8 +81,8 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
             return Container(
               color: Colors.black,
               alignment: Alignment.center,
-              child:
-                  AspectRatio(aspectRatio: vc.value.aspectRatio, child: VideoPlayer(vc)),
+              child: AspectRatio(
+                  aspectRatio: vc.value.aspectRatio, child: VideoPlayer(vc)),
             );
           }
           final vc = engine.videoController;
@@ -103,6 +97,7 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
                     behavior: HitTestBehavior.opaque,
                     onTap: _controls.toggle,
                     onDoubleTap: () {
+                      // Double tap: quick +10s without hiding controls.
                       final target = _clampedSeek(engine,
                           engine.position + const Duration(seconds: 10));
                       engine.seek(target);
@@ -121,8 +116,10 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
                       final target = _clampedSeek(
                           engine,
                           _seekBase +
-                              Duration(seconds: (_accDx / 8).round()));
-                      _controls.flashHint(_fmt(target), Icons.fast_forward);
+                              Duration(
+                                  seconds: (_accDx / 8).round()));
+                      _controls.flashHint(
+                          _fmt(target), Icons.fast_forward);
                     },
                     onHorizontalDragEnd: (_) {
                       if (!_dragH) return;
@@ -130,7 +127,8 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
                       final target = _clampedSeek(
                           engine,
                           _seekBase +
-                              Duration(seconds: (_accDx / 8).round()));
+                              Duration(
+                                  seconds: (_accDx / 8).round()));
                       engine.seek(target);
                       _controls.clearHint();
                       _controls.show();
@@ -182,10 +180,10 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
                     child: CircularProgressIndicator(color: Colors.white)),
               ProVideoOverlay(
                 controls: _controls,
-                title: widget.file.title,
-                isFullscreen: false,
+                title: engine.currentTitle ?? '',
+                isFullscreen: true,
                 onBack: () => Navigator.pop(context),
-                onToggleFullscreen: _openFullscreen,
+                onToggleFullscreen: () => Navigator.pop(context),
               ),
             ],
           );

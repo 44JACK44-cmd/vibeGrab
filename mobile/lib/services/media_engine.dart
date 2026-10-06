@@ -611,13 +611,36 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   MediaItem _exploreVideoToMediaItem(ExploreVideo video) {
     final artUri = video.thumbnail != null ? Uri.tryParse(video.thumbnail!) : null;
+    final secs = video.duration ?? _parseDurationString(video.durationString);
     return MediaItem(
       id: video.url,
       title: video.title,
       artist: video.channel ?? 'YouTube',
       artUri: artUri,
-      duration: video.duration != null ? Duration(seconds: video.duration!) : null,
+      duration: secs != null ? Duration(seconds: secs) : null,
     );
+  }
+
+  /// Parses "04:27" / "1:59:06" labels into seconds. Search results often
+  /// carry the label but not the numeric duration; without this the player
+  /// shows 00:00 and seeking is impossible.
+  int? _parseDurationString(String? s) {
+    if (s == null) return null;
+    final parts = s.trim().split(':');
+    int? p(String x) => int.tryParse(x);
+    if (parts.length == 2) {
+      final m = p(parts[0]);
+      final sec = p(parts[1]);
+      if (m != null && sec != null) return m * 60 + sec;
+    } else if (parts.length == 3) {
+      final h = p(parts[0]);
+      final m = p(parts[1]);
+      final sec = p(parts[2]);
+      if (h != null && m != null && sec != null) {
+        return h * 3600 + m * 60 + sec;
+      }
+    }
+    return null;
   }
 
   MediaItem _createMediaItemFromState() {
@@ -1200,17 +1223,6 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           debugPrint('[MediaEngine] Direct video skipped for 10 min');
         }
       }
-      // 1b) Server-forwarded video bytes: no IP lockout, seeking works.
-      if (urls.video != null) {
-        final started = await _tryStartNetworkVideo(
-            _proxyUri(urls.video!), youtubeUrl, mediaItem,
-            initTimeout: const Duration(seconds: 18));
-        if (started) {
-          _clearStage();
-          return;
-        }
-        errs.add('proxy: ${_lastVideoError ?? "init falló"}');
-      }
       // 1b) Server-forwarded muxed bytes: no IP lockout, seeking works.
       if (urls.video != null) {
         final started = await _tryStartNetworkVideo(
@@ -1221,21 +1233,6 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           return;
         }
         errs.add('proxy: ${_lastVideoError ?? "init falló"}');
-      }
-      // 1c) Server-side merge (ffmpeg joins adaptive video+audio).
-      // This is the ONLY path for videos without a muxed format (most
-      // music videos in HD). The server starts merging while the user is
-      // still on the video card, so first bytes are usually ready.
-      {
-        final started = await _tryStartNetworkVideo(
-            Uri.parse('${ApiConfig.baseUrl}/api/explore/relay?v=$videoId'),
-            youtubeUrl, mediaItem,
-            initTimeout: const Duration(seconds: 25));
-        if (started) {
-          _clearStage();
-          return;
-        }
-        errs.add('unión: ${_lastVideoError ?? "init falló"}');
       }
       // 1d) Server-forwarded audio (full state: thumbnail + time work).
       if (urls.audio != null) {
@@ -1250,6 +1247,22 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       }
     }
 
+    // 1c) Server-side merge (ffmpeg joins adaptive video+audio).
+    // Independent from stream-urls on purpose: the merge endpoint resolves
+    // its own sources, so it still works when the URL fetch failed but the
+    // server is reachable. This is the ONLY path for videos without a
+    // muxed format (most music videos in HD).
+    {
+      final started = await _tryStartNetworkVideo(
+          Uri.parse('${ApiConfig.baseUrl}/api/explore/relay?v=$videoId'),
+          youtubeUrl, mediaItem,
+          initTimeout: const Duration(seconds: 25));
+      if (started) {
+        _clearStage();
+        return;
+      }
+      errs.add('unión: ${_lastVideoError ?? "init falló"}');
+    }
     // 2) Direct device manifest (last resort: often bot-blocked on mobile).
     _setStage('playStageDirect');
     StreamManifest? manifest;
