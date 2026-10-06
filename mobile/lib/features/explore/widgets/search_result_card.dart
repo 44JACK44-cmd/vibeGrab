@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/localization/app_localizations.dart';
 import '../../../data/models/explore_video.dart';
 
 class SearchResultCard extends StatelessWidget {
@@ -11,6 +12,7 @@ class SearchResultCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final loc = AppLocalizations.of(context);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -56,9 +58,9 @@ class SearchResultCard extends StatelessWidget {
                               ),
                               const SizedBox(width: 8),
                             ],
-                            if (video.viewCountFormatted.isNotEmpty)
+                            if (video.viewCountLocalized(loc).isNotEmpty)
                               Text(
-                                video.viewCountFormatted,
+                                video.viewCountLocalized(loc),
                                 style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
                               ),
                           ],

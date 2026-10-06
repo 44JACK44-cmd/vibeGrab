@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../data/models/download_task.dart';
 import '../../../services/local_download_service.dart';
+import '../../../services/media_metadata_service.dart';
 import '../../../services/download_notification_service.dart';
 import '../../../services/download_persistence_service.dart';
 import '../../../services/storage_service.dart';
@@ -23,6 +24,8 @@ class DownloadsController extends ChangeNotifier {
   })  : _downloadService = downloadService ?? LocalDownloadService(),
         _notifService = notifService ?? DownloadNotificationService(),
         _persistence = persistence ?? DownloadPersistenceService();
+
+  String unknownErrorFallback = 'Unknown error';
 
   final List<DownloadTask> _tasks = [];
   List<DownloadTask> get tasks => List.unmodifiable(_tasks);
@@ -343,7 +346,7 @@ class DownloadsController extends ChangeNotifier {
           _publishToGallery(_tasks[i]);
         } else if (updatedTask.status == DownloadStatus.failed) {
           _log('FAILED: ${task.id} -> ${updatedTask.error}');
-          _notifService.showFailed(taskId: task.id, title: task.title, error: updatedTask.error ?? 'Unknown error');
+          _notifService.showFailed(taskId: task.id, title: task.title, error: updatedTask.error ?? unknownErrorFallback);
         } else if (updatedTask.status == DownloadStatus.cancelled) {
           _log('CANCELLED: ${task.id}');
         }
@@ -547,6 +550,18 @@ class DownloadsController extends ChangeNotifier {
       _reprocessQueue();
     }
     notifyListeners();
+    // Deleting a download must also drop its favorite + history entries,
+    // otherwise the Library keeps orphan cards that do nothing when tapped.
+    final meta = MediaMetadataService();
+    final name = task.filePath != null
+        ? task.filePath!.split(Platform.pathSeparator).last
+        : null;
+    if (name != null) {
+      await meta.removeFileData(name);
+    }
+    if (task.title.isNotEmpty) {
+      await meta.removeFileData(task.title);
+    }
   }
 
   Future<void> cancelDownload(String taskId) async {

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../features/library/controllers/library_controller.dart';
 import '../../../services/storage_service.dart';
 import '../../../services/trash_service.dart';
 
@@ -52,6 +54,7 @@ class _TrashViewState extends State<TrashView> {
               await TrashService.instance.emptyTrash();
               _snack(loc.emptyTrash);
               _load();
+              _refreshLibrary();
             },
             child: Text(loc.emptyTrash, style: TextStyle(color: AppColors.error)),
           ),
@@ -88,6 +91,16 @@ class _TrashViewState extends State<TrashView> {
     await TrashService.instance.restore(entry);
     _snack(loc.trashRestored);
     _load();
+    // The restored file must reappear in the Library right away.
+    _refreshLibrary();
+  }
+
+  /// Trash / Vault live outside the Library widget tree, so the Library has
+  /// to be told to reload instead of waiting for the next app resume.
+  void _refreshLibrary() {
+    final ctx = context;
+    if (!ctx.mounted) return;
+    ctx.read<LibraryController>().loadLibrary();
   }
 
   @override

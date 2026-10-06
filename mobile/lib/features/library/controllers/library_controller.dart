@@ -321,6 +321,43 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Permanent deletion (skips the trash). Used by the "delete forever"
+  /// action in the library overflow menu.
+  Future<bool> deletePermanently(String filename) async {
+    try {
+      final file = findFile(filename);
+      if (file != null) {
+        final path = file.filePath.isNotEmpty
+            ? file.filePath
+            : file.contentUri ?? '';
+        if (path.isNotEmpty) {
+          StorageService.instance.deleteFile(filename);
+        }
+      }
+      await _meta.removeFileData(filename);
+      _allFiles.removeWhere((f) => f.filename == filename);
+      if (_allFiles.isEmpty) _status = LibraryStatus.empty;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _errorKey = 'errorFailedDeleteFile';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Removes one entry from the play history (the file is untouched).
+  Future<void> removeFromHistory(String filename) async {
+    await _meta.removeHistoryEntry(filename);
+    notifyListeners();
+  }
+
+  /// Clears the whole play history.
+  Future<void> clearHistory() async {
+    await _meta.clearHistory();
+    notifyListeners();
+  }
+
   LibraryFile? findFile(String filename) {
     try {
       return _allFiles.firstWhere((f) => f.filename == filename);

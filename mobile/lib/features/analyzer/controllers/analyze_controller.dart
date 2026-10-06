@@ -51,13 +51,13 @@ class AnalyzeController extends ChangeNotifier {
 
   Future<void> analyze(String url, {String? emptyUrlMessage}) async {
     if (url.trim().isEmpty) {
-      _error = emptyUrlMessage ?? 'Please enter a URL';
+      _error = emptyUrlMessage ?? 'enterUrl';
       notifyListeners();
       return;
     }
 
     if (!ConnectivityService.instance.hasInternet) {
-      _error = 'No internet connection';
+      _error = 'noInternet';
       notifyListeners();
       return;
     }
@@ -75,7 +75,7 @@ class AnalyzeController extends ChangeNotifier {
       }
     } on NetworkException catch (e) {
       _error = (e.type == 'connection' || e.type == 'timeout')
-          ? 'Could not reach the VibeGrab server. Start it on your PC and check the server URL in Settings.'
+          ? 'serverUnreachable'
           : e.message;
     } catch (e) {
       _error = e.toString().replaceFirst('Exception: ', '');

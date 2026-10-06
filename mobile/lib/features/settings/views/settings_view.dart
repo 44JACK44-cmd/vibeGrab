@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/theme_provider.dart';
+import '../../../core/theme/vibe_presets.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/localization/language_provider.dart';
 import '../../../core/constants/api_constants.dart';
@@ -273,7 +274,7 @@ class _SettingsViewState extends State<SettingsView> {
           keyboardType: TextInputType.url,
           style: const TextStyle(fontSize: 15),
           decoration: InputDecoration(
-            hintText: 'https://vibegrab-api.onrender.com',
+            hintText: loc.backendUrlPlaceholder,
             helperText: loc.backendUrlHint,
             helperMaxLines: 4,
             border: const OutlineInputBorder(),
@@ -487,11 +488,12 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
-  Widget _buildThemeTile(BuildContext context, ThemeProvider themeProv, ColorScheme cs, Color text1, Color text2) {
-    final modes = [
-      (ThemeMode.dark, 'Dark', Icons.dark_mode),
-      (ThemeMode.light, 'Light', Icons.light_mode),
-      (ThemeMode.system, 'System', Icons.phone_android),
+Widget _buildThemeTile(BuildContext context, ThemeProvider themeProv, ColorScheme cs, Color text1, Color text2) {
+final loc = AppLocalizations.of(context);
+final modes = [
+      (ThemeMode.dark, loc.themeDark, Icons.dark_mode),
+      (ThemeMode.light, loc.themeLight, Icons.light_mode),
+      (ThemeMode.system, loc.themeSystem, Icons.phone_android),
     ];
 
     return Padding(
@@ -503,7 +505,7 @@ class _SettingsViewState extends State<SettingsView> {
             children: [
               Icon(Icons.palette_outlined, color: text2, size: 22),
               const SizedBox(width: 12),
-              Text('Theme', style: TextStyle(color: text1, fontSize: 15)),
+              Text(loc.theme, style: TextStyle(color: text1, fontSize: 15)),
             ],
           ),
           const SizedBox(height: 8),
@@ -545,13 +547,71 @@ class _SettingsViewState extends State<SettingsView> {
               );
             }).toList(),
           ),
+          const SizedBox(height: 8),
+          // Theme presets: Dub-style skins (classic, midnight, emerald...).
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: VibePreset.presets.map((p) {
+              final selected = themeProv.preset.id == p.id;
+              return GestureDetector(
+                onTap: () => themeProv.setPreset(p),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: 104,
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? cs.primary.withValues(alpha: 0.18)
+                        : cs.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: selected ? cs.primary : Colors.transparent,
+                      width: 1.5,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [p.accent, p.background],
+                          ),
+                          border: Border.all(color: Colors.white24, width: 1),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        loc.value(p.labelKey),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: selected ? cs.primary : text2,
+                          fontSize: 11,
+                          fontWeight:
+                              selected ? FontWeight.w600 : FontWeight.w400,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildAccentTile(BuildContext context, ThemeProvider themeProv, ColorScheme cs, Color text1, Color text2) {
-    return Padding(
+Widget _buildAccentTile(BuildContext context, ThemeProvider themeProv, ColorScheme cs, Color text1, Color text2) {
+final loc = AppLocalizations.of(context);
+return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -560,7 +620,7 @@ class _SettingsViewState extends State<SettingsView> {
             children: [
               Icon(Icons.circle, color: cs.primary, size: 22),
               const SizedBox(width: 12),
-              Text('Accent color', style: TextStyle(color: text1, fontSize: 15)),
+              Text(loc.accentColor, style: TextStyle(color: text1, fontSize: 15)),
             ],
           ),
           const SizedBox(height: 10),
@@ -689,17 +749,18 @@ class _SettingsViewState extends State<SettingsView> {
   }
 
   Widget _buildMediaSessionTile(BuildContext context, ColorScheme cs, Color text1, Color text2) {
+    final loc = AppLocalizations.of(context);
     final engine = context.watch<MediaEngine>();
     final st = engine.mediaSessionStatus;
     final notifOk =
         engine.notificationsEnabledNative ?? engine.notificationPermission;
     final err = engine.lastSessionError;
 
-    const notRun = 'Sin iniciar';
-    const connecting = 'Conectando...';
+    final notRun = loc.sessionNotStarted;
+    final connecting = loc.sessionConnecting;
     String base;
     if (st == 'ok') {
-      base = 'OK — conectado con Android';
+      base = loc.sessionOk;
     } else if (st == 'running') {
       base = connecting;
     } else if (st == 'not_run') {
@@ -712,17 +773,18 @@ class _SettingsViewState extends State<SettingsView> {
     final Color color;
     if (err != null) {
       final short = err.length > 140 ? '${err.substring(0, 140)}…' : err;
-      label = 'Error del sistema: $short';
+      label = loc.sessionSystemError(short);
       color = Colors.redAccent;
     } else if (engine.missingIconDrawables != null) {
-      label =
-          'Iconos ausentes en el APK: ${engine.missingIconDrawables} — la notificación no puede publicarse';
+      label = loc.sessionIconsMissing(engine.missingIconDrawables ?? '');
       color = Colors.redAccent;
     } else if (notifOk == false) {
-      label = '$base · notificaciones BLOQUEADAS — tocar para abrir ajustes';
+      label = '$base · ${loc.sessionNotificationsBlocked}';
       color = Colors.redAccent;
     } else if (st == 'ok') {
-      label = notifOk == true ? '$base · notificaciones: OK' : base;
+      label = notifOk == true
+          ? '$base · ${loc.sessionNotificationsOk}'
+          : base;
       color = Colors.green;
     } else if (st == 'running') {
       label = base;

@@ -306,6 +306,33 @@ class MainActivity : AudioServiceActivity() {
                         }
                     }
                 }
+                // Shares a file (WhatsApp statuses) through the system sheet.
+                "shareFile" -> {
+                    val args = call.arguments as? Map<*, *>
+                    val path = args?.get("path") as? String
+                    val name = args?.get("name") as? String
+                    val mime = args?.get("mime") as? String ?: "*/*"
+                    if (path == null || name == null) {
+                        result.error("INVALID_ARGS", "path and name required", null)
+                    } else {
+                        try {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                this, "$packageName.fileprovider", File(path)
+                            )
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = mime
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                putExtra(Intent.EXTRA_SUBJECT, name)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            startActivity(Intent.createChooser(send, name))
+                            result.success(true)
+                        } catch (e: Exception) {
+                            android.util.Log.w("VibeGrab", "shareFile failed: ${e.message}")
+                            result.success(false)
+                        }
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -392,6 +419,43 @@ class MainActivity : AudioServiceActivity() {
                         android.util.Log.w("VibeGrab", "scanMedia failed: ${e.message}")
                         result.success(false)
                     }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // VibeGrab: hardware equalizer (DSP) bound to the audio session.
+        val eqChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.vibegrab/equalizer")
+        eqChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "init" -> {
+                    val sid = (call.argument<Number>("sessionId")?.toInt()) ?: 0
+                    val en = call.argument<Boolean>("enabled") ?: true
+                    val ok = EqBridge.attach(sid)
+                    if (ok) EqBridge.setEnabled(en)
+                    result.success(ok)
+                }
+                "info" -> result.success(EqBridge.info())
+                "setEnabled" -> {
+                    EqBridge.setEnabled(call.argument<Boolean>("enabled") == true)
+                    result.success(true)
+                }
+                "setBand" -> {
+                    EqBridge.setBand(call.argument<Int>("band") ?: 0,
+                        (call.argument<Number>("levelMb")?.toInt()) ?: 0)
+                    result.success(true)
+                }
+                "setPreset" -> {
+                    EqBridge.setPreset(call.argument<Int>("index") ?: 0)
+                    result.success(true)
+                }
+                "setBass" -> {
+                    EqBridge.setBass((call.argument<Number>("strength")?.toInt()) ?: 0)
+                    result.success(true)
+                }
+                "setLoudness" -> {
+                    EqBridge.setLoudness((call.argument<Number>("gainMb")?.toInt()) ?: 0)
+                    result.success(true)
                 }
                 else -> result.notImplemented()
             }

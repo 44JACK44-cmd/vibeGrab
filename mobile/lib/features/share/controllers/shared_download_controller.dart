@@ -63,7 +63,7 @@ class SharedDownloadController extends ChangeNotifier {
   Future<void> analyzeUrl(String url) async {
     final sanitized = LocalExtractionService.sanitizeUrl(url);
     if (sanitized.trim().isEmpty) {
-      _error = 'Invalid URL';
+      _error = 'invalid_url';
       _status = SharedSheetStatus.error;
       notifyListeners();
       return;
@@ -104,7 +104,7 @@ class SharedDownloadController extends ChangeNotifier {
       _status = SharedSheetStatus.ready;
     } on NetworkException catch (e) {
       _error = (e.type == 'connection' || e.type == 'timeout')
-          ? 'Server not reachable. Start the VibeGrab server on your PC and check the server URL in Settings.'
+          ? 'server_unreachable'
           : e.message;
       _status = SharedSheetStatus.error;
     } catch (e) {

@@ -13,6 +13,7 @@ class LibraryListTile extends StatelessWidget {
   final VoidCallback? onToggleFavorite;
   final VoidCallback? onDelete;
   final VoidCallback? onVault;
+  final VoidCallback? onDeleteForever;
 
   const LibraryListTile({
     super.key,
@@ -22,6 +23,7 @@ class LibraryListTile extends StatelessWidget {
     this.onToggleFavorite,
     this.onDelete,
     this.onVault,
+    this.onDeleteForever,
   });
 
   @override
@@ -106,6 +108,7 @@ class LibraryListTile extends StatelessWidget {
                 onSelected: (value) {
                   if (value == 'delete') onDelete?.call();
                   if (value == 'vault') onVault?.call();
+                  if (value == 'deleteForever') onDeleteForever?.call();
                 },
                 itemBuilder: (_) => [
                   if (onVault != null)
@@ -120,6 +123,14 @@ class LibraryListTile extends StatelessWidget {
                         style:
                             TextStyle(color: AppColors.error, fontSize: 13)),
                   ),
+                  if (onDeleteForever != null)
+                    PopupMenuItem(
+                      value: 'deleteForever',
+                      child: Text(
+                        AppLocalizations.of(context).deleteForever,
+                        style: TextStyle(color: AppColors.error, fontSize: 13),
+                      ),
+                    ),
                 ],
                 padding: EdgeInsets.zero,
               ),

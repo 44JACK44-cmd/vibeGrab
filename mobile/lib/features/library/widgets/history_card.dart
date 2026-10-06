@@ -7,9 +7,17 @@ class HistoryCard extends StatelessWidget {
   final HistoryEntry entry;
   final MediaMetadata? metadata;
   final VoidCallback? onTap;
+  final VoidCallback? onRemove;
   final String? thumbnailPath;
 
-  const HistoryCard({super.key, required this.entry, this.metadata, this.onTap, this.thumbnailPath});
+  const HistoryCard({
+    super.key,
+    required this.entry,
+    this.metadata,
+    this.onTap,
+    this.onRemove,
+    this.thumbnailPath,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -53,20 +61,29 @@ class HistoryCard extends StatelessWidget {
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          _formatTimestamp(entry.playedAt),
+                          _formatTimestamp(entry.playedAt, loc),
                           style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
                         ),
                       ],
                     ),
+                    if (meta != null &&
+                        meta.lastPositionMs > 0 &&
+                        meta.durationMs > 0)
+                      _buildResumeBadge(meta, loc, cs),
                   ],
                 ),
               ),
-              if (meta != null && meta.lastPositionMs > 0 && meta.durationMs > 0)
-                _buildResumeBadge(meta, loc, cs),
-            ],
-          ),
+              if (onRemove != null)
+                IconButton(
+                  tooltip: loc.removeFromHistory,
+                  icon: Icon(Icons.close_rounded,
+                      size: 18, color: cs.onSurfaceVariant),
+                  onPressed: onRemove,
+                ),
+          ],
         ),
       ),
+    ),
     );
   }
 
@@ -149,15 +166,15 @@ class HistoryCard extends StatelessWidget {
     }
   }
 
-  String _formatTimestamp(String isoDate) {
+  String _formatTimestamp(String isoDate, AppLocalizations loc) {
     final dt = DateTime.tryParse(isoDate);
     if (dt == null) return '';
     final now = DateTime.now();
     final diff = now.difference(dt);
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inHours < 1) return '${diff.inMinutes}m ago';
-    if (diff.inDays < 1) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
+    if (diff.inMinutes < 1) return loc.justNow;
+    if (diff.inHours < 1) return loc.minutesAgo(diff.inMinutes);
+    if (diff.inDays < 1) return loc.hoursAgo(diff.inHours);
+    if (diff.inDays < 7) return loc.daysAgo(diff.inDays);
     return '${dt.day}/${dt.month}/${dt.year}';
   }
 

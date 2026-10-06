@@ -99,7 +99,7 @@
   "retry": "Retry",
   "noFiles": "No files yet",
   "noFilesHint": "Downloaded files will appear here",
-  "fileCount": "{count, plural, =0{0 files} =1{1 file} other{{count} files}}",
+  "fileCount": "{count} files",
   "@fileCount": {
     "placeholders": {
       "count": {
@@ -190,7 +190,7 @@
   "preferBestQualityHint": "Auto-select highest quality format",
   "saveMetadata": "Save metadata",
   "saveMetadataHint": "Keep title, thumbnail, and source info",
-  "appVersion": "v1.1.14",
+  "appVersion": "v1.1.15",
   "mediaSessionLabel": "Media session",
   "backendUrl": "Backend URL",
   "backendUrlHint": "URL of the VibeGrab backend server. Use http://10.0.2.2:8000 for emulator, or your PC's local IP for a real device.",
@@ -303,5 +303,143 @@
   "playbackFailed": "Could not play the video",
   "linkCopied": "Link copied",
   "showMore": "more",
-  "showLess": "Show less"
+  "showLess": "Show less",
+  "trending": "Trending",
+  "categories": "Categories",
+  "noTrendingContent": "No trending content",
+  "exploreIdleHintLong": "Search for something or try a category",
+  "allResults": "All Results",
+  "noCategoryResults": "No results for this category",
+  "like": "Like",
+  "dislike": "Dislike",
+  "share": "Share",
+  "listView": "List view",
+  "gridView": "Grid view",
+  "searchLibrary": "Search library…",
+  "sortNewestFirst": "Newest first",
+  "sortOldestFirst": "Oldest first",
+  "sortNameAsc": "Name A-Z",
+  "sortNameDesc": "Name Z-A",
+  "sortLargest": "Largest",
+  "sortSmallest": "Smallest",
+  "sortLabelNewest": "Newest",
+  "sortLabelOldest": "Oldest",
+  "sortLabelAsc": "A-Z",
+  "sortLabelDesc": "Z-A",
+  "sortLabelLargest": "Largest",
+  "sortLabelSmallest": "Smallest",
+  "justNow": "Just now",
+  "minutesAgo": "{n}m ago",
+  "hoursAgo": "{n}h ago",
+  "daysAgo": "{n}d ago",
+  "queue": "Queue",
+  "queueCount": "{n} in queue",
+  "clearQueue": "Clear",
+  "recent": "Recent",
+  "pasteAnyLinkHint": "Paste any YouTube, TikTok, Instagram or other link",
+  "noAudio": "No audio",
+  "noAudioFormat": "No audio",
+  "unknownError": "Unknown error",
+  "theme": "Theme",
+  "accentColor": "Accent color",
+  "themeDark": "Dark",
+  "themeLight": "Light",
+  "themeSystem": "System",
+  "removeFromHistory": "Remove from history",
+  "clearHistory": "Clear history",
+  "deleteForeverTitle": "Delete forever",
+  "deleteForeverConfirm": "The file will be permanently deleted and cannot be recovered. Continue?",
+  "fileDeleted": "File deleted",
+  "statusDelete": "Delete status",
+  "statusDeleteConfirm": "The original WhatsApp status will be deleted. Continue?",
+  "statusDeleted": "Status deleted",
+  "equalizer": "Equalizer",
+  "equalizerOff": "Equalizer off",
+  "equalizerOn": "Equalizer active",
+  "equalizerPreset": "Preset",
+  "equalizerBass": "Bass",
+  "equalizerTreble": "Treble",
+  "equalizerLoudness": "Bass boost",
+  "lyrics": "Lyrics",
+  "lyricsLoading": "Searching lyrics…",
+  "lyricsNotFound": "Lyrics not found",
+  "lyricsUnavailable": "Lyrics unavailable offline",
+  "lyricsSynced": "Synced",
+  "sessionNotStarted": "Not started",
+  "sessionConnecting": "Connecting…",
+  "sessionOk": "OK — connected to Android",
+  "sessionNotificationsOk": "notifications: OK",
+  "sessionNotificationsBlocked": "notifications BLOCKED — tap to open settings",
+  "sessionSystemError": "System error: {msg}",
+  "sessionIconsMissing": "Icons missing from the APK: {list}",
+  "themeClassic": "Classic",
+  "themeMidnight": "Midnight",
+  "themeEmerald": "Emerald",
+  "themeRose": "Rose",
+  "themeAmber": "Amber",
+  "themeMono": "Mono",
+  "audioLabel": "Audio",
+  "videoWithAudio": "Video with audio",
+  "videoOnly": "Video only",
+  "untitledTitle": "Untitled",
+  "pipNotAvailableShort": "PiP not available on this device",
+  "viewsB": "{n}B views",
+  "viewsM": "{n}M views",
+  "viewsK": "{n}K views",
+  "viewsPlain": "{n} views",
+  "serverUnreachableHint": "Could not reach the VibeGrab server. Start it on your PC and check the server URL in Settings.",
+  "shareInvalidUrl": "Invalid URL",
+  "shareServerUnreachable": "Server not reachable. Start the VibeGrab server on your PC and check the server URL in Settings.",
+  "withAudio": "with audio",
+  "oneFile": "1 file",
+  "@minutesAgo": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@hoursAgo": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@daysAgo": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@queueCount": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@sessionSystemError": {
+    "placeholders": {
+      "msg": {}
+    }
+  },
+  "@sessionIconsMissing": {
+    "placeholders": {
+      "list": {}
+    }
+  },
+  "@viewsB": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@viewsM": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@viewsK": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@viewsPlain": {
+    "placeholders": {
+      "n": {}
+    }
+  }
 }

@@ -28,6 +28,8 @@ abstract class MediaEngineDelegate {
 class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
   final MediaEngineDelegate _engine;
   StreamSubscription<SessionSnapshot>? _snapSub;
+  String? _lastAction;
+  DateTime _lastActionAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   VibeGrabAudioHandler(this._engine) {
     _init();
@@ -136,34 +138,46 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
   /// deprecated name is what audio_service actually calls on this path).
   @override
   Future<dynamic> onCustomAction(String name, dynamic arguments) async {
-    debugPrint('[MEDIA_SESSION] Custom action from system: $name');
-    switch (name) {
-      case 'repeat':
-        _engine.toggleRepeat();
-        break;
-      case 'prev':
-        await _engine.skipToPrevious();
-        break;
-      case 'next':
-        await _engine.skipToNext();
-        break;
-      case 'playpause':
-        if (_engine.isPlaying) {
-          await _engine.pause();
-        } else {
-          await _engine.resume();
-        }
-        break;
-      case 'favorite':
-        await _engine.toggleFavoriteCurrent();
-        break;
+    // A single tap can reach us through both routes (onCustomAction and
+    // customAction) or be redelivered when the PendingIntent is re-fired.
+    // Debouncing keeps the toggle to exactly one flip per tap, otherwise the
+    // heart flips and returns (visible flicker).
+    final now = DateTime.now();
+    if (_lastAction != name ||
+        now.difference(_lastActionAt) > const Duration(milliseconds: 400)) {
+      _lastAction = name;
+      _lastActionAt = now;
+      debugPrint('[MEDIA_SESSION] Custom action from system: $name');
+      switch (name) {
+        case 'repeat':
+          _engine.toggleRepeat();
+          break;
+        case 'prev':
+          await _engine.skipToPrevious();
+          break;
+        case 'next':
+          await _engine.skipToNext();
+          break;
+        case 'playpause':
+          if (_engine.isPlaying) {
+            await _engine.pause();
+          } else {
+            await _engine.resume();
+          }
+          break;
+        case 'favorite':
+          await _engine.toggleFavoriteCurrent();
+          break;
+      }
+    } else {
+      debugPrint('[MEDIA_SESSION] Ignored duplicate action: $name');
     }
     return null;
   }
 
   @override
   Future<dynamic> customAction(String name,
-      [Map<String, dynamic>? extras]) =>
+          [Map<String, dynamic>? extras]) =>
       onCustomAction(name, extras);
 
   @override

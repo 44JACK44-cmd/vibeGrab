@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
+import '../../../core/localization/app_localizations.dart';
 import '../../../services/media_engine.dart';
 import '../../../data/models/library_file.dart';
 
@@ -138,11 +139,11 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
                     onPressed: () async {
                       final available = await engine.isPiPAvailable();
                       final entered = available && await engine.enterPiP();
-                      if (!entered && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('PiP not available on this device')),
-                        );
-                      }
+if (!entered && context.mounted) {
+ScaffoldMessenger.of(context).showSnackBar(
+SnackBar(content: Text(AppLocalizations.of(context).piPNotAvailable)),
+);
+}
                     },
                   ),
                 ],

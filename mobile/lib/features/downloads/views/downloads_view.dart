@@ -39,6 +39,9 @@ class DownloadsView extends StatelessWidget {
       ),
       body: Consumer<DownloadsController>(
         builder: (context, controller, _) {
+          // Controllers have no BuildContext localization; keep the
+          // notification fallback text in sync with the UI language.
+          controller.unknownErrorFallback = loc.unknownError;
           if (controller.tasks.isEmpty) {
             return _buildEmpty(cs, loc, context);
           }

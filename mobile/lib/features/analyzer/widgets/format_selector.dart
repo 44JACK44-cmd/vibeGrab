@@ -132,7 +132,7 @@ class _FormatTile extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        format.label,
+                        format.labelFor(loc),
                         style: TextStyle(
                           fontWeight: FontWeight.w600,
                           fontSize: 13,
@@ -142,7 +142,7 @@ class _FormatTile extends StatelessWidget {
                       if (!isAudio && !format.hasAudio) ...[
                         const SizedBox(height: 2),
                         Text(
-                          'No audio',
+                          loc.noAudio,
                           style: TextStyle(
                             fontSize: 11,
                             color: AppColors.warning,

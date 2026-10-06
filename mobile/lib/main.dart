@@ -15,6 +15,7 @@ import 'services/download_notification_service.dart';
 import 'services/download_persistence_service.dart';
 import 'services/media_engine.dart';
 import 'services/media_metadata_service.dart';
+import 'services/equalizer_service.dart';
 import 'services/pip_service.dart';
 import 'services/local_extraction_service.dart';
 import 'services/local_download_service.dart';
@@ -127,6 +128,7 @@ class VibeGrabApp extends StatelessWidget {
         Provider<DownloadNotificationService>.value(value: notifService),
         Provider<DownloadPersistenceService>.value(value: persistence),
         ChangeNotifierProvider.value(value: metaService),
+        ChangeNotifierProvider.value(value: EqualizerService.instance),
         ChangeNotifierProvider(create: (_) => AnalyzeController()),
         ChangeNotifierProvider(
           create: (_) => DownloadsController(
@@ -151,7 +153,8 @@ class VibeGrabApp extends StatelessWidget {
                 title: 'VibeGrab',
                 themeMode: themeProv.themeMode,
                 theme: AppTheme.lightTheme(themeProv.accent.color),
-                darkTheme: AppTheme.darkTheme(themeProv.accent.color),
+                darkTheme: AppTheme.presetTheme(
+                    themeProv.preset, themeProv.accent.color),
                 debugShowCheckedModeBanner: false,
                 locale: langProv.locale,
                 supportedLocales: AppLocalizations.supportedLocales,

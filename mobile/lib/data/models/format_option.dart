@@ -1,3 +1,5 @@
+import '../../core/localization/app_localizations.dart';
+
 class FormatOption {
   final String id;
   final String type;
@@ -47,6 +49,27 @@ class FormatOption {
     if (type == 'audio') return 'Music \u2014 ${hasAudio ? 'con audio' : ''}';
     if (hasVideo && hasAudio) return 'Video with audio';
     if (hasVideo && !hasAudio) return 'Video only (no audio)';
+    return '';
+  }
+
+  /// Localized variants (the plain getters above stay for non-UI use).
+  String labelFor(AppLocalizations loc) {
+    if (type == 'audio') {
+      final size = sizeBytes != null ? ' • ${formatSize(sizeBytes!)}' : '';
+      return '${quality ?? extension} • ${extension.toUpperCase()}$size';
+    }
+    final q = quality ?? '';
+    final codec = hasAudio ? '' : ' (${loc.noAudioFormat})';
+    final size = sizeBytes != null ? ' • ${formatSize(sizeBytes!)}' : '';
+    return '$q • ${extension.toUpperCase()}$codec$size';
+  }
+
+  String subtitleFor(AppLocalizations loc) {
+    if (type == 'audio') {
+      return hasAudio ? '${loc.audioLabel} — ${loc.withAudio}' : loc.audioLabel;
+    }
+    if (hasVideo && hasAudio) return loc.videoWithAudio;
+    if (hasVideo && !hasAudio) return loc.videoOnly;
     return '';
   }
 

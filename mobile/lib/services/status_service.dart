@@ -163,6 +163,36 @@ class StatusService {
     }
   }
 
+  /// Shares a status through the system sheet (Files already granted read
+  /// access, no extra permission needed).
+  Future<bool> share(StatusFile status) async {
+    try {
+      final dot = status.name.lastIndexOf('.');
+      final displayName =
+          dot > 0 ? status.name : '${status.name}.${status.ext}';
+      return await _channel.invokeMethod<bool>('shareFile', {
+            'path': status.path,
+            'name': displayName,
+            'mime': status.mimeType,
+          }) ??
+          false;
+    } catch (e) {
+      debugPrint('[STATUS] share failed: $e');
+      return false;
+    }
+  }
+
+  /// Deletes a status from WhatsApp's folder (original file, not the copy).
+  Future<bool> delete(StatusFile status) async {
+    try {
+      await status.file.delete();
+      return true;
+    } catch (e) {
+      debugPrint('[STATUS] delete failed: $e');
+      return false;
+    }
+  }
+
   String? _sniffFile(File file) {
     try {
       final raf = file.openSync();

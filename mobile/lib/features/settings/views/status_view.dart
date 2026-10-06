@@ -188,43 +188,145 @@ class _StatusViewState extends State<StatusView> with WidgetsBindingObserver {
       itemCount: _statuses.length,
       itemBuilder: (context, index) {
         final status = _statuses[index];
-        return InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: () => _openPreview(index),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                if (!status.isVideo)
-                  Image.file(
-                    status.file,
-                    fit: BoxFit.cover,
-                    cacheWidth: 300,
-                    errorBuilder: (_, __, ___) => _placeholder(cs, false),
-                  )
-                else
-                  _placeholder(cs, true),
-                if (status.isVideo)
-                  Positioned(
-                    right: 6,
-                    bottom: 6,
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(20),
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => _openPreview(index),
+              onLongPress: () => _showItemMenu(status, loc),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (!status.isVideo)
+                      Image.file(
+                        status.file,
+                        fit: BoxFit.cover,
+                        cacheWidth: 300,
+                        errorBuilder: (_, __, ___) => _placeholder(cs, false),
+                      )
+                    else
+                      _placeholder(cs, true),
+                    if (status.isVideo)
+                      Positioned(
+                        right: 6,
+                        bottom: 6,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Icon(Icons.play_arrow,
+                              color: Colors.white, size: 16),
+                        ),
                       ),
-                      child: const Icon(Icons.play_arrow,
-                          color: Colors.white, size: 16),
+                    // Visible actions: long press is not discoverable.
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: Material(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        shape: const CircleBorder(),
+                        child: InkWell(
+                          customBorder: const CircleBorder(),
+                          onTap: () => _showItemMenu(status, loc),
+                          child: const Padding(
+                            padding: EdgeInsets.all(4),
+                            child: Icon(Icons.more_horiz,
+                                color: Colors.white, size: 16),
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-              ],
+                  ],
+                ),
+              ),
             ),
-          ),
+          ],
         );
       },
     );
+  }
+
+  /// Per-status actions: save to gallery, share, delete.
+  void _showItemMenu(StatusFile status, AppLocalizations loc) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.download_outlined),
+              title: Text(loc.saveOne),
+              onTap: () {
+                Navigator.pop(ctx);
+                _save(status, loc);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.share_outlined),
+              title: Text(loc.share),
+              onTap: () {
+                Navigator.pop(ctx);
+                _share(status, loc);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
+              title: Text(loc.statusDelete,
+                  style: const TextStyle(color: Colors.redAccent)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _confirmDelete(status, loc);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _share(StatusFile status, AppLocalizations loc) async {
+    try {
+      await StatusService.instance.share(status);
+    } catch (e) {
+      _snack(loc.statusSaveError);
+    }
+  }
+
+  Future<void> _confirmDelete(StatusFile status, AppLocalizations loc) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(loc.statusDelete),
+        content: Text(loc.statusDeleteConfirm),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(loc.cancel)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(loc.statusDelete,
+                style: const TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final done = await StatusService.instance.delete(status);
+    if (!mounted) return;
+    if (done) {
+      setState(() {
+        _statuses = _statuses.where((s) => s.file.path != status.file.path).toList();
+      });
+      _snack(loc.statusDeleted);
+    } else {
+      _snack(loc.statusSaveError);
+    }
   }
 
   Widget _placeholder(ColorScheme cs, bool video) {

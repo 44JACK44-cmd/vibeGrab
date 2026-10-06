@@ -432,6 +432,7 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
   }
 
   Widget _buildFormatTile(FormatOption format, SharedDownloadController controller, ColorScheme cs) {
+    final loc = AppLocalizations.of(context);
     final isSelected = controller.selectedFormat?.id == format.id;
     final isAudio = format.type == 'audio';
     final accent = isAudio ? cs.secondary : cs.primary;
@@ -501,7 +502,7 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        _formatSubtitle(format),
+                        _formatSubtitle(format, loc),
                         style: TextStyle(
                           fontSize: 11,
                           color: cs.onSurfaceVariant.withValues(alpha: 0.7),
@@ -525,14 +526,14 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
     return '$ext $q';
   }
 
-  String _formatSubtitle(FormatOption format) {
+  String _formatSubtitle(FormatOption format, AppLocalizations loc) {
     final parts = <String>[];
     if (format.type == 'audio') {
-      parts.add(format.quality ?? 'Audio');
+      parts.add(format.quality ?? loc.audioLabel);
     } else if (format.hasVideo && format.hasAudio) {
-      parts.add('Video + Audio');
+      parts.add(loc.videoWithAudio);
     } else {
-      parts.add('Video only');
+      parts.add(loc.videoOnly);
     }
     if (format.sizeBytes != null) {
       parts.add(FormatOption.formatSize(format.sizeBytes!));
@@ -581,6 +582,12 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
         break;
       case 'analysis_failed':
         message = loc.shareAnalysisFailed;
+        break;
+      case 'invalid_url':
+        message = loc.shareInvalidUrl;
+        break;
+      case 'server_unreachable':
+        message = loc.shareServerUnreachable;
         break;
       default:
         message = errorKey;
@@ -707,7 +714,7 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
     final task = DownloadTask(
       id: 'dl_${DateTime.now().millisecondsSinceEpoch}',
       url: controller.url!,
-      title: media?.title ?? 'Untitled',
+      title: media?.title ?? loc.untitled,
       formatId: format.id,
       thumbnail: media?.thumbnail,
       source: media?.source,

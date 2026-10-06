@@ -99,7 +99,7 @@
   "retry": "Reintentar",
   "noFiles": "No hay archivos todavía",
   "noFilesHint": "Los archivos descargados aparecerán aquí",
-  "fileCount": "{count, plural, =0{0 archivos} =1{1 archivo} other{{count} archivos}}",
+  "fileCount": "{count} archivos",
   "@fileCount": {
     "placeholders": {
       "count": {
@@ -190,7 +190,7 @@
   "preferBestQualityHint": "Seleccionar automáticamente el mejor formato",
   "saveMetadata": "Guardar metadatos",
   "saveMetadataHint": "Conservar título, miniatura y fuente",
-  "appVersion": "v1.1.14",
+  "appVersion": "v1.1.15",
   "mediaSessionLabel": "Sesión multimedia",
   "backendUrl": "URL del backend",
   "backendUrlHint": "URL del servidor backend de VibeGrab. Usa http://10.0.2.2:8000 para el emulador, o la IP local de tu PC para un dispositivo real.",
@@ -303,5 +303,143 @@
   "playbackFailed": "No se pudo reproducir el video",
   "linkCopied": "Enlace copiado",
   "showMore": "más",
-  "showLess": "Mostrar menos"
+  "showLess": "Mostrar menos",
+  "trending": "Tendencias",
+  "categories": "Categorías",
+  "noTrendingContent": "No hay contenido en tendencias",
+  "exploreIdleHintLong": "Busca algo o prueba una categoría",
+  "allResults": "Todos los resultados",
+  "noCategoryResults": "No hay resultados para esta categoría",
+  "like": "Me gusta",
+  "dislike": "No me gusta",
+  "share": "Compartir",
+  "listView": "Vista de lista",
+  "gridView": "Vista de cuadrícula",
+  "searchLibrary": "Buscar en la biblioteca…",
+  "sortNewestFirst": "Más recientes primero",
+  "sortOldestFirst": "Más antiguos primero",
+  "sortNameAsc": "Nombre A-Z",
+  "sortNameDesc": "Nombre Z-A",
+  "sortLargest": "Mayor tamaño",
+  "sortSmallest": "Menor tamaño",
+  "sortLabelNewest": "Recientes",
+  "sortLabelOldest": "Antiguos",
+  "sortLabelAsc": "A-Z",
+  "sortLabelDesc": "Z-A",
+  "sortLabelLargest": "Mayor",
+  "sortLabelSmallest": "Menor",
+  "justNow": "Ahora mismo",
+  "minutesAgo": "Hace {n} min",
+  "hoursAgo": "Hace {n} h",
+  "daysAgo": "Hace {n} d",
+  "queue": "Cola",
+  "queueCount": "{n} en la cola",
+  "clearQueue": "Vaciar",
+  "recent": "Recientes",
+  "pasteAnyLinkHint": "Pega un enlace de YouTube, TikTok, Instagram o cualquier otro",
+  "noAudio": "Sin audio",
+  "noAudioFormat": "Sin audio",
+  "unknownError": "Error desconocido",
+  "theme": "Tema",
+  "accentColor": "Color de acento",
+  "themeDark": "Oscuro",
+  "themeLight": "Claro",
+  "themeSystem": "Sistema",
+  "removeFromHistory": "Quitar del historial",
+  "clearHistory": "Vaciar historial",
+  "deleteForeverTitle": "Eliminar definitivamente",
+  "deleteForeverConfirm": "Se borrará el archivo de forma permanente y no podrá recuperarse. ¿Continuar?",
+  "fileDeleted": "Archivo eliminado",
+  "statusDelete": "Eliminar estado",
+  "statusDeleteConfirm": "Se eliminará el estado original de WhatsApp. ¿Continuar?",
+  "statusDeleted": "Estado eliminado",
+  "equalizer": "Ecualizador",
+  "equalizerOff": "Ecualizador desactivado",
+  "equalizerOn": "Ecualizador activo",
+  "equalizerPreset": "Preajuste",
+  "equalizerBass": "Graves",
+  "equalizerTreble": "Agudos",
+  "equalizerLoudness": "Refuerzo de graves",
+  "lyrics": "Letra",
+  "lyricsLoading": "Buscando letra…",
+  "lyricsNotFound": "No se encontró la letra",
+  "lyricsUnavailable": "Letra no disponible sin conexión",
+  "lyricsSynced": "Sincronizada",
+  "sessionNotStarted": "Sin iniciar",
+  "sessionConnecting": "Conectando…",
+  "sessionOk": "OK — conectado con Android",
+  "sessionNotificationsOk": "notificaciones: OK",
+  "sessionNotificationsBlocked": "notificaciones BLOQUEADAS — tocar para abrir ajustes",
+  "sessionSystemError": "Error del sistema: {msg}",
+  "sessionIconsMissing": "Iconos ausentes en la APK: {list} — la notificación no puede publicarse",
+  "themeClassic": "Clásico",
+  "themeMidnight": "Medianoche",
+  "themeEmerald": "Esmeralda",
+  "themeRose": "Rosa",
+  "themeAmber": "Ámbar",
+  "themeMono": "Mono",
+  "audioLabel": "Audio",
+  "videoWithAudio": "Video con audio",
+  "videoOnly": "Solo video",
+  "untitledTitle": "Sin título",
+  "pipNotAvailableShort": "PiP no disponible en este dispositivo",
+  "viewsB": "{n} mil M de vistas",
+  "viewsM": "{n} M de vistas",
+  "viewsK": "{n} mil vistas",
+  "viewsPlain": "{n} vistas",
+  "serverUnreachableHint": "No se pudo contactar el servidor VibeGrab. Inícialo en tu PC y revisa la URL del servidor en Ajustes.",
+  "shareInvalidUrl": "URL inválida",
+  "shareServerUnreachable": "Servidor no disponible. Inicia el servidor VibeGrab en tu PC y revisa la URL en Ajustes.",
+  "withAudio": "con audio",
+  "oneFile": "1 archivo",
+  "@minutesAgo": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@hoursAgo": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@daysAgo": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@queueCount": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@sessionSystemError": {
+    "placeholders": {
+      "msg": {}
+    }
+  },
+  "@sessionIconsMissing": {
+    "placeholders": {
+      "list": {}
+    }
+  },
+  "@viewsB": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@viewsM": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@viewsK": {
+    "placeholders": {
+      "n": {}
+    }
+  },
+  "@viewsPlain": {
+    "placeholders": {
+      "n": {}
+    }
+  }
 }

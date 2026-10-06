@@ -1,9 +1,12 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../../core/localization/app_localizations.dart';
 import '../../../services/media_engine.dart';
 import '../../../data/models/library_file.dart';
 import '../../../data/models/media_state.dart';
+import '../widgets/equalizer_sheet.dart';
+import '../widgets/lyrics_sheet.dart';
 
 class AudioPlayerView extends StatefulWidget {
   final LibraryFile file;
@@ -54,7 +57,7 @@ class _AudioPlayerViewState extends State<AudioPlayerView> {
                 const SizedBox(height: 8),
                 _buildTimeLabels(engine, cs),
                 const Spacer(),
-                _buildControls(cs, engine),
+                _buildControls(context, cs, engine),
                 const Spacer(flex: 2),
               ],
             ),
@@ -163,7 +166,9 @@ class _AudioPlayerViewState extends State<AudioPlayerView> {
     );
   }
 
-  Widget _buildControls(ColorScheme cs, MediaEngine engine) {
+  Widget _buildControls(
+      BuildContext context, ColorScheme cs, MediaEngine engine) {
+    final loc = AppLocalizations.of(context);
     return Column(
       children: [
         Row(
@@ -228,7 +233,32 @@ class _AudioPlayerViewState extends State<AudioPlayerView> {
               color: cs.onSurface,
               onPressed: () => engine.skipBackward(const Duration(seconds: 10)),
             ),
-            const SizedBox(width: 32),
+            IconButton(
+              tooltip: loc.like,
+              icon: Icon(
+                engine.isCurrentFavorite
+                    ? Icons.favorite
+                    : Icons.favorite_border,
+                size: 26,
+                color: engine.isCurrentFavorite
+                    ? cs.error
+                    : cs.onSurface,
+              ),
+              onPressed: () => engine.toggleFavoriteCurrent(),
+            ),
+            IconButton(
+              tooltip: loc.equalizer,
+              icon: const Icon(Icons.equalizer, size: 26),
+              color: cs.onSurface,
+              onPressed: () => showEqualizerSheet(context),
+            ),
+            IconButton(
+              tooltip: loc.lyrics,
+              icon: const Icon(Icons.lyrics_outlined, size: 26),
+              color: cs.onSurface,
+              onPressed: () => showLyricsSheet(context),
+            ),
+            const SizedBox(width: 8),
             IconButton(
               icon: const Icon(Icons.forward_30, size: 28),
               color: cs.onSurface,
@@ -255,6 +285,7 @@ class _QueueSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final loc = AppLocalizations.of(context);
     return Consumer<MediaEngine>(
       builder: (context, engine, _) {
         return Container(
@@ -266,13 +297,13 @@ class _QueueSheet extends StatelessWidget {
                 padding: const EdgeInsets.all(16),
                 child: Row(
                   children: [
-                    Text('Queue', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: cs.onSurface)),
+                    Text(loc.queue, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: cs.onSurface)),
                     const SizedBox(width: 8),
                     Text('(${engine.queue.length})', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14)),
                     const Spacer(),
                     TextButton(
                       onPressed: () => engine.clearQueue(),
-                      child: Text('Clear', style: TextStyle(color: cs.error)),
+                      child: Text(loc.clearQueue, style: TextStyle(color: cs.error)),
                     ),
                   ],
                 ),

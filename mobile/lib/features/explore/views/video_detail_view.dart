@@ -490,10 +490,11 @@ class _VideoDetailViewState extends State<VideoDetailView> {
 
   // --- Info ---
 
-  Widget _buildMetaLine(ColorScheme cs) {
-    final video = widget.video;
-    final parts = <String>[
-      if (video.viewCountFormatted.isNotEmpty) video.viewCountFormatted,
+Widget _buildMetaLine(ColorScheme cs) {
+final video = widget.video;
+final loc = AppLocalizations.of(context);
+final parts = <String>[
+if (video.viewCountLocalized(loc).isNotEmpty) video.viewCountLocalized(loc),
       if (video.age != null && video.age!.isNotEmpty) video.age!,
       if (video.durationFormatted.isNotEmpty) video.durationFormatted,
     ];
@@ -504,9 +505,10 @@ class _VideoDetailViewState extends State<VideoDetailView> {
     );
   }
 
-  Widget _buildChannelRow(ColorScheme cs) {
-    final video = widget.video;
-    return Row(
+Widget _buildChannelRow(ColorScheme cs) {
+final video = widget.video;
+final loc = AppLocalizations.of(context);
+return Row(
       children: [
         CircleAvatar(
           radius: 18,
@@ -540,7 +542,7 @@ class _VideoDetailViewState extends State<VideoDetailView> {
             _liked = !_liked;
             if (_liked) _disliked = false;
           }),
-          'like',
+          loc.like,
         ),
         _actionIcon(
           cs,
@@ -550,14 +552,14 @@ class _VideoDetailViewState extends State<VideoDetailView> {
             _disliked = !_disliked;
             if (_disliked) _liked = false;
           }),
-          'dislike',
+          loc.dislike,
         ),
         _actionIcon(
           cs,
           Icons.share_outlined,
           false,
           _shareLink,
-          'share',
+          loc.share,
         ),
       ],
     );

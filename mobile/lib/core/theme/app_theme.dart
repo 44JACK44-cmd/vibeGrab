@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'app_colors.dart';
+import 'vibe_presets.dart';
 
 class AppTheme {
   AppTheme._();
@@ -42,13 +43,34 @@ class AppTheme {
     return _buildTheme(scheme, Brightness.light, accent);
   }
 
-  static ThemeData _buildTheme(ColorScheme scheme, Brightness brightness, Color accent) {
+  /// Dark theme driven by a user-selected [VibePreset] (backgrounds come
+  /// from the preset, accent from the current selection).
+  static ThemeData presetTheme(VibePreset preset, Color accent) {
+    final scheme = ColorScheme.dark(
+      primary: accent,
+      onPrimary: AppColors.onAccent(accent),
+      secondary: AppColors.accentTint(accent, 0.3),
+      surface: preset.surface,
+      error: AppColors.error,
+      surfaceContainerHighest: Color.lerp(preset.surface, Colors.white, 0.06)!,
+    );
+    return _buildTheme(scheme, Brightness.dark, accent, preset: preset);
+  }
+
+  static ThemeData _buildTheme(ColorScheme scheme, Brightness brightness,
+      Color accent, {VibePreset? preset}) {
     final isDark = brightness == Brightness.dark;
-    final bg = isDark ? AppColors.background : AppColorsLight.background;
-    final surface = isDark ? AppColors.surface : AppColorsLight.surface;
-    final surfaceElevated = isDark ? AppColors.surfaceElevated : AppColorsLight.surfaceElevated;
-    final card = isDark ? AppColors.card : AppColorsLight.card;
-    final border = isDark ? AppColors.border : AppColorsLight.border;
+    final bg = preset?.background ??
+        (isDark ? AppColors.background : AppColorsLight.background);
+    final surface = preset?.surface ??
+        (isDark ? AppColors.surface : AppColorsLight.surface);
+    final surfaceElevated = preset != null
+        ? Color.lerp(preset.surface, Colors.white, 0.09)!
+        : (isDark ? AppColors.surfaceElevated : AppColorsLight.surfaceElevated);
+    final card = preset?.card ??
+        (isDark ? AppColors.card : AppColorsLight.card);
+    final border = preset?.border ??
+        (isDark ? AppColors.border : AppColorsLight.border);
     final text1 = isDark ? AppColors.textPrimary : AppColorsLight.textPrimary;
     final text2 = isDark ? AppColors.textSecondary : AppColorsLight.textSecondary;
 

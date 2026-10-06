@@ -1,3 +1,5 @@
+import '../../core/localization/app_localizations.dart';
+
 class ExploreVideo {
   final String id;
   final String title;
@@ -45,6 +47,21 @@ class ExploreVideo {
     if (viewCount! >= 1000000) return '${(viewCount! / 1000000).toStringAsFixed(1)}M views';
     if (viewCount! >= 1000) return '${(viewCount! / 1000).toStringAsFixed(0)}K views';
     return '$viewCount views';
+  }
+
+  String viewCountLocalized(AppLocalizations loc) {
+    if (viewsLabel != null && viewsLabel!.isNotEmpty) return viewsLabel!;
+    if (viewCount == null) return '';
+    if (viewCount! >= 1000000000) {
+      return loc.viewsB((viewCount! / 1000000000).toStringAsFixed(1));
+    }
+    if (viewCount! >= 1000000) {
+      return loc.viewsM((viewCount! / 1000000).toStringAsFixed(1));
+    }
+    if (viewCount! >= 1000) {
+      return loc.viewsK((viewCount! / 1000).toStringAsFixed(0));
+    }
+    return loc.viewsPlain(viewCount.toString());
   }
 
   String get durationFormatted {

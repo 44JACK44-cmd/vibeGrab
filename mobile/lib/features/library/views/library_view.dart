@@ -51,7 +51,7 @@ class _LibraryViewState extends State<LibraryView> {
                 icon: Icon(ctrl.viewMode == LibraryViewMode.grid
                     ? Icons.view_list_outlined
                     : Icons.grid_view_outlined),
-                tooltip: ctrl.viewMode == LibraryViewMode.grid ? 'List view' : 'Grid view',
+                tooltip: ctrl.viewMode == LibraryViewMode.grid ? loc.listView : loc.gridView,
                 onPressed: () => ctrl.toggleViewMode(),
               );
             },
@@ -73,7 +73,20 @@ class _LibraryViewState extends State<LibraryView> {
               builder: (context, controller, _) {
                 switch (controller.status) {
                   case LibraryStatus.loading:
-                    return const Center(child: CircularProgressIndicator());
+                    // Never replace a populated list with a spinner: this
+                    // view reloads on every app resume and the blink was
+                    // read as a glitch.
+                    if (controller.files.isEmpty &&
+                        controller.filter != LibraryFilter.history) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    return controller.filter == LibraryFilter.history
+                        ? _buildHistory(controller, loc)
+                        : (controller.files.isEmpty
+                            ? _buildEmpty(loc, cs)
+                            : (controller.viewMode == LibraryViewMode.grid
+                                ? _buildFileGrid(controller, loc, cs)
+                                : _buildFileList(controller, loc, cs)));
                   case LibraryStatus.permissionRequired:
                     return _buildPermissionRequired(loc, cs, controller);
                   case LibraryStatus.empty:
@@ -107,7 +120,7 @@ class _LibraryViewState extends State<LibraryView> {
           child: TextField(
             onChanged: (value) => controller.setSearchQuery(value),
             decoration: InputDecoration(
-              hintText: 'Search library...',
+              hintText: loc.searchLibrary,
               prefixIcon: const Icon(Icons.search, size: 20),
               suffixIcon: controller.searchQuery.isNotEmpty
                   ? IconButton(
@@ -147,7 +160,7 @@ class _LibraryViewState extends State<LibraryView> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        _sortLabel(controller.sort),
+                        _sortLabel(controller.sort, loc),
                         style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
                       ),
                       const SizedBox(width: 2),
@@ -157,12 +170,12 @@ class _LibraryViewState extends State<LibraryView> {
                 ),
                 onSelected: (sort) => controller.setSort(sort),
                 itemBuilder: (_) => [
-                  _sortMenuItem(LibrarySort.dateNewest, 'Newest first'),
-                  _sortMenuItem(LibrarySort.dateOldest, 'Oldest first'),
-                  _sortMenuItem(LibrarySort.nameAsc, 'Name A-Z'),
-                  _sortMenuItem(LibrarySort.nameDesc, 'Name Z-A'),
-                  _sortMenuItem(LibrarySort.sizeLargest, 'Largest'),
-                  _sortMenuItem(LibrarySort.sizeSmallest, 'Smallest'),
+                  _sortMenuItem(LibrarySort.dateNewest, loc.sortNewestFirst),
+                  _sortMenuItem(LibrarySort.dateOldest, loc.sortOldestFirst),
+                  _sortMenuItem(LibrarySort.nameAsc, loc.sortNameAsc),
+                  _sortMenuItem(LibrarySort.nameDesc, loc.sortNameDesc),
+                  _sortMenuItem(LibrarySort.sizeLargest, loc.sortLargest),
+                  _sortMenuItem(LibrarySort.sizeSmallest, loc.sortSmallest),
                 ],
               ),
               const Spacer(),
@@ -186,14 +199,14 @@ class _LibraryViewState extends State<LibraryView> {
     return PopupMenuItem(value: sort, child: Text(label, style: const TextStyle(fontSize: 14)));
   }
 
-  String _sortLabel(LibrarySort sort) {
+  String _sortLabel(LibrarySort sort, AppLocalizations loc) {
     switch (sort) {
-      case LibrarySort.dateNewest: return 'Newest';
-      case LibrarySort.dateOldest: return 'Oldest';
-      case LibrarySort.nameAsc: return 'A-Z';
-      case LibrarySort.nameDesc: return 'Z-A';
-      case LibrarySort.sizeLargest: return 'Largest';
-      case LibrarySort.sizeSmallest: return 'Smallest';
+      case LibrarySort.dateNewest: return loc.sortLabelNewest;
+      case LibrarySort.dateOldest: return loc.sortLabelOldest;
+      case LibrarySort.nameAsc: return loc.sortLabelAsc;
+      case LibrarySort.nameDesc: return loc.sortLabelDesc;
+      case LibrarySort.sizeLargest: return loc.sortLabelLargest;
+      case LibrarySort.sizeSmallest: return loc.sortLabelSmallest;
     }
   }
 
@@ -263,6 +276,7 @@ class _LibraryViewState extends State<LibraryView> {
         itemBuilder: (context, index) {
           final file = files[index];
           return LibraryGridCard(
+            key: ValueKey('grid_${file.filename}'),
             file: file,
             isFavorite: controller.meta.isFavorite(file.filename),
             onTap: () => _playFile(context, file),
@@ -297,10 +311,12 @@ class _LibraryViewState extends State<LibraryView> {
         itemBuilder: (context, index) {
           final file = files[index];
           return LibraryListTile(
+            key: ValueKey('list_${file.filename}'),
             file: file,
             isFavorite: controller.meta.isFavorite(file.filename),
             onTap: () => _playFile(context, file),
             onToggleFavorite: () => controller.toggleFavorite(file.filename),
+            onDeleteForever: () => _confirmDeleteForever(context, controller, file, loc),
             onDelete: () async {
               await controller.deleteFile(file.filename);
               if (context.mounted) {
@@ -319,6 +335,39 @@ class _LibraryViewState extends State<LibraryView> {
         },
       ),
     );
+  }
+
+  Future<void> _confirmDeleteForever(
+      BuildContext context,
+      LibraryController controller,
+      LibraryFile file,
+      AppLocalizations loc) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(loc.deleteForeverTitle),
+        content: Text(loc.deleteForeverConfirm),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(loc.cancel)),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(ctx).colorScheme.error),
+            child: Text(loc.deleteForever),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && context.mounted) {
+      final done = await controller.deletePermanently(file.filename);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(done ? loc.fileDeleted : loc.errorFailedDeleteFile),
+        ));
+      }
+    }
   }
 
   void _playFile(BuildContext context, LibraryFile file) {
@@ -361,6 +410,7 @@ class _LibraryViewState extends State<LibraryView> {
           final entry = history[index];
           final file = controller.findFile(entry.filename);
           return HistoryCard(
+            key: ValueKey('hist_${entry.filename}_$index'),
             entry: entry,
             metadata: controller.meta.getMeta(entry.filename),
             thumbnailPath: file?.thumbnailPath,
@@ -371,6 +421,7 @@ class _LibraryViewState extends State<LibraryView> {
                     engine.playFile(file);
                   }
                 : null,
+            onRemove: () => controller.removeFromHistory(entry.filename),
           );
         },
       ),

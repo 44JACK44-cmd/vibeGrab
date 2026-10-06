@@ -19,6 +19,7 @@ import '../data/models/explore_video.dart';
 import '../data/models/stream_urls.dart';
 import '../services/storage_service.dart';
 import '../services/media_metadata_service.dart';
+import '../services/equalizer_service.dart';
 import '../services/vibe_grab_audio_handler.dart';
 import '../services/session_snapshot.dart';
 import '../services/pip_service.dart';
@@ -44,6 +45,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   // Names of notification drawables missing from the packaged APK.
   String? missingIconDrawables;
   bool _asyncErrorListened = false;
+  int? _eqSessionAttached;
   static const MethodChannel _mediaDiagChannel =
       MethodChannel('vibegrab/media_diag');
   final YoutubeExplode _ytc = YoutubeExplode();
@@ -536,6 +538,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _emitSessionSnapshot();
     if (_state.isPlaying) {
       _activateAudioSession();
+      // Keep the DSP equalizer glued to the current output: audio uses the
+      // player's session, video uses the output mix (session 0).
+      final sid = isVideo ? 0 : (_player.androidAudioSessionId ?? 0);
+      if (sid != _eqSessionAttached) {
+        _eqSessionAttached = sid;
+        EqualizerService.instance.ensureReady(sid);
+      }
     } else if (procState == AudioProcessingState.idle) {
       _deactivateAudioSession();
     }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -120,6 +121,24 @@ class MediaMetadataService extends ChangeNotifier {
     }
   }
 
+  Timer? _pendingSave;
+
+  /// Persists metadata + history. Debounced: the UI must repaint instantly
+  /// (flicker) and the disk write must not block the frame that shows it.
+  void _scheduleSave() {
+    _pendingSave?.cancel();
+    _pendingSave = Timer(const Duration(milliseconds: 250), () {
+      _pendingSave = null;
+      _save();
+    });
+  }
+
+  Future<void> _saveNow() async {
+    _pendingSave?.cancel();
+    _pendingSave = null;
+    await _save();
+  }
+
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
@@ -144,8 +163,10 @@ class MediaMetadataService extends ChangeNotifier {
     final meta = getMeta(filename);
     meta.isFavorite = !meta.isFavorite;
     _metadata[filename] = meta;
+    // Repaint first, persist after: awaiting disk I/O here made the heart
+    // blink (old frame visible while the value had already changed).
     notifyListeners();
-    await _save();
+    await _saveNow();
   }
 
   Future<void> recordPlay({
@@ -175,7 +196,7 @@ class MediaMetadataService extends ChangeNotifier {
     }
 
     notifyListeners();
-    await _save();
+    _scheduleSave();
   }
 
   Future<void> savePosition({
@@ -187,7 +208,7 @@ class MediaMetadataService extends ChangeNotifier {
     meta.lastPositionMs = positionMs;
     meta.durationMs = durationMs;
     _metadata[filename] = meta;
-    await _save();
+    _scheduleSave();
   }
 
   int getResumePosition(String filename) {
@@ -198,7 +219,21 @@ class MediaMetadataService extends ChangeNotifier {
     _metadata.remove(filename);
     _history.removeWhere((h) => h.filename == filename);
     notifyListeners();
-    await _save();
+    await _saveNow();
+  }
+
+  /// Removes a single entry from the play history (keeps metadata).
+  Future<void> removeHistoryEntry(String filename) async {
+    _history.removeWhere((h) => h.filename == filename);
+    notifyListeners();
+    await _saveNow();
+  }
+
+  /// Clears the whole play history.
+  Future<void> clearHistory() async {
+    _history.clear();
+    notifyListeners();
+    await _saveNow();
   }
 
   List<HistoryEntry> getHistoryForDate(String dateLabel) {

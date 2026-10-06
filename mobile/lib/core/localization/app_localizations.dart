@@ -33,6 +33,9 @@ class AppLocalizations {
     return true;
   }
 
+  /// Dynamic lookup for generated keys (theme preset names, etc.).
+  String value(String key) => _get(key);
+
   String _get(String key, [Map<String, String>? params]) {
     var value = _strings[key] ?? key;
     if (params != null) {
@@ -159,11 +162,8 @@ class AppLocalizations {
   String get retry => _get('retry');
   String get noFiles => _get('noFiles');
   String get noFilesHint => _get('noFilesHint');
-  String fileCount(int count) {
-    if (count == 0) return '0 files';
-    if (count == 1) return '1 file';
-    return '$count files';
-  }
+  String fileCount(int count) =>
+      count == 1 ? oneFile : _get('fileCount', {'count': count.toString()});
 
   String get deleteFileTitle => _get('deleteFileTitle');
   String deleteFileConfirm(String title) => _get('deleteFileConfirm', {'title': title});
@@ -375,6 +375,107 @@ class AppLocalizations {
   String get shareDownloadingText => _get('shareDownloadingText');
   String get shareSavingFailed => _get('shareSavingFailed');
   String get shareClose => _get('shareClose');
+
+  String get errorNoInternet => _get('errorNoInternet');
+  String get errorNoInternetHint => _get('errorNoInternetHint');
+  String get sourceYouTube => _get('sourceYouTube');
+  String get sourceTikTok => _get('sourceTikTok');
+  String get sourceInstagram => _get('sourceInstagram');
+  String get sourceTwitter => _get('sourceTwitter');
+  String get sourceFacebook => _get('sourceFacebook');
+  String get sourceVimeo => _get('sourceVimeo');
+  String get sourceDailymotion => _get('sourceDailymotion');
+  String get sourceSoundCloud => _get('sourceSoundCloud');
+  String get trending => _get('trending');
+  String get categories => _get('categories');
+  String get noTrendingContent => _get('noTrendingContent');
+  String get exploreIdleHintLong => _get('exploreIdleHintLong');
+  String get allResults => _get('allResults');
+  String get noCategoryResults => _get('noCategoryResults');
+  String get like => _get('like');
+  String get dislike => _get('dislike');
+  String get share => _get('share');
+  String get listView => _get('listView');
+  String get gridView => _get('gridView');
+  String get searchLibrary => _get('searchLibrary');
+  String get sortNewestFirst => _get('sortNewestFirst');
+  String get sortOldestFirst => _get('sortOldestFirst');
+  String get sortNameAsc => _get('sortNameAsc');
+  String get sortNameDesc => _get('sortNameDesc');
+  String get sortLargest => _get('sortLargest');
+  String get sortSmallest => _get('sortSmallest');
+  String get sortLabelNewest => _get('sortLabelNewest');
+  String get sortLabelOldest => _get('sortLabelOldest');
+  String get sortLabelAsc => _get('sortLabelAsc');
+  String get sortLabelDesc => _get('sortLabelDesc');
+  String get sortLabelLargest => _get('sortLabelLargest');
+  String get sortLabelSmallest => _get('sortLabelSmallest');
+  String get justNow => _get('justNow');
+  String minutesAgo(n) => _get('minutesAgo', {'n': {n}.toString()});
+  String hoursAgo(n) => _get('hoursAgo', {'n': {n}.toString()});
+  String daysAgo(n) => _get('daysAgo', {'n': {n}.toString()});
+  String get queue => _get('queue');
+  String queueCount(n) => _get('queueCount', {'n': {n}.toString()});
+  String get clearQueue => _get('clearQueue');
+  String get recent => _get('recent');
+  String get pasteAnyLinkHint => _get('pasteAnyLinkHint');
+  String get noAudio => _get('noAudio');
+  String get noAudioFormat => _get('noAudioFormat');
+  String get unknownError => _get('unknownError');
+  String get theme => _get('theme');
+  String get accentColor => _get('accentColor');
+  String get themeDark => _get('themeDark');
+  String get themeLight => _get('themeLight');
+  String get themeSystem => _get('themeSystem');
+  String get removeFromHistory => _get('removeFromHistory');
+  String get clearHistory => _get('clearHistory');
+  String get deleteForeverTitle => _get('deleteForeverTitle');
+  String get deleteForeverConfirm => _get('deleteForeverConfirm');
+  String get fileDeleted => _get('fileDeleted');
+  String get statusDelete => _get('statusDelete');
+  String get statusDeleteConfirm => _get('statusDeleteConfirm');
+  String get statusDeleted => _get('statusDeleted');
+  String get equalizer => _get('equalizer');
+  String get equalizerOff => _get('equalizerOff');
+  String get equalizerOn => _get('equalizerOn');
+  String get equalizerPreset => _get('equalizerPreset');
+  String get equalizerBass => _get('equalizerBass');
+  String get equalizerTreble => _get('equalizerTreble');
+  String get equalizerLoudness => _get('equalizerLoudness');
+  String get lyrics => _get('lyrics');
+  String get lyricsLoading => _get('lyricsLoading');
+  String get lyricsNotFound => _get('lyricsNotFound');
+  String get lyricsUnavailable => _get('lyricsUnavailable');
+  String get lyricsSynced => _get('lyricsSynced');
+  String get sessionNotStarted => _get('sessionNotStarted');
+  String get sessionConnecting => _get('sessionConnecting');
+  String get sessionOk => _get('sessionOk');
+  String get sessionNotificationsOk => _get('sessionNotificationsOk');
+  String get sessionNotificationsBlocked => _get('sessionNotificationsBlocked');
+  String sessionSystemError(msg) => _get('sessionSystemError', {'msg': {msg}.toString()});
+  String sessionIconsMissing(list) => _get('sessionIconsMissing', {'list': {list}.toString()});
+  String get themeClassic => _get('themeClassic');
+  String get themeMidnight => _get('themeMidnight');
+  String get themeEmerald => _get('themeEmerald');
+  String get themeRose => _get('themeRose');
+  String get themeAmber => _get('themeAmber');
+  String get themeMono => _get('themeMono');
+  String get audioLabel => _get('audioLabel');
+  String get videoWithAudio => _get('videoWithAudio');
+  String get videoOnly => _get('videoOnly');
+  String get untitledTitle => _get('untitledTitle');
+  String get pipNotAvailableShort => _get('pipNotAvailableShort');
+
+  String viewsB(String n) => _get('viewsB', {'n': n});
+  String viewsM(String n) => _get('viewsM', {'n': n});
+  String viewsK(String n) => _get('viewsK', {'n': n});
+  String viewsPlain(String n) => _get('viewsPlain', {'n': n});
+  String get serverUnreachableHint => _get('serverUnreachableHint');
+  String get shareInvalidUrl => _get('shareInvalidUrl');
+  String get shareServerUnreachable => _get('shareServerUnreachable');
+  String get withAudio => _get('withAudio');
+
+  String get oneFile => _get('oneFile');
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

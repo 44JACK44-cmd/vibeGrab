@@ -49,8 +49,8 @@ class _ExploreViewState extends State<ExploreView> {
           _buildSearchBar(loc, cs),
           Consumer<ExploreController>(
             builder: (context, controller, _) {
-              if (controller.query.isNotEmpty) return const SizedBox.shrink();
-              return _buildTabs(controller, cs);
+if (controller.query.isNotEmpty) return const SizedBox.shrink();
+return _buildTabs(controller, cs, AppLocalizations.of(context));
             },
           ),
           Expanded(
@@ -92,7 +92,7 @@ class _ExploreViewState extends State<ExploreView> {
     return _buildIdle(controller, loc, cs);
   }
 
-  Widget _buildTabs(ExploreController controller, ColorScheme cs) {
+  Widget _buildTabs(ExploreController controller, ColorScheme cs, AppLocalizations loc) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
@@ -100,7 +100,7 @@ class _ExploreViewState extends State<ExploreView> {
           _tabChip(
             cs: cs,
             icon: Icons.trending_up,
-            label: 'Trending',
+            label: loc.trending,
             selected: controller.activeTab == ExploreTab.trending,
             onTap: () => controller.setTab(ExploreTab.trending),
           ),
@@ -108,7 +108,7 @@ class _ExploreViewState extends State<ExploreView> {
           _tabChip(
             cs: cs,
             icon: Icons.category_outlined,
-            label: 'Categories',
+            label: loc.categories,
             selected: controller.activeTab == ExploreTab.categories,
             onTap: () => controller.setTab(ExploreTab.categories),
           ),
@@ -224,12 +224,12 @@ class _ExploreViewState extends State<ExploreView> {
                 ),
                 const SizedBox(height: 24),
                 Text(
-                  'No trending content',
+                  loc.noTrendingContent,
                   style: TextStyle(color: cs.onSurface, fontSize: 18, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Search for something or try a category',
+                  loc.exploreIdleHintLong,
                   style: TextStyle(
                     color: cs.onSurfaceVariant.withValues(alpha: 0.7),
                     fontSize: 14,
@@ -256,7 +256,7 @@ class _ExploreViewState extends State<ExploreView> {
           if (controller.trending.length > 1) ...[
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Text('Trending', style: TextStyle(
+              child: Text(loc.trending, style: TextStyle(
                 color: cs.onSurface, fontSize: 18, fontWeight: FontWeight.bold,
               )),
             ),
@@ -266,7 +266,7 @@ class _ExploreViewState extends State<ExploreView> {
           ],
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text('All Results', style: TextStyle(
+            child: Text(loc.allResults, style: TextStyle(
               color: cs.onSurface, fontSize: 18, fontWeight: FontWeight.bold,
             )),
           ),
@@ -478,7 +478,7 @@ class _ExploreViewState extends State<ExploreView> {
           child: controller.categoryResults.isEmpty
               ? Center(
                   child: Text(
-                    'No results for this category',
+                    loc.noCategoryResults,
                     style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
                   ),
                 )

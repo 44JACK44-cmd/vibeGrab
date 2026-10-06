@@ -361,7 +361,7 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
             Icon(Icons.history, size: 16, color: cs.onSurfaceVariant),
             const SizedBox(width: 6),
             Text(
-              'Recent',
+              loc.recent,
               style: TextStyle(
                 color: cs.onSurfaceVariant,
                 fontSize: 13,
@@ -412,6 +412,7 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
   }
 
   Widget _buildError(AnalyzeController controller, ColorScheme cs) {
+    final loc = AppLocalizations.of(context);
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -425,13 +426,26 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              controller.error!,
+              _localizedAnalyzerError(controller.error!, loc),
               style: TextStyle(color: AppColors.error, fontSize: 13),
             ),
           ),
         ],
       ),
     );
+  }
+
+  String _localizedAnalyzerError(String code, AppLocalizations loc) {
+    switch (code) {
+      case 'noInternet':
+        return loc.noInternetConnection;
+      case 'serverUnreachable':
+        return loc.serverUnreachableHint;
+      case 'enterUrl':
+        return loc.pleaseEnterUrl;
+      default:
+        return code;
+    }
   }
 
   Widget _buildEmptyState(ColorScheme cs, AppLocalizations loc) {
@@ -462,7 +476,7 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
               ),
               const SizedBox(height: 8),
               Text(
-                'Paste any YouTube, TikTok, Instagram or other link',
+                loc.pasteAnyLinkHint,
                 style: TextStyle(
                   color: cs.onSurfaceVariant.withValues(alpha: 0.7),
                   fontSize: 14,

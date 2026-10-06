@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
+import '../../../core/localization/app_localizations.dart';
 import '../../../services/media_engine.dart';
 import '../../../data/models/media_state.dart';
 
@@ -484,6 +485,7 @@ class _QueueSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final loc = AppLocalizations.of(context);
     return Consumer<MediaEngine>(
       builder: (context, engine, _) {
         return Container(
@@ -495,13 +497,13 @@ class _QueueSheet extends StatelessWidget {
                 padding: const EdgeInsets.all(16),
                 child: Row(
                   children: [
-                    Text('Queue', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: cs.onSurface)),
+                    Text(loc.queue, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: cs.onSurface)),
                     const SizedBox(width: 8),
                     Text('(${engine.queue.length})', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14)),
                     const Spacer(),
                     TextButton(
                       onPressed: () => engine.clearQueue(),
-                      child: Text('Clear', style: TextStyle(color: cs.error)),
+                      child: Text(loc.clearQueue, style: TextStyle(color: cs.error)),
                     ),
                   ],
                 ),
