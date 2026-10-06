@@ -1064,123 +1064,181 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _syncQueueToHandler();
     notifyListeners();
 
-    // Never stay stuck loading/buffering: force idle if play stalls.
-    _playWatchdog?.cancel();
-    _playWatchdog = Timer(const Duration(seconds: 60), () {
-      final s = _state;
-      if (s.mediaId == video.url &&
-          (s.status == MediaStatus.loading ||
-              s.status == MediaStatus.buffering)) {
-        debugPrint('[MediaEngine] Play watchdog fired for ${video.url}');
-        playbackError ??= 'timeout';
-        _state = s.copyWith(status: MediaStatus.idle);
-        _syncPlaybackStateToHandler();
-        notifyListeners();
-      }
-    });
+    // Stall watchdog: fails the play if nothing moves for 45s. It re-arms
+    // itself on every resolution stage (see _setStage), so a progressing
+    // chain is never killed.
+    _armWatchdog(video.url);
 
     await _playYouTubeVideo(video.url, item);
   }
 
   // --- YouTube Video Playback ---
+  //
+  // Strategy (backend first): the on-device manifest is frequently
+  // bot-blocked on mobile networks and burns 10s doing nothing. The warm
+  // backend resolves stream URLs in seconds, and its proxy/relay endpoints
+  // sidestep the googlevideo IP lockout. Resolved URLs are cached per video
+  // so retries are instant instead of starting from zero.
+
+  final Map<String, _CachedStreams> _streamUrlCache = {};
+  static const _streamCacheTtl = Duration(hours: 4);
+
+  /// Current resolution step, shown under the loading spinner.
+  /// Holds an ARB key (see playStage*), null when not resolving.
+  String? loadingStageKey;
+  String? _watchdogMedia;
+
+  void _setStage(String? key) {
+    if (loadingStageKey == key) return;
+    loadingStageKey = key;
+    // Forward motion re-arms the stall watchdog (see _armWatchdog).
+    if (key != null &&
+        _watchdogMedia != null &&
+        _state.mediaId == _watchdogMedia) {
+      _armWatchdog(_watchdogMedia!);
+    }
+    notifyListeners();
+  }
+
+  void _clearStage() {
+    loadingStageKey = null;
+    _playWatchdog?.cancel();
+    _watchdogMedia = null;
+  }
+
+  /// Fails the play if the status is still loading/buffering 45s after the
+  /// last forward-motion signal. Re-armed on every stage change, so a slow
+  /// but progressing chain is never killed, while a wedged one can't spin
+  /// forever.
+  void _armWatchdog(String mediaId) {
+    _playWatchdog?.cancel();
+    _watchdogMedia = mediaId;
+    final stage = loadingStageKey;
+    _playWatchdog = Timer(const Duration(seconds: 45), () {
+      final s = _state;
+      if (s.mediaId == mediaId &&
+          (s.status == MediaStatus.loading ||
+              s.status == MediaStatus.buffering) &&
+          loadingStageKey == stage) {
+        debugPrint('[MediaEngine] Play watchdog fired for $mediaId');
+        playbackError ??= 'timeout';
+        _clearStage();
+        _state = s.copyWith(status: MediaStatus.idle);
+        _syncPlaybackStateToHandler();
+        notifyListeners();
+      }
+    });
+  }
+
+  Uri _proxyUri(String target) =>
+      Uri.parse('${ApiConfig.baseUrl}/api/explore/proxy')
+          .replace(queryParameters: {'u': target});
+
+  Future<StreamUrls?> _fetchStreamUrlsCached(String videoId) async {
+    final hit = _streamUrlCache[videoId];
+    if (hit != null &&
+        DateTime.now().difference(hit.at) < _streamCacheTtl) {
+      debugPrint('[MediaEngine] Stream URLs from cache for $videoId');
+      return hit.urls;
+    }
+    final urls = await _fetchStreamUrls(videoId);
+    if (urls != null) {
+      _streamUrlCache[videoId] = _CachedStreams(urls, DateTime.now());
+    }
+    return urls;
+  }
 
   Future<void> _playYouTubeVideo(String youtubeUrl, MediaItem mediaItem) async {
-    StreamManifest? manifest;
+    final videoId = _parseVideoIdFromUrl(youtubeUrl);
+    if (videoId == null) {
+      debugPrint('[MediaEngine] Invalid YouTube URL: $youtubeUrl');
+      _clearStage();
+      _failPlayback('URL inválida');
+      return;
+    }
     final errs = <String>[];
-    void fail(String step) {
-      errs.add(step);
-      final detail = errs.join(' · ');
-      _failPlayback(detail.length > 320 ? '${detail.substring(0, 320)}…' : detail);
+
+    // 1) Server stream URLs first (fast + warm; cached per video).
+    _setStage('playStageServer');
+    final urls = await _fetchStreamUrlsCached(videoId);
+    if (urls == null) {
+      errs.add('servidor: ${_lastStreamError ?? "sin url"}');
+    } else {
+      // 1a) Server-forwarded video bytes: no IP lockout, seeking works.
+      if (urls.video != null) {
+        final started = await _tryStartNetworkVideo(
+            _proxyUri(urls.video!), youtubeUrl, mediaItem,
+            initTimeout: const Duration(seconds: 18));
+        if (started) {
+          _clearStage();
+          return;
+        }
+        errs.add('video: ${_lastVideoError ?? "init falló"}');
+      }
+      // 1b) Relay path.
+      if (urls.proxy != null) {
+        final started = await _tryStartNetworkVideo(
+            Uri.parse('${ApiConfig.baseUrl}${urls.proxy!}'),
+            youtubeUrl, mediaItem,
+            initTimeout: const Duration(seconds: 20));
+        if (started) {
+          _clearStage();
+          return;
+        }
+        errs.add('relé: ${_lastVideoError ?? "init falló"}');
+      }
+      // 1c) Server-forwarded audio (full state: thumbnail + time work).
+      if (urls.audio != null) {
+        _setStage('playStageAudio');
+        final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
+            streamUri: _proxyUri(urls.audio!));
+        if (ok) {
+          _clearStage();
+          return;
+        }
+        errs.add('audio: ${_lastAudioError ?? "falló"}');
+      }
     }
 
+    // 2) Direct device manifest (last resort: often bot-blocked on mobile).
+    _setStage('playStageDirect');
+    StreamManifest? manifest;
     try {
-      final videoId = _parseVideoIdFromUrl(youtubeUrl);
-      if (videoId == null) {
-        debugPrint('[MediaEngine] Invalid YouTube URL: $youtubeUrl');
-        _failPlayback('URL inválida');
+      manifest = await _ytc.videos.streamsClient.getManifest(videoId).timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => throw TimeoutException('Stream manifest timed out'),
+      );
+    } catch (e) {
+      debugPrint('[MediaEngine] Device stream path failed: $e');
+      errs.add('directo: ${_short(e.toString())}');
+    }
+    if (manifest != null) {
+      final muxedStream = _bestMuxedStream(manifest);
+      if (muxedStream != null) {
+        final started = await _tryStartNetworkVideo(
+            muxedStream.url, youtubeUrl, mediaItem,
+            initTimeout: const Duration(seconds: 12));
+        if (started) {
+          _clearStage();
+          return;
+        }
+        errs.add('directo: ${_lastVideoError ?? "init falló"}');
+      }
+      _setStage('playStageAudio');
+      final ok =
+          await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
+      if (ok) {
+        _clearStage();
         return;
       }
-
-      // 1) Direct from device (fast when YouTube accepts us).
-      try {
-        manifest = await _ytc.videos.streamsClient.getManifest(videoId)
-            .timeout(const Duration(seconds: 10), onTimeout: () {
-          throw TimeoutException('Stream manifest timed out');
-        });
-
-        final muxedStream = _bestMuxedStream(manifest);
-        if (muxedStream != null) {
-          final started =
-              await _tryStartNetworkVideo(muxedStream.url, youtubeUrl, mediaItem);
-          if (started) return;
-          errs.add('directo: ${_lastVideoError ?? "init falló"}');
-        } else {
-          errs.add('directo: sin mp4');
-        }
-      } catch (e) {
-        debugPrint('[MediaEngine] Device stream path failed: $e');
-        errs.add('directo: ${_short(e.toString())}');
-      }
-
-      // 2) Backend stream urls (Invidious).
-      final urls = await _fetchStreamUrls(videoId);
-      if (urls == null) {
-        errs.add('servidor: ${_lastStreamError ?? "sin url"}');
-      } else {
-        // 2a) Relay through our server: works when the network blocks
-        // googlevideo (Range forwarded, seeking keeps working).
-        if (urls.proxy != null) {
-          final started = await _tryStartNetworkVideo(
-              Uri.parse('${ApiConfig.baseUrl}${urls.proxy!}'),
-              youtubeUrl,
-              mediaItem,
-              initTimeout: const Duration(seconds: 30));
-          if (started) return;
-          errs.add('relé: ${_lastVideoError ?? "init falló"}');
-        }
-
-        // 2b) Direct googlevideo url.
-        if (urls.video != null) {
-          final started = await _tryStartNetworkVideo(
-              Uri.parse(urls.video!), youtubeUrl, mediaItem);
-          if (started) return;
-          errs.add('video: ${_lastVideoError ?? "init falló"}');
-        }
-
-        // 2c) Server-side merge for videos without a combined format:
-        // ffmpeg joins video+audio and streams mp4 through us. Reached only
-        // when the previous attempts did not start playback (or were absent).
-        final relayStarted = await _tryStartNetworkVideo(
-            Uri.parse('${ApiConfig.baseUrl}/api/explore/relay?v=$videoId'),
-            youtubeUrl,
-            mediaItem,
-            initTimeout: const Duration(seconds: 40));
-        if (relayStarted) return;
-        errs.add('unión servidor: ${_lastVideoError ?? "init falló"}');
-
-        // 3) Audio-only through our proxy (direct audio hits the anti-bot
-        // page on the phone), then device manifest.
-        if (urls.audio != null) {
-          final audioUri = Uri.parse('${ApiConfig.baseUrl}/api/explore/proxy')
-              .replace(queryParameters: {'u': urls.audio!});
-          final ok =
-              await _playYouTubeAudio(youtubeUrl, mediaItem, streamUri: audioUri);
-          if (ok) return;
-          errs.add('audio: ${_lastAudioError ?? "falló"}');
-        }
-      }
-      if (manifest != null) {
-        final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
-            manifest: manifest);
-        if (ok) return;
-        errs.add('audio directo: ${_lastAudioError ?? "falló"}');
-      }
-
-      fail('no reproducible');
-    } catch (e) {
-      debugPrint('[MediaEngine] YouTube video play error: $e');
-      _failPlayback(_short(e.toString()));
+      errs.add('audio directo: ${_lastAudioError ?? "falló"}');
     }
+
+    _clearStage();
+    final detail = errs.join(' · ');
+    _failPlayback(detail.isEmpty
+        ? 'no reproducible'
+        : '${detail.length > 280 ? '${detail.substring(0, 280)}…' : detail}');
   }
 
   static String _short(String s) => s.length > 70 ? s.substring(0, 70) : s;
@@ -1224,23 +1282,31 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<StreamUrls?> _fetchStreamUrls(String videoId) async {
     _lastStreamError = null;
-    try {
-      final response = await http
-          .get(Uri.parse('${ApiConfig.exploreStreamUrl}?v=$videoId'))
-          .timeout(const Duration(seconds: 15));
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        if (data['success'] != false) {
-          return StreamUrls.fromJson(data);
+    // One immediate retry: a sleeping backend (cold start) answers 502 or
+    // times out once, then serves normally. Without this, the first play
+    // after a while always fails.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final response = await http
+            .get(Uri.parse('${ApiConfig.exploreStreamUrl}?v=$videoId'))
+            .timeout(const Duration(seconds: 15));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body) as Map<String, dynamic>;
+          if (data['success'] != false) {
+            return StreamUrls.fromJson(data);
+          }
+          debugPrint('[MediaEngine] stream-url error: ${data['detail']}');
+          _lastStreamError = _short('${data['detail'] ?? 'error'}');
+        } else {
+          _lastStreamError = 'http ${response.statusCode}';
         }
-        debugPrint('[MediaEngine] stream-url error: ${data['detail']}');
-        _lastStreamError = _short('${data['detail'] ?? 'error'}');
-      } else {
-        _lastStreamError = 'http ${response.statusCode}';
+      } catch (e) {
+        debugPrint('[MediaEngine] stream-url fallback failed: $e');
+        _lastStreamError = _short(e.toString());
       }
-    } catch (e) {
-      debugPrint('[MediaEngine] stream-url fallback failed: $e');
-      _lastStreamError = _short(e.toString());
+      if (attempt == 0) {
+        await Future.delayed(const Duration(seconds: 2));
+      }
     }
     return null;
   }
@@ -2084,4 +2150,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _ytc.close();
     super.dispose();
   }
+}
+
+/// Server stream URLs resolved for one video, with fetch time (TTL enforced
+/// by callers). Retries reuse them instead of resolving from zero.
+class _CachedStreams {
+  final StreamUrls urls;
+  final DateTime at;
+  const _CachedStreams(this.urls, this.at);
 }

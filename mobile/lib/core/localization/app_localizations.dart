@@ -499,6 +499,10 @@ class AppLocalizations {
   String get downloadAgain => _get('downloadAgain');
   String get openFileFailed => _get('openFileFailed');
   String timeLeft(String t) => _get('timeLeft', {'t': t});
+
+  String get playStageServer => _get('playStageServer');
+  String get playStageDirect => _get('playStageDirect');
+  String get playStageAudio => _get('playStageAudio');
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

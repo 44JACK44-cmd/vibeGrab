@@ -377,8 +377,21 @@ Future<void> _toggleLike() async {
                                 : _buildPlaceholder(cs),
                           ),
                           if (buffering)
-                            const CircularProgressIndicator(
-                                color: Colors.white)
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const CircularProgressIndicator(
+                                    color: Colors.white),
+                                if (engine.loadingStageKey != null) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    loc.value(engine.loadingStageKey!),
+                                    style: const TextStyle(
+                                        color: Colors.white70, fontSize: 12),
+                                  ),
+                                ],
+                              ],
+                            )
                           else
                             GestureDetector(
                               onTap: () =>
