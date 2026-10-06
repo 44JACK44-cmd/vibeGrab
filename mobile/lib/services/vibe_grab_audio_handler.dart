@@ -8,6 +8,8 @@ abstract class MediaEngineDelegate {
   AudioPlayer get audioPlayer;
   SessionSnapshot get currentSessionSnapshot;
   Stream<SessionSnapshot> get sessionSnapshots;
+  bool get isPlaying;
+  bool get isCurrentFavorite;
   Future<void> resume();
   Future<void> pause();
   Future<void> stop();
@@ -67,23 +69,42 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
   }) {
     final s = _engine.currentSessionSnapshot;
     playbackState.add(playbackState.value.copyWith(
+      // System media card design (lock screen / quick settings /
+      // notification): repeat, previous, play/pause, next, favorite.
+      //
+      // EVERY button is a custom action on purpose: the local audio_service
+      // fork turns them into real broadcast PendingIntents that land in
+      // [onCustomAction], so each button works deterministically instead of
+      // depending on the platform media-button keycode mapping.
       controls: [
-        // System media card design (lock screen / quick settings /
-        // notification): repeat, previous, play/pause, next, favorite.
-        const MediaControl(
+        MediaControl.custom(
           androidIcon: 'drawable/ic_vibegrab_repeat',
           label: 'Repetir',
-          action: MediaAction.custom,
-          customAction: CustomMediaAction(name: 'repeat'),
+          name: 'repeat',
         ),
-        MediaControl.skipToPrevious,
-        if (playing) MediaControl.pause else MediaControl.play,
-        MediaControl.skipToNext,
-        const MediaControl(
-          androidIcon: 'drawable/ic_vibegrab_favorite',
+        MediaControl.custom(
+          androidIcon: 'drawable/audio_service_skip_previous',
+          label: 'Anterior',
+          name: 'prev',
+        ),
+        MediaControl.custom(
+          androidIcon: playing
+              ? 'drawable/audio_service_pause'
+              : 'drawable/audio_service_play_arrow',
+          label: playing ? 'Pausa' : 'Reproducir',
+          name: 'playpause',
+        ),
+        MediaControl.custom(
+          androidIcon: 'drawable/audio_service_skip_next',
+          label: 'Siguiente',
+          name: 'next',
+        ),
+        MediaControl.custom(
+          androidIcon: _engine.isCurrentFavorite
+              ? 'drawable/ic_vibegrab_favorite_filled'
+              : 'drawable/ic_vibegrab_favorite',
           label: 'Me gusta',
-          action: MediaAction.custom,
-          customAction: CustomMediaAction(name: 'favorite'),
+          name: 'favorite',
         ),
       ],
       systemActions: const {
@@ -102,13 +123,36 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
     ));
   }
 
+  /// Re-pushes the playback state so the notification redraws its buttons
+  /// (used when the heart / repeat state changes).
+  void refreshControls() {
+    updatePlaybackState(
+      playing: playbackState.value.playing,
+      processingState: playbackState.value.processingState,
+    );
+  }
+
+  /// The platform delivers notification custom-action taps here (the
+  /// deprecated name is what audio_service actually calls on this path).
   @override
-  Future<dynamic> customAction(String name,
-      [Map<String, dynamic>? extras]) async {
+  Future<dynamic> onCustomAction(String name, dynamic arguments) async {
     debugPrint('[MEDIA_SESSION] Custom action from system: $name');
     switch (name) {
       case 'repeat':
         _engine.toggleRepeat();
+        break;
+      case 'prev':
+        await _engine.skipToPrevious();
+        break;
+      case 'next':
+        await _engine.skipToNext();
+        break;
+      case 'playpause':
+        if (_engine.isPlaying) {
+          await _engine.pause();
+        } else {
+          await _engine.resume();
+        }
         break;
       case 'favorite':
         await _engine.toggleFavoriteCurrent();
@@ -116,6 +160,11 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
     }
     return null;
   }
+
+  @override
+  Future<dynamic> customAction(String name,
+      [Map<String, dynamic>? extras]) =>
+      onCustomAction(name, extras);
 
   @override
   Future<void> play() {

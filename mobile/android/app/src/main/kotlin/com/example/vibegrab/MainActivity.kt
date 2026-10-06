@@ -63,7 +63,8 @@ class MainActivity : AudioServiceActivity() {
     private val mediaDrawables = mapOf(
         "ic_music_note" to R.drawable.ic_music_note,
         "ic_vibegrab_repeat" to R.drawable.ic_vibegrab_repeat,
-        "ic_vibegrab_favorite" to R.drawable.ic_vibegrab_favorite
+        "ic_vibegrab_favorite" to R.drawable.ic_vibegrab_favorite,
+        "ic_vibegrab_favorite_filled" to R.drawable.ic_vibegrab_favorite_filled
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -664,20 +664,38 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         break;
     }
     notifyListeners();
+    _audioHandler?.refreshControls();
   }
 
   /// Toggles favorite for whatever is playing (used by the media
   /// notification's heart button). Keys match MediaMetadataService so the
   /// Library "Favorites" tab sees the same flag.
   Future<void> toggleFavoriteCurrent() async {
-    String? key = _state.mediaId;
+    final key = _favoriteKey;
     if (key == null) return;
-    if (_currentIndex >= 0 && _currentIndex < _queue.length) {
-      key = _queue[_currentIndex].extras?['filename'] as String? ?? key;
-    }
     await MediaMetadataService().toggleFavorite(key);
     debugPrint('[MEDIA_SESSION] Favorite toggled for $key');
     notifyListeners();
+    // Redraw the card so the heart shows the new state.
+    _audioHandler?.refreshControls();
+  }
+
+  /// Favorite state of the current item (drives the card's heart icon).
+  @override
+  bool get isCurrentFavorite {
+    final key = _favoriteKey;
+    return key != null && MediaMetadataService().isFavorite(key);
+  }
+
+  /// Favorite key: local files are stored by filename (same key the Library
+  /// uses), remote/YouTube items by media id.
+  String? get _favoriteKey {
+    String? key = _state.mediaId;
+    if (key == null) return null;
+    if (_currentIndex >= 0 && _currentIndex < _queue.length) {
+      key = _queue[_currentIndex].extras?['filename'] as String? ?? key;
+    }
+    return key;
   }
 
   /// Opens the system notification settings for this app (the exact screen
