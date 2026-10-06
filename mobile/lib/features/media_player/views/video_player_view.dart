@@ -78,6 +78,19 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
       backgroundColor: Colors.black,
       body: Consumer<MediaEngine>(
         builder: (context, engine, _) {
+          // PiP window: ONLY the video surface (system draws its own
+          // transport controls from the media session).
+          if (engine.isInPiP &&
+              engine.videoController != null &&
+              engine.videoController!.value.isInitialized) {
+            final vc = engine.videoController!;
+            return Container(
+              color: Colors.black,
+              alignment: Alignment.center,
+              child:
+                  AspectRatio(aspectRatio: vc.value.aspectRatio, child: VideoPlayer(vc)),
+            );
+          }
           final vc = engine.videoController;
           final ready =
               vc != null && vc.value.isInitialized && !vc.value.hasError;

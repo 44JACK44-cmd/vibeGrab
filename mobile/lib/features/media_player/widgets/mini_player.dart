@@ -20,7 +20,10 @@ class MiniPlayer extends StatelessWidget {
 
     return Consumer<MediaEngine>(
       builder: (context, engine, _) {
-        final visible = engine.hasMedia;
+        // In PiP the system draws its own transport controls from the
+        // media session; the in-app bar must not render inside the
+        // floating window.
+        final visible = engine.hasMedia && !engine.isInPiP;
 
         return AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
@@ -296,6 +299,19 @@ class _VideoPlayerFullScreenState extends State<VideoPlayerFullScreen> {
       backgroundColor: Colors.black,
       body: Consumer<MediaEngine>(
         builder: (context, engine, _) {
+          // PiP window: ONLY the video surface (system draws its own
+          // transport controls from the media session).
+          if (engine.isInPiP &&
+              engine.videoController != null &&
+              engine.videoController!.value.isInitialized) {
+            final vc = engine.videoController!;
+            return Container(
+              color: Colors.black,
+              alignment: Alignment.center,
+              child: AspectRatio(
+                  aspectRatio: vc.value.aspectRatio, child: VideoPlayer(vc)),
+            );
+          }
           final vc = engine.videoController;
           final ready =
               vc != null && vc.value.isInitialized && !vc.value.hasError;

@@ -304,6 +304,20 @@ Future<void> _toggleLike() async {
             (engine.state.status == MediaStatus.loading ||
                 engine.state.status == MediaStatus.buffering);
 
+        // PiP window: ONLY the video surface. The system renders its own
+        // transport controls from the media session; drawing our full UI
+        // here overlaps buttons and breaks the floating window.
+        if (engine.isInPiP && showingVideo) {
+          return Container(
+            color: Colors.black,
+            alignment: Alignment.center,
+            child: AspectRatio(
+              aspectRatio: controller.value.aspectRatio,
+              child: VideoPlayer(controller),
+            ),
+          );
+        }
+
         return Container(
           color: Colors.black,
           child: Column(

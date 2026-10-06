@@ -1392,6 +1392,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           .timeout(const Duration(seconds: 20));
       _wireAudioSubscriptions(youtubeUrl);
 
+      playbackError = null;
       _state = _state.copyWith(status: MediaStatus.playing, position: Duration.zero);
       _syncPlaybackStateToHandler();
       notifyListeners();
@@ -1975,6 +1976,28 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   Future<void> resume() async {
+    // Idle/completed means there is NO live source (e.g. after a failed
+    // video play): re-play the current queue item from scratch so state
+    // (thumbnail, duration, subscriptions, handler) is fully rebuilt.
+    // Blindly calling play() here would resume a stale player: audio from
+    // another track (or silence) with frozen position and no artwork.
+    if (_state.status == MediaStatus.idle ||
+        _state.status == MediaStatus.completed) {
+      if (_currentIndex >= 0 && _currentIndex < _queue.length) {
+        playbackError = null;
+        _completionHandled = false;
+        final item = _queue[_currentIndex];
+        final videoId = _parseVideoIdFromUrl(item.id);
+        if (videoId != null && _state.mediaType == MediaType.video) {
+          // A failed Explorer video retries the FULL pipeline first
+          // (video, then the audio fallbacks inside).
+          await _playYouTubeVideo(item.id, item);
+        } else {
+          await _playCurrentQueueItem();
+        }
+        return;
+      }
+    }
     if (_videoController != null) {
       await _videoController!.play();
     } else {

@@ -43,9 +43,35 @@ class _AudioPlayerViewState extends State<AudioPlayerView> {
           ),
         ],
       ),
-      body: Consumer<MediaEngine>(
+  body: Consumer<MediaEngine>(
         builder: (context, engine, _) {
-          return Padding(
+        // PiP window: minimal artwork + title only. The system renders
+        // play/pause/prev/next itself from the media session.
+        if (engine.isInPiP) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.music_note,
+                      size: 56, color: cs.primary),
+                  const SizedBox(height: 12),
+                  Text(
+                    engine.currentTitle ?? '',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        color: cs.onSurface,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+        return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 32),
             child: Column(
               children: [
