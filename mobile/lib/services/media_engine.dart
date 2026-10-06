@@ -41,6 +41,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   bool? notificationsEnabledNative;
   // Last platform error swallowed by audio_service (AudioService.asyncError).
   String? lastSessionError;
+  // Names of notification drawables missing from the packaged APK.
+  String? missingIconDrawables;
   bool _asyncErrorListened = false;
   static const MethodChannel _mediaDiagChannel =
       MethodChannel('vibegrab/media_diag');
@@ -339,6 +341,23 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
             await _mediaDiagChannel.invokeMethod<bool>('notificationsEnabled');
       } catch (e) {
         debugPrint('[MEDIA_SESSION] Native notification check failed: $e');
+      }
+      // Proof that the name-resolved drawables really shipped in the APK.
+      // Missing icons (id 0) are why the media notification could never be
+      // posted before; surface it instead of failing silently.
+      try {
+        final ids = await _mediaDiagChannel
+            .invokeMethod<Map<Object?, Object?>>('mediaDrawableIds');
+        if (ids != null) {
+          final missing = <String>[];
+          ids.forEach((k, v) {
+            debugPrint('[MEDIA_SESSION] drawable $k = $v');
+            if ((v as int?) == 0) missing.add('$k');
+          });
+          missingIconDrawables = missing.isEmpty ? null : missing.join(', ');
+        }
+      } catch (e) {
+        debugPrint('[MEDIA_SESSION] Drawable check failed: $e');
       }
       PiPService.init();
       _audioHandler ??= VibeGrabAudioHandler(this);

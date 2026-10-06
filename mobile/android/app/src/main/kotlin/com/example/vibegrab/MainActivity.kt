@@ -55,6 +55,17 @@ class MainActivity : AudioServiceActivity() {
     private val PICK_DIR_REQUEST = 1001
     private var isInPipMode = false
 
+    // VibeGrab: static R references for the drawables that audio_service
+    // resolves BY NAME at runtime (Resources.getIdentifier). If nothing
+    // references them statically the packager can drop them from
+    // resources.arsc, getIdentifier() returns 0 and the media notification
+    // can never be posted. Touching them here guarantees they ship.
+    private val mediaDrawables = mapOf(
+        "ic_music_note" to R.drawable.ic_music_note,
+        "ic_vibegrab_repeat" to R.drawable.ic_vibegrab_repeat,
+        "ic_vibegrab_favorite" to R.drawable.ic_vibegrab_favorite
+    )
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val fromShare = intent?.action == Intent.ACTION_SEND
         setTheme(if (fromShare) R.style.ShareTranslucentTheme else R.style.NormalTheme)
@@ -396,6 +407,11 @@ class MainActivity : AudioServiceActivity() {
                         androidx.core.app.NotificationManagerCompat.from(this)
                             .areNotificationsEnabled()
                     )
+                }
+                // Runtime proof that the name-resolved drawables really
+                // shipped inside the APK (0 means "missing").
+                "mediaDrawableIds" -> {
+                    result.success(mediaDrawables)
                 }
                 "openNotificationSettings" -> {
                     try {

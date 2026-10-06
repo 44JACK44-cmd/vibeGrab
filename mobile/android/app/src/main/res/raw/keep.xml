@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  VibeGrab: keep the drawables that audio_service resolves BY NAME at runtime
+  (Resources.getIdentifier). If they are not statically referenced in code the
+  packaging step can drop them from resources.arsc, getIdentifier() returns 0
+  and the media notification can never be posted (icon id 0). This is why the
+  system media card never appeared.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_music_note,@drawable/ic_vibegrab_repeat,@drawable/ic_vibegrab_favorite,@drawable/audio_service_stop,@drawable/audio_service_pause,@drawable/audio_service_play_arrow,@drawable/audio_service_fast_forward,@drawable/audio_service_fast_rewind,@drawable/audio_service_skip_next,@drawable/audio_service_skip_previous" />

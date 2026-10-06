@@ -714,6 +714,10 @@ class _SettingsViewState extends State<SettingsView> {
       final short = err.length > 140 ? '${err.substring(0, 140)}…' : err;
       label = 'Error del sistema: $short';
       color = Colors.redAccent;
+    } else if (engine.missingIconDrawables != null) {
+      label =
+          'Iconos ausentes en el APK: ${engine.missingIconDrawables} — la notificación no puede publicarse';
+      color = Colors.redAccent;
     } else if (notifOk == false) {
       label = '$base · notificaciones BLOQUEADAS — tocar para abrir ajustes';
       color = Colors.redAccent;

@@ -423,8 +423,34 @@ public class AudioService extends MediaBrowserServiceCompat {
         return getResources().getIdentifier(resourceName, resourceType, getApplicationContext().getPackageName());
     }
 
+    // VibeGrab patch: name lookups can fail (resource not packaged in the
+    // release build or entry renamed). A 0 icon id breaks the media
+    // notification hard: PlaybackStateCompat.CustomAction.Builder throws
+    // "you must specify an icon resource id to build a custom action" and
+    // NotificationCompat refuses a small icon of 0, which silently kills the
+    // whole media session. Never return 0: fall back to the configured
+    // notification icon and finally to a framework icon.
+    int safeResourceId(String resource) {
+        int id = 0;
+        try {
+            id = getResourceId(resource);
+        } catch (Exception e) {
+            id = 0;
+        }
+        if (id != 0) return id;
+        if (config != null && config.androidNotificationIcon != null) {
+            try {
+                id = getResourceId(config.androidNotificationIcon);
+            } catch (Exception e) {
+                id = 0;
+            }
+            if (id != 0) return id;
+        }
+        return android.R.drawable.ic_media_play;
+    }
+
     NotificationCompat.Action createAction(String resource, String label, long actionCode) {
-        int iconId = getResourceId(resource);
+        int iconId = safeResourceId(resource);
         return new NotificationCompat.Action(iconId, label,
                 buildMediaButtonPendingIntent(actionCode));
     }
@@ -453,7 +479,9 @@ public class AudioService extends MediaBrowserServiceCompat {
     }
 
     PlaybackStateCompat.CustomAction createCustomAction(MediaControl control) {
-        int iconId = getResourceId(control.icon);
+        // VibeGrab patch: safeResourceId so a missing/renamed drawable can
+        // never throw and kill the media session.
+        int iconId = safeResourceId(control.icon);
         if (control.customAction != null) {
             return new PlaybackStateCompat.CustomAction.Builder(control.customAction.name, control.label, iconId)
                 .setExtras(mapToBundle(control.customAction.extras))
@@ -554,7 +582,7 @@ public class AudioService extends MediaBrowserServiceCompat {
         for (MediaControl control : controls) {
             if (control.customAction != null) {
                 notificationActions.add(new NotificationCompat.Action(
-                        getResourceId(control.icon),
+                        safeResourceId(control.icon),
                         control.label,
                         buildCustomActionPendingIntent(control.customAction.name)));
             } else if (createCustomAction(control) == null) {
@@ -716,7 +744,7 @@ public class AudioService extends MediaBrowserServiceCompat {
                     .setDeleteIntent(buildDeletePendingIntent())
             ;
         }
-        int iconId = getResourceId(config.androidNotificationIcon);
+        int iconId = safeResourceId(config.androidNotificationIcon);
         notificationBuilder.setSmallIcon(iconId);
         return notificationBuilder;
     }
