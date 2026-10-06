@@ -1164,7 +1164,19 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (urls == null) {
       errs.add('servidor: ${_lastStreamError ?? "sin url"}');
     } else {
-      // 1a) Server-forwarded video bytes: no IP lockout, seeking works.
+      // 1a) Direct googlevideo URL (fastest when the carrier doesn't
+      // block it; fails fast with 403 otherwise).
+      if (urls.video != null) {
+        final started = await _tryStartNetworkVideo(
+            Uri.parse(urls.video!), youtubeUrl, mediaItem,
+            initTimeout: const Duration(seconds: 8));
+        if (started) {
+          _clearStage();
+          return;
+        }
+        errs.add('video: ${_lastVideoError ?? "init falló"}');
+      }
+      // 1b) Server-forwarded video bytes: no IP lockout, seeking works.
       if (urls.video != null) {
         final started = await _tryStartNetworkVideo(
             _proxyUri(urls.video!), youtubeUrl, mediaItem,
@@ -1173,21 +1185,35 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           _clearStage();
           return;
         }
-        errs.add('video: ${_lastVideoError ?? "init falló"}');
+        errs.add('proxy: ${_lastVideoError ?? "init falló"}');
       }
-      // 1b) Relay path.
-      if (urls.proxy != null) {
+      // 1b) Server-forwarded muxed bytes: no IP lockout, seeking works.
+      if (urls.video != null) {
         final started = await _tryStartNetworkVideo(
-            Uri.parse('${ApiConfig.baseUrl}${urls.proxy!}'),
-            youtubeUrl, mediaItem,
-            initTimeout: const Duration(seconds: 20));
+            _proxyUri(urls.video!), youtubeUrl, mediaItem,
+            initTimeout: const Duration(seconds: 18));
         if (started) {
           _clearStage();
           return;
         }
-        errs.add('relé: ${_lastVideoError ?? "init falló"}');
+        errs.add('proxy: ${_lastVideoError ?? "init falló"}');
       }
-      // 1c) Server-forwarded audio (full state: thumbnail + time work).
+      // 1c) Server-side merge (ffmpeg joins adaptive video+audio).
+      // This is the ONLY path for videos without a muxed format (most
+      // music videos in HD). The server starts merging while the user is
+      // still on the video card, so first bytes are usually ready.
+      {
+        final started = await _tryStartNetworkVideo(
+            Uri.parse('${ApiConfig.baseUrl}/api/explore/relay?v=$videoId'),
+            youtubeUrl, mediaItem,
+            initTimeout: const Duration(seconds: 25));
+        if (started) {
+          _clearStage();
+          return;
+        }
+        errs.add('unión: ${_lastVideoError ?? "init falló"}');
+      }
+      // 1d) Server-forwarded audio (full state: thumbnail + time work).
       if (urls.audio != null) {
         _setStage('playStageAudio');
         final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
@@ -1282,10 +1308,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<StreamUrls?> _fetchStreamUrls(String videoId) async {
     _lastStreamError = null;
-    // One immediate retry: a sleeping backend (cold start) answers 502 or
-    // times out once, then serves normally. Without this, the first play
-    // after a while always fails.
-    for (var attempt = 0; attempt < 2; attempt++) {
+    // Retries with backoff: a sleeping backend (cold start ~40s) answers
+    // 502 or times out once, then serves normally. Without this, the first
+    // play after a while always fails.
+    const delays = [Duration(seconds: 3), Duration(seconds: 8)];
+    for (var attempt = 0; attempt < 3; attempt++) {
       try {
         final response = await http
             .get(Uri.parse('${ApiConfig.exploreStreamUrl}?v=$videoId'))
@@ -1304,8 +1331,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         debugPrint('[MediaEngine] stream-url fallback failed: $e');
         _lastStreamError = _short(e.toString());
       }
-      if (attempt == 0) {
-        await Future.delayed(const Duration(seconds: 2));
+      if (attempt < delays.length) {
+        await Future.delayed(delays[attempt]);
       }
     }
     return null;

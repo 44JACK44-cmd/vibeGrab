@@ -57,6 +57,11 @@ _liked = MediaMetadataService().isLiked(widget.video.url);
 _loadRelated();
 _loadComments();
 _loadMeta();
+// Warm the backend while the user reads: a sleeping server needs ~40s to
+// wake, so pinging now means stream URLs resolve fast when play starts.
+ApiService().checkHealth().then((ok) {
+  debugPrint('[VideoDetail] Backend warmup: $ok');
+});
 WidgetsBinding.instance.addPostFrameCallback((_) {
 if (!mounted) return;
 context.read<MediaEngine>().playExploreVideo(widget.video);
