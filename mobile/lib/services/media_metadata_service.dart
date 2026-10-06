@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../data/models/liked_video.dart';
 
 class MediaMetadata {
   final String filename;
@@ -91,13 +92,58 @@ class MediaMetadataService extends ChangeNotifier {
 
   Map<String, MediaMetadata> _metadata = {};
   List<HistoryEntry> _history = [];
+  List<LikedVideo> _likedVideos = [];
 
   static const _metadataKey = 'vibegrab_media_metadata';
   static const _historyKey = 'vibegrab_history';
+  static const _likedKey = 'vibegrab_liked_videos';
   static const _maxHistory = 200;
 
   Map<String, MediaMetadata> get metadata => Map.unmodifiable(_metadata);
   List<HistoryEntry> get history => List.unmodifiable(_history);
+
+  /// Remote (Explorer/YouTube) likes, newest first. kind 'video' goes to
+  /// "Videos que me gustan", kind 'audio' to the songs section.
+  List<LikedVideo> get likedVideos => List.unmodifiable(_likedVideos);
+  List<LikedVideo> get likedVideoItems =>
+      _likedVideos.where((e) => e.isVideo).toList();
+  List<LikedVideo> get likedAudios =>
+      _likedVideos.where((e) => !e.isVideo).toList();
+
+  bool isLiked(String url) => _likedVideos.any((e) => e.url == url);
+
+  Future<void> toggleLikedVideo({
+    required String url,
+    required String title,
+    String? artist,
+    String? thumbnail,
+    bool isVideo = true,
+  }) async {
+    final i = _likedVideos.indexWhere((e) => e.url == url);
+    if (i >= 0) {
+      _likedVideos.removeAt(i);
+    } else {
+      _likedVideos.insert(
+        0,
+        LikedVideo(
+          url: url,
+          title: title.isEmpty ? url : title,
+          artist: artist,
+          thumbnail: thumbnail,
+          kind: isVideo ? 'video' : 'audio',
+          savedAt: DateTime.now().toIso8601String(),
+        ),
+      );
+    }
+    notifyListeners();
+    await _saveNow();
+  }
+
+  Future<void> removeLikedVideo(String url) async {
+    _likedVideos.removeWhere((e) => e.url == url);
+    notifyListeners();
+    await _saveNow();
+  }
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -117,6 +163,16 @@ class MediaMetadataService extends ChangeNotifier {
         _history = raw.map((e) => HistoryEntry.fromJson(e)).toList();
       } catch (_) {
         _history = [];
+      }
+    }
+    final likedJson = prefs.getString(_likedKey);
+    if (likedJson != null) {
+      try {
+        final raw = jsonDecode(likedJson) as List;
+        _likedVideos =
+            raw.map((e) => LikedVideo.fromJson(e as Map<String, dynamic>)).toList();
+      } catch (_) {
+        _likedVideos = [];
       }
     }
   }
@@ -148,6 +204,10 @@ class MediaMetadataService extends ChangeNotifier {
     await prefs.setString(
       _historyKey,
       jsonEncode(_history.map((e) => e.toJson()).toList()),
+    );
+    await prefs.setString(
+      _likedKey,
+      jsonEncode(_likedVideos.map((e) => e.toJson()).toList()),
     );
   }
 

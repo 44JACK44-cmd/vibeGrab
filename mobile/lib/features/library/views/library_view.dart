@@ -12,6 +12,8 @@ import '../widgets/library_grid_card.dart';
 import '../widgets/history_card.dart';
 import '../widgets/library_list_tile.dart';
 
+import 'liked_videos_view.dart';
+
 class LibraryView extends StatefulWidget {
   const LibraryView({super.key});
 
@@ -68,6 +70,7 @@ class _LibraryViewState extends State<LibraryView> {
           _buildSearchBar(loc, cs),
           _buildFilterTabs(context, loc, cs),
           _buildSortBar(loc, cs),
+          _buildLikesHeader(context, loc, cs),
           Expanded(
             child: Consumer<LibraryController>(
               builder: (context, controller, _) {
@@ -368,6 +371,106 @@ class _LibraryViewState extends State<LibraryView> {
         ));
       }
     }
+  }
+
+  /// Shown only on the Favorites tab: entry to "Videos que me gustan"
+  /// plus the remote audio likes (playable songs from Explorer).
+  Widget _buildLikesHeader(
+      BuildContext context, AppLocalizations loc, ColorScheme cs) {
+    return Consumer<LibraryController>(
+      builder: (context, controller, _) {
+        if (controller.filter != LibraryFilter.favorites) {
+          return const SizedBox.shrink();
+        }
+        final meta = controller.meta;
+        final videos = meta.likedVideoItems;
+        final audios = meta.likedAudios;
+        if (videos.isEmpty && audios.isEmpty) {
+          return const SizedBox.shrink();
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (videos.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+                child: Card(
+                  margin: EdgeInsets.zero,
+                  child: ListTile(
+                    leading: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(10),
+                            color: cs.primary.withValues(alpha: 0.15),
+                          ),
+                          child: Icon(Icons.favorite,
+                              color: cs.primary, size: 22),
+                        ),
+                        Positioned(
+                          right: 0,
+                          bottom: 0,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: cs.primary,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '${videos.length}',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    title: Text(loc.likedVideosTitle,
+                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const LikedVideosView()),
+                    ),
+                  ),
+                ),
+              ),
+            if (audios.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                child: Text(
+                  loc.onlineLikes,
+                  style: TextStyle(
+                      color: cs.onSurfaceVariant,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
+                ),
+              ),
+              SizedBox(
+                height: 148,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  itemCount: audios.length,
+                  itemBuilder: (context, i) {
+                    final a = audios[i];
+                    return OnlineLikeCard(
+                        key: ValueKey('online_${a.url}'), like: a);
+                  },
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    );
   }
 
   void _playFile(BuildContext context, LibraryFile file) {

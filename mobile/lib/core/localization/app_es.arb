@@ -190,7 +190,7 @@
   "preferBestQualityHint": "Seleccionar automáticamente el mejor formato",
   "saveMetadata": "Guardar metadatos",
   "saveMetadataHint": "Conservar título, miniatura y fuente",
-  "appVersion": "v1.1.15",
+  "appVersion": "v1.1.16",
   "mediaSessionLabel": "Sesión multimedia",
   "backendUrl": "URL del backend",
   "backendUrlHint": "URL del servidor backend de VibeGrab. Usa http://10.0.2.2:8000 para el emulador, o la IP local de tu PC para un dispositivo real.",
@@ -440,6 +440,30 @@
   "@viewsPlain": {
     "placeholders": {
       "n": {}
+    }
+  },
+  "modeNormal": "Normal",
+  "modeRepeatAll": "Repetir todo",
+  "modeRepeatOne": "Repetir una",
+  "modeShuffle": "Aleatorio",
+  "likedVideosTitle": "Videos que me gustan",
+  "likedVideosEmpty": "Aún no tienes videos que te gusten. Toca el ♥ en cualquier video de Explorer para guardarlo aquí.",
+  "onlineLikes": "Me gusta en línea",
+  "unlike": "Quitar me gusta",
+  "shortsTitle": "Shorts",
+  "shortsEmpty": "No hay shorts ahora mismo. Vuelve a intentarlo más tarde.",
+  "forYou": "Para ti",
+  "loadMore": "Cargar más",
+  "loadingMore": "Cargando más…",
+  "shortsSection": "Shorts",
+  "watchShorts": "Ver Shorts",
+  "alreadyDownloaded": "Ya descargado",
+  "downloadAgain": "Descargar de nuevo",
+  "openFileFailed": "No se pudo abrir el archivo",
+  "timeLeft": "quedan {t}",
+  "@timeLeft": {
+    "placeholders": {
+      "t": {}
     }
   }
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_animations.dart';
 import '../../../core/localization/app_localizations.dart';
@@ -706,6 +707,48 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
     if (controller.selectedFormat == null || controller.url == null) return;
 
     final downloadsController = context.read<DownloadsController>();
+    // No duplicates: if the same URL is already downloaded (or downloading),
+    // offer to open it or explicitly download again.
+    final existing = downloadsController.findDuplicate(controller.url!);
+    if (existing != null) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(loc.alreadyDownloaded),
+          content: Text(existing.title,
+              maxLines: 2, overflow: TextOverflow.ellipsis),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: Text(loc.cancel),
+            ),
+            if (existing.filePath != null && existing.filePath!.isNotEmpty)
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'open'),
+                child: Text(loc.openFile),
+              ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'again'),
+              child: Text(loc.downloadAgain),
+            ),
+          ],
+        ),
+      );
+      if (choice == 'open' &&
+          existing.filePath != null &&
+          context.mounted) {
+        try {
+          await const MethodChannel('com.example.vibegrab/app')
+              .invokeMethod('openFile', {
+            'path': existing.filePath!,
+            'mime': '*/*',
+          });
+        } catch (_) {}
+        return;
+      }
+      if (choice != 'again') return;
+    }
+
     final format = controller.selectedFormat!;
     final media = controller.media;
 

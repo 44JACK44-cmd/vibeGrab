@@ -7,6 +7,7 @@ import '../../../data/models/library_file.dart';
 import '../../../data/models/media_state.dart';
 import '../widgets/equalizer_sheet.dart';
 import '../widgets/lyrics_sheet.dart';
+import '../widgets/play_mode_button.dart';
 
 class AudioPlayerView extends StatefulWidget {
   final LibraryFile file;
@@ -211,17 +212,7 @@ class _AudioPlayerViewState extends State<AudioPlayerView> {
               onPressed: () => engine.skipToNext(),
             ),
             const SizedBox(width: 8),
-            IconButton(
-              icon: Icon(
-                engine.state.repeatMode == PlayerRepeatMode.none
-                    ? Icons.repeat
-                    : engine.state.repeatMode == PlayerRepeatMode.one
-                        ? Icons.repeat_one
-                        : Icons.repeat,
-                color: engine.state.repeatMode != PlayerRepeatMode.none ? cs.primary : cs.onSurface,
-              ),
-              onPressed: () => engine.toggleRepeat(),
-            ),
+            const PlayModeButton(),
           ],
         ),
         const SizedBox(height: 16),

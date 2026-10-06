@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
+import '../data/models/media_state.dart';
 import 'session_snapshot.dart';
 
 abstract class MediaEngineDelegate {
@@ -16,7 +17,8 @@ abstract class MediaEngineDelegate {
   Future<void> seek(Duration position);
   Future<void> skipToNext();
   Future<void> skipToPrevious();
-  void toggleRepeat();
+  void cyclePlayMode();
+  void setPlayMode(PlayerRepeatMode mode, bool shuffle);
   Future<void> toggleFavoriteCurrent();
 }
 
@@ -65,23 +67,30 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
     return Future.value();
   }
 
-  void updatePlaybackState({
+void updatePlaybackState({
     required bool playing,
     required AudioProcessingState processingState,
+    required PlayerRepeatMode repeatMode,
+    required bool shuffle,
   }) {
     final s = _engine.currentSessionSnapshot;
+    final serviceRepeat = switch (repeatMode) {
+      PlayerRepeatMode.none => AudioServiceRepeatMode.none,
+      PlayerRepeatMode.one => AudioServiceRepeatMode.one,
+      PlayerRepeatMode.all => AudioServiceRepeatMode.all,
+    };
     playbackState.add(playbackState.value.copyWith(
-      // System media card design (lock screen / quick settings /
-      // notification): repeat, previous, play/pause, next, favorite.
-      //
-      // EVERY button is a custom action on purpose: the local audio_service
-      // fork turns them into real broadcast PendingIntents that land in
-      // [onCustomAction], so each button works deterministically instead of
-      // depending on the platform media-button keycode mapping.
       controls: [
+        // System media card design (lock screen / quick settings /
+        // notification): mode, previous, play/pause, next, favorite.
+        //
+        // EVERY button is a custom action on purpose: the local audio_service
+        // fork turns them into real broadcast PendingIntents that land in
+        // [onCustomAction], so each button works deterministically instead of
+        // depending on the platform media-button keycode mapping.
         MediaControl.custom(
-          androidIcon: 'drawable/ic_vibegrab_repeat',
-          label: 'Repetir',
+          androidIcon: _modeIcon(repeatMode, shuffle),
+          label: 'Modo',
           name: 'repeat',
         ),
         MediaControl.custom(
@@ -122,7 +131,20 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
       updatePosition: s.position,
       bufferedPosition: s.bufferedPosition,
       speed: s.speed,
+      repeatMode: serviceRepeat,
+      shuffleMode:
+          shuffle ? AudioServiceShuffleMode.all : AudioServiceShuffleMode.none,
     ));
+  }
+
+  /// Notification icon for the current playback mode.
+  String _modeIcon(PlayerRepeatMode mode, bool shuffle) {
+    if (shuffle) return 'drawable/ic_vibegrab_shuffle';
+    return switch (mode) {
+      PlayerRepeatMode.all => 'drawable/ic_vibegrab_repeat',
+      PlayerRepeatMode.one => 'drawable/ic_vibegrab_repeat_one',
+      PlayerRepeatMode.none => 'drawable/ic_vibegrab_repeat_off',
+    };
   }
 
   /// Re-pushes the playback state so the notification redraws its buttons
@@ -131,6 +153,12 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
     updatePlaybackState(
       playing: playbackState.value.playing,
       processingState: playbackState.value.processingState,
+      repeatMode: playbackState.value.repeatMode == AudioServiceRepeatMode.one
+          ? PlayerRepeatMode.one
+          : (playbackState.value.repeatMode == AudioServiceRepeatMode.all
+              ? PlayerRepeatMode.all
+              : PlayerRepeatMode.none),
+      shuffle: playbackState.value.shuffleMode == AudioServiceShuffleMode.all,
     );
   }
 
@@ -149,9 +177,9 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
       _lastActionAt = now;
       debugPrint('[MEDIA_SESSION] Custom action from system: $name');
       switch (name) {
-        case 'repeat':
-          _engine.toggleRepeat();
-          break;
+      case 'repeat':
+        _engine.cyclePlayMode();
+        break;
         case 'prev':
           await _engine.skipToPrevious();
           break;
@@ -218,6 +246,37 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
   Future<void> skipToPrevious() {
     debugPrint('[MEDIA_SESSION] Previous');
     return _engine.skipToPrevious();
+  }
+
+  /// System-driven repeat change (e.g. Android Auto / Bluetooth UI).
+  /// Maps into the single global engine mode so everything stays in sync.
+  @override
+  Future<void> setRepeatMode(AudioServiceRepeatMode repeatMode) async {
+    debugPrint('[MEDIA_SESSION] setRepeatMode -> $repeatMode');
+    _engine.setPlayMode(
+      switch (repeatMode) {
+        AudioServiceRepeatMode.one => PlayerRepeatMode.one,
+        AudioServiceRepeatMode.all => PlayerRepeatMode.all,
+        AudioServiceRepeatMode.none => PlayerRepeatMode.none,
+        AudioServiceRepeatMode.group => PlayerRepeatMode.all,
+      },
+      false,
+    );
+  }
+
+  /// System-driven shuffle change. Keeps the current repeat setting and
+  /// only flips the shuffle flag.
+  @override
+  Future<void> setShuffleMode(AudioServiceShuffleMode shuffleMode) async {
+    debugPrint('[MEDIA_SESSION] setShuffleMode -> $shuffleMode');
+    _engine.setPlayMode(
+      playbackState.value.repeatMode == AudioServiceRepeatMode.one
+          ? PlayerRepeatMode.one
+          : (playbackState.value.repeatMode == AudioServiceRepeatMode.all
+              ? PlayerRepeatMode.all
+              : PlayerRepeatMode.none),
+      shuffleMode == AudioServiceShuffleMode.all,
+    );
   }
 
   @override

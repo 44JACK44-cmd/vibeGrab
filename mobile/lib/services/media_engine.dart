@@ -71,7 +71,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         duration: _state.duration,
         bufferedPosition:
             _videoController != null ? Duration.zero : _player.bufferedPosition,
-        speed: _videoController != null ? 1.0 : _player.speed,
+        speed: _speed,
       );
 
   @override
@@ -203,9 +203,19 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   List<MediaItem> get queue => List.unmodifiable(_queue);
   int _currentIndex = -1;
   int get currentIndex => _currentIndex;
-  bool get hasNext => _currentIndex < _queue.length - 1 || _state.repeatMode == PlayerRepeatMode.all;
-  bool get hasPrevious => _currentIndex > 0 || _state.repeatMode == PlayerRepeatMode.all;
+  bool get hasNext {
+    if (_queue.isEmpty) return false;
+    if (_state.isShuffle) return _shuffleHasNext;
+    return _currentIndex < _queue.length - 1 ||
+        _state.repeatMode == PlayerRepeatMode.all;
+  }
 
+  bool get hasPrevious {
+    if (_queue.isEmpty) return false;
+    if (_state.isShuffle) return _shuffleHasPrevious;
+    return _currentIndex > 0 ||
+        _state.repeatMode == PlayerRepeatMode.all;
+  }
   bool _completionHandled = false;
   static const _prefix = 'vibegrab_metadata_';
   StreamSubscription<Duration>? _posSub;
@@ -534,6 +544,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _audioHandler?.updatePlaybackState(
       playing: _state.isPlaying,
       processingState: procState,
+      repeatMode: _state.repeatMode,
+      shuffle: _state.isShuffle,
     );
     _emitSessionSnapshot();
     if (_state.isPlaying) {
@@ -649,19 +661,43 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     notifyListeners();
   }
 
-  // --- Shuffle & Repeat ---
+  // --- Shuffle & Repeat (ONE global playback mode) ---
+  //
+  // The mode button cycles: normal -> repeat-all -> repeat-one -> shuffle.
+  // Shuffle keeps a permutation of the queue so every track plays once per
+  // run (no A → A → A), and the same logic drives local, Explorer,
+  // notification, queue UI, completion and manual skips.
 
-  void toggleShuffle() {
-    _state = _state.copyWith(isShuffle: !_state.isShuffle);
-    _player.setShuffleModeEnabled(_state.isShuffle);
-    notifyListeners();
+  List<int> _shuffleOrder = [];
+  int _shufflePos = -1;
+  bool _playModeLoaded = false;
+
+  /// Restores the persisted repeat/shuffle mode (call once at startup).
+  Future<void> loadPlayMode() async {
+    if (_playModeLoaded) return;
+    _playModeLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final ri = prefs.getInt('${_prefix}playmode_repeat') ?? 0;
+      final mode = PlayerRepeatMode.values[ri.clamp(0, PlayerRepeatMode.values.length - 1)];
+      final shuffle = prefs.getBool('${_prefix}playmode_shuffle') ?? false;
+      _state = _state.copyWith(repeatMode: mode, isShuffle: shuffle);
+      _applyLoopMode(mode);
+      if (shuffle) _rebuildShuffleOrder();
+      debugPrint('[MediaEngine] Restored play mode: $mode shuffle=$shuffle');
+    } catch (_) {}
   }
 
-  void toggleRepeat() {
-    final modes = PlayerRepeatMode.values;
-    final nextIndex = (modes.indexOf(_state.repeatMode) + 1) % modes.length;
-    _state = _state.copyWith(repeatMode: modes[nextIndex]);
-    switch (_state.repeatMode) {
+  Future<void> _savePlayMode() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('${_prefix}playmode_repeat', _state.repeatMode.index);
+      await prefs.setBool('${_prefix}playmode_shuffle', _state.isShuffle);
+    } catch (_) {}
+  }
+
+  void _applyLoopMode(PlayerRepeatMode mode) {
+    switch (mode) {
       case PlayerRepeatMode.none:
         _player.setLoopMode(LoopMode.off);
         break;
@@ -672,29 +708,181 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         _player.setLoopMode(LoopMode.all);
         break;
     }
+  }
+
+  /// Applies a repeat+shuffle combination and persists it.
+  void setPlayMode(PlayerRepeatMode mode, bool shuffle) {
+    _state = _state.copyWith(repeatMode: mode, isShuffle: shuffle);
+    // Engine-level shuffle owns the order; just_audio's internal shuffle
+    // must stay off so manual queue navigation is never contradicted.
+    _player.setShuffleModeEnabled(false);
+    _applyLoopMode(mode);
+    if (shuffle) {
+      _rebuildShuffleOrder();
+    } else {
+      _shuffleOrder = [];
+      _shufflePos = -1;
+    }
+    _savePlayMode();
+    _syncPlaybackStateToHandler();
     notifyListeners();
     _audioHandler?.refreshControls();
   }
 
-  /// Toggles favorite for whatever is playing (used by the media
-  /// notification's heart button). Keys match MediaMetadataService so the
-  /// Library "Favorites" tab sees the same flag.
+  /// The mode button cycle: normal -> all -> one -> shuffle -> normal.
+  void cyclePlayMode() {
+    if (_state.repeatMode == PlayerRepeatMode.none && !_state.isShuffle) {
+      setPlayMode(PlayerRepeatMode.all, false);
+    } else if (_state.repeatMode == PlayerRepeatMode.all && !_state.isShuffle) {
+      setPlayMode(PlayerRepeatMode.one, false);
+    } else if (_state.repeatMode == PlayerRepeatMode.one && !_state.isShuffle) {
+      setPlayMode(PlayerRepeatMode.none, true);
+    } else {
+      setPlayMode(PlayerRepeatMode.none, false);
+    }
+  }
+
+  void toggleShuffle() {
+    // Standalone shuffle toggle (keeps the current repeat setting).
+    setPlayMode(_state.repeatMode, !_state.isShuffle);
+  }
+
+  void toggleRepeat() {
+    // Kept for compatibility: the mode button uses cyclePlayMode().
+    cyclePlayMode();
+  }
+
+  /// Rebuilds the shuffled run anchored at the current item.
+  void _rebuildShuffleOrder() {
+    final n = _queue.length;
+    if (n == 0) {
+      _shuffleOrder = [];
+      _shufflePos = -1;
+      return;
+    }
+    _shuffleOrder = List<int>.generate(n, (i) => i)..shuffle();
+    final ci = _currentIndex.clamp(0, n - 1);
+    _shuffleOrder.remove(ci);
+    _shuffleOrder.insert(0, ci);
+    _shufflePos = 0;
+  }
+
+  /// Self-heals the shuffle order after ANY external queue/index change
+  /// (playFile, playUrl, setQueue, removals...) without touching those paths:
+  /// if the current item is still in the run, continue from it; otherwise
+  /// rebuild a fresh run anchored at the current item.
+  void _ensureShuffleOrder() {
+    final n = _queue.length;
+    final ok = _shuffleOrder.length == n &&
+        n > 0 &&
+        _shuffleOrder.toSet().length == n;
+    if (!ok) {
+      _rebuildShuffleOrder();
+      return;
+    }
+    if (_shufflePos < 0 ||
+        _shufflePos >= n ||
+        _shuffleOrder[_shufflePos] != _currentIndex) {
+      final p = _shuffleOrder.indexOf(_currentIndex);
+      if (p >= 0) {
+        _shufflePos = p;
+      } else {
+        _rebuildShuffleOrder();
+      }
+    }
+  }
+
+  /// Next index inside the shuffled run, or null when the run is exhausted
+  /// and repeat-all is off.
+  int? _shuffleAdvance() {
+    if (_queue.length <= 1) return null;
+    _ensureShuffleOrder();
+    if (_shufflePos + 1 < _shuffleOrder.length) {
+      _shufflePos++;
+      return _shuffleOrder[_shufflePos];
+    }
+    if (_state.repeatMode == PlayerRepeatMode.all) {
+      _rebuildShuffleOrder();
+      if (_shuffleOrder.length > 1) {
+        _shufflePos = 1;
+        return _shuffleOrder[1];
+      }
+    }
+    return null;
+  }
+
+  bool get _shuffleHasNext {
+    if (_queue.length <= 1) return false;
+    _ensureShuffleOrder();
+    return _shufflePos + 1 < _shuffleOrder.length ||
+        _state.repeatMode == PlayerRepeatMode.all;
+  }
+
+  bool get _shuffleHasPrevious {
+    if (_queue.isEmpty) return false;
+    _ensureShuffleOrder();
+    return _shufflePos > 0;
+  }
+
+  /// Toggles favorite for whatever is playing. Local files use the
+  /// filename flag (Library "Favoritos"); remote Explorer/YouTube items use
+  /// the liked-videos store (songs + "Videos que me gustan").
   Future<void> toggleFavoriteCurrent() async {
     final key = _favoriteKey;
     if (key == null) return;
-    await MediaMetadataService().toggleFavorite(key);
+    if (_isRemoteId(key)) {
+      final item = (_currentIndex >= 0 && _currentIndex < _queue.length)
+          ? _queue[_currentIndex]
+          : null;
+      await MediaMetadataService().toggleLikedVideo(
+        url: key,
+        title: item?.title ?? _state.title ?? key,
+        artist: item?.artist ?? _state.artist,
+        thumbnail: item?.artUri?.toString() ?? _state.thumbnail,
+        isVideo: _state.mediaType == MediaType.video,
+      );
+    } else {
+      await MediaMetadataService().toggleFavorite(key);
+    }
     debugPrint('[MEDIA_SESSION] Favorite toggled for $key');
     notifyListeners();
     // Redraw the card so the heart shows the new state.
     _audioHandler?.refreshControls();
   }
 
+  /// Likes/unlikes an Explorer item WITHOUT changing playback (used by the
+  /// detail view heart). Keeps every surface in sync.
+  Future<void> toggleRemoteLike({
+    required String url,
+    required String title,
+    String? artist,
+    String? thumbnail,
+    required bool isVideo,
+  }) async {
+    await MediaMetadataService().toggleLikedVideo(
+      url: url,
+      title: title,
+      artist: artist,
+      thumbnail: thumbnail,
+      isVideo: isVideo,
+    );
+    notifyListeners();
+    _audioHandler?.refreshControls();
+  }
+
+  bool isRemoteLiked(String url) => MediaMetadataService().isLiked(url);
+
   /// Favorite state of the current item (drives the card's heart icon).
   @override
   bool get isCurrentFavorite {
     final key = _favoriteKey;
-    return key != null && MediaMetadataService().isFavorite(key);
+    if (key == null) return false;
+    if (_isRemoteId(key)) return MediaMetadataService().isLiked(key);
+    return MediaMetadataService().isFavorite(key);
   }
+
+  bool _isRemoteId(String id) =>
+      id.startsWith('http://') || id.startsWith('https://');
 
   /// Favorite key: local files are stored by filename (same key the Library
   /// uses), remote/YouTube items by media id.
@@ -722,6 +910,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<void> skipToNext() async {
     if (_queue.isEmpty) return;
+    if (_state.isShuffle) {
+      final next = _shuffleAdvance();
+      if (next == null) return; // end of the shuffled run
+      _currentIndex = next;
+      await _playCurrentQueueItem();
+      return;
+    }
     if (_currentIndex < _queue.length - 1) {
       _currentIndex++;
       await _playCurrentQueueItem();
@@ -735,6 +930,17 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (_queue.isEmpty) return;
     if (_state.position.inSeconds > 3) {
       await seek(Duration.zero);
+      return;
+    }
+    if (_state.isShuffle) {
+      _ensureShuffleOrder();
+      if (_shufflePos > 0) {
+        _shufflePos--;
+        _currentIndex = _shuffleOrder[_shufflePos];
+        await _playCurrentQueueItem();
+      } else {
+        await seek(Duration.zero);
+      }
       return;
     }
     if (_currentIndex > 0) {
@@ -1673,22 +1879,21 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   void _handlePlaybackComplete() {
     _completionDebounce?.cancel();
-    _completionDebounce = Timer(const Duration(milliseconds: 300), () {
+    _completionDebounce = Timer(const Duration(milliseconds: 300), () async {
       if (_queue.isEmpty) return;
-      switch (_state.repeatMode) {
-        case PlayerRepeatMode.one:
-          seek(Duration.zero);
-          _player.play();
-          break;
-        case PlayerRepeatMode.all:
-          skipToNext();
-          break;
-        case PlayerRepeatMode.none:
-          if (_currentIndex < _queue.length - 1) {
-            skipToNext();
-          }
-          break;
+      if (_state.repeatMode == PlayerRepeatMode.one) {
+        // Repeat-one loops the SAME item forever (audio AND video).
+        await seek(Duration.zero);
+        if (_videoController != null) {
+          await _videoController!.play();
+        } else {
+          await _player.play();
+        }
+        return;
       }
+      // Repeat-all / shuffle / normal all flow through the same navigation
+      // so completion behaves exactly like pressing "next".
+      await skipToNext();
     });
   }
 
@@ -1710,6 +1915,41 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _state = _state.copyWith(position: position);
     _syncPlaybackStateToHandler();
     notifyListeners();
+  }
+
+  double _speed = 1.0;
+  double get speed => _speed;
+
+  /// Playback speed shared by audio and video (shown in player + session).
+  Future<void> setSpeed(double speed) async {
+    _speed = speed.clamp(0.25, 3.0);
+    try {
+      if (_videoController != null) {
+        await _videoController!.setPlaybackSpeed(_speed);
+      } else {
+        await _player.setSpeed(_speed);
+      }
+    } catch (_) {}
+    _emitSessionSnapshot();
+    notifyListeners();
+  }
+
+  /// Per-video output volume 0..1 (used by the vertical-drag gesture).
+  Future<void> setVideoVolume(double v) async {
+    final c = _videoController;
+    if (c == null) return;
+    try {
+      await c.setVolume(v.clamp(0.0, 1.0));
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  double get videoVolume {
+    try {
+      return _videoController?.value.volume ?? 1.0;
+    } catch (_) {
+      return 1.0;
+    }
   }
 
   Future<void> skipForward([Duration duration = const Duration(seconds: 15)]) async {

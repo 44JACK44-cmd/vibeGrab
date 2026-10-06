@@ -214,4 +214,25 @@ class DownloadTask {
     if (speed < 1024 * 1024) return '${(speed / 1024).toStringAsFixed(0)} KB/s';
     return '${(speed / (1024 * 1024)).toStringAsFixed(1)} MB/s';
   }
+
+  /// Remaining time mm:ss from the measured speed, or '' when unknown.
+  String get etaFormatted {
+    if (!isActive ||
+        bytesDownloaded == 0 ||
+        startedAt == null ||
+        totalBytes == null) {
+      return '';
+    }
+    final elapsed =
+        DateTime.now().difference(DateTime.parse(startedAt!)).inSeconds;
+    if (elapsed <= 0) return '';
+    final speed = bytesDownloaded / elapsed;
+    if (speed <= 0) return '';
+    final remaining = totalBytes! - bytesDownloaded;
+    if (remaining <= 0) return '';
+    final secs = (remaining / speed).round();
+    final m = (secs ~/ 60).toString().padLeft(2, '0');
+    final s = (secs % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
 }

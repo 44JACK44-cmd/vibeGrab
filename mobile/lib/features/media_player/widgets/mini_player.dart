@@ -1,10 +1,15 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../services/display_service.dart';
 import '../../../services/media_engine.dart';
 import '../../../data/models/media_state.dart';
+import 'play_mode_button.dart';
+import 'video_controls_controller.dart';
+import 'video_controls_overlay.dart';
 
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key});
@@ -229,110 +234,167 @@ class MiniPlayer extends StatelessWidget {
   }
 }
 
-class VideoPlayerFullScreen extends StatelessWidget {
+class VideoPlayerFullScreen extends StatefulWidget {
   const VideoPlayerFullScreen({super.key});
 
   @override
+  State<VideoPlayerFullScreen> createState() => _VideoPlayerFullScreenState();
+}
+
+class _VideoPlayerFullScreenState extends State<VideoPlayerFullScreen> {
+  late final VideoControlsController _controls;
+  bool _dragH = false;
+  bool _dragV = false;
+  bool _dragLeft = true;
+  double _accDx = 0;
+  double _accDy = 0;
+  double _baseBright = 0.5;
+  double _baseVol = 1.0;
+  Duration _seekBase = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _controls = VideoControlsController();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _controls.canHide = () => context.read<MediaEngine>().isPlaying;
+      _controls.show();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controls.dispose();
+    DisplayService.resetBrightness();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    super.dispose();
+  }
+
+  String _fmt(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    final h = d.inHours;
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+
+  Duration _clampedSeek(MediaEngine engine, Duration target) {
+    if (target < Duration.zero) return Duration.zero;
+    if (target > engine.duration) return engine.duration;
+    return target;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       backgroundColor: Colors.black,
       body: Consumer<MediaEngine>(
         builder: (context, engine, _) {
-          return Column(
+          final vc = engine.videoController;
+          final ready =
+              vc != null && vc.value.isInitialized && !vc.value.hasError;
+          return Stack(
+            fit: StackFit.expand,
             children: [
-              Expanded(
-                child: engine.videoController != null && engine.videoController!.value.isInitialized
-                    ? Center(
-                        child: AspectRatio(
-                          aspectRatio: engine.videoController!.value.aspectRatio,
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              VideoPlayer(engine.videoController!),
-                              GestureDetector(
-                                onTap: () => engine.togglePlayPause(),
-                                child: AnimatedOpacity(
-                                  opacity: engine.isPlaying ? 0.0 : 1.0,
-                                  duration: const Duration(milliseconds: 200),
-                                  child: Container(
-                                    width: 72, height: 72,
-                                    decoration: const BoxDecoration(
-                                      color: Colors.black45,
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: Icon(
-                                      engine.isPlaying ? Icons.pause : Icons.play_arrow,
-                                      color: Colors.white, size: 48,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      )
-                    : const Center(child: CircularProgressIndicator(color: Colors.white)),
-              ),
-              Container(
-                color: cs.surface,
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      engine.currentTitle ?? '',
-                      style: TextStyle(color: cs.onSurface, fontSize: 16, fontWeight: FontWeight.w600),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+              if (ready)
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _controls.toggle,
+                    onDoubleTap: () {
+                      // Double tap: quick +10s without hiding controls.
+                      final target = _clampedSeek(engine,
+                          engine.position + const Duration(seconds: 10));
+                      engine.seek(target);
+                      _controls.flashHint(
+                          '+10s  ${_fmt(target)}', Icons.forward_10);
+                      _controls.poke();
+                    },
+                    onHorizontalDragStart: (_) {
+                      _dragH = true;
+                      _accDx = 0;
+                      _seekBase = engine.position;
+                    },
+                    onHorizontalDragUpdate: (d) {
+                      if (!_dragH) return;
+                      _accDx += d.delta.dx;
+                      final target = _clampedSeek(
+                          engine,
+                          _seekBase +
+                              Duration(
+                                  seconds: (_accDx / 8).round()));
+                      _controls.flashHint(
+                          _fmt(target), Icons.fast_forward);
+                    },
+                    onHorizontalDragEnd: (_) {
+                      if (!_dragH) return;
+                      _dragH = false;
+                      final target = _clampedSeek(
+                          engine,
+                          _seekBase +
+                              Duration(
+                                  seconds: (_accDx / 8).round()));
+                      engine.seek(target);
+                      _controls.clearHint();
+                      _controls.show();
+                    },
+                    onVerticalDragStart: (d) async {
+                      _dragV = true;
+                      _accDy = 0;
+                      _dragLeft = d.globalPosition.dx <
+                          MediaQuery.of(context).size.width / 2;
+                      if (_dragLeft) {
+                        final b = await DisplayService.brightness();
+                        _baseBright = b < 0 ? 0.5 : b;
+                      } else {
+                        _baseVol = engine.videoVolume;
+                      }
+                    },
+                    onVerticalDragUpdate: (d) {
+                      if (!_dragV) return;
+                      _accDy += d.delta.dy;
+                      if (_dragLeft) {
+                        final v =
+                            (_baseBright - _accDy / 400).clamp(0.05, 1.0);
+                        DisplayService.setBrightness(v);
+                        _controls.flashHint(
+                            '${(v * 100).round()}%', Icons.brightness_6);
+                      } else {
+                        final v =
+                            (_baseVol - _accDy / 300).clamp(0.0, 1.0);
+                        engine.setVideoVolume(v);
+                        _controls.flashHint('${(v * 100).round()}%',
+                            v == 0 ? Icons.volume_off : Icons.volume_up);
+                      }
+                    },
+                    onVerticalDragEnd: (_) {
+                      _dragV = false;
+                      _controls.clearHint();
+                      _controls.show();
+                    },
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: vc.value.aspectRatio,
+                        child: VideoPlayer(vc),
+                      ),
                     ),
-                    const SizedBox(height: 8),
-                    Slider(
-                      value: engine.progress,
-                      onChanged: (v) => engine.seekProgress(v),
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(engine.positionFormatted, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                        Text(engine.durationFormatted, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                      ],
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        IconButton(
-                          icon: Icon(Icons.replay_10, color: cs.onSurface, size: 28),
-                          onPressed: () => engine.skipBackward(const Duration(seconds: 10)),
-                        ),
-                        if (engine.queue.length > 1)
-                          IconButton(
-                            icon: Icon(Icons.skip_previous, color: cs.onSurface, size: 28),
-                            onPressed: () => engine.skipToPrevious(),
-                          ),
-                        const SizedBox(width: 12),
-                        Container(
-                          width: 56, height: 56,
-                          decoration: BoxDecoration(color: cs.primary, shape: BoxShape.circle),
-                          child: IconButton(
-                            icon: Icon(engine.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white, size: 32),
-                            onPressed: () => engine.togglePlayPause(),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        if (engine.queue.length > 1)
-                          IconButton(
-                            icon: Icon(Icons.skip_next, color: cs.onSurface, size: 28),
-                            onPressed: () => engine.skipToNext(),
-                          ),
-                        IconButton(
-                          icon: Icon(Icons.forward_30, color: cs.onSurface, size: 28),
-                          onPressed: () => engine.skipForward(const Duration(seconds: 30)),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+                  ),
+                )
+              else
+                const Center(
+                    child: CircularProgressIndicator(color: Colors.white)),
+              ProVideoOverlay(
+                controls: _controls,
+                title: engine.currentTitle ?? '',
+                isFullscreen: true,
+                onBack: () => Navigator.pop(context),
+                onToggleFullscreen: () => Navigator.pop(context),
               ),
             ],
           );
@@ -361,14 +423,11 @@ class _AudioPlayerFullScreen extends StatelessWidget {
         backgroundColor: Colors.transparent,
         elevation: 0,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.repeat),
-            onPressed: () => context.read<MediaEngine>().toggleRepeat(),
-          ),
-          IconButton(
-            icon: const Icon(Icons.queue_music),
-            onPressed: () => _showQueueSheet(context),
-          ),
+IconButton(
+icon: const Icon(Icons.queue_music),
+onPressed: () => _showQueueSheet(context),
+),
+const PlayModeButton(size: 22),
         ],
       ),
       body: Consumer<MediaEngine>(
@@ -448,19 +507,9 @@ class _AudioPlayerFullScreen extends StatelessWidget {
                     color: cs.onSurface,
                     onPressed: () => engine.skipToNext(),
                   ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: Icon(
-                      engine.state.repeatMode == PlayerRepeatMode.none
-                          ? Icons.repeat
-                          : engine.state.repeatMode == PlayerRepeatMode.one
-                              ? Icons.repeat_one
-                              : Icons.repeat,
-                      color: engine.state.repeatMode != PlayerRepeatMode.none ? cs.primary : cs.onSurface,
-                    ),
-                    onPressed: () => engine.toggleRepeat(),
-                  ),
-                ]),
+const SizedBox(width: 8),
+const PlayModeButton(),
+]),
                 const Spacer(flex: 2),
               ],
             ),

@@ -476,6 +476,29 @@ class AppLocalizations {
   String get withAudio => _get('withAudio');
 
   String get oneFile => _get('oneFile');
+
+  String get modeNormal => _get('modeNormal');
+  String get modeRepeatAll => _get('modeRepeatAll');
+  String get modeRepeatOne => _get('modeRepeatOne');
+  String get modeShuffle => _get('modeShuffle');
+
+  String get likedVideosTitle => _get('likedVideosTitle');
+  String get likedVideosEmpty => _get('likedVideosEmpty');
+  String get onlineLikes => _get('onlineLikes');
+  String get unlike => _get('unlike');
+
+  String get shortsTitle => _get('shortsTitle');
+  String get shortsEmpty => _get('shortsEmpty');
+  String get forYou => _get('forYou');
+  String get loadMore => _get('loadMore');
+  String get loadingMore => _get('loadingMore');
+  String get shortsSection => _get('shortsSection');
+  String get watchShorts => _get('watchShorts');
+
+  String get alreadyDownloaded => _get('alreadyDownloaded');
+  String get downloadAgain => _get('downloadAgain');
+  String get openFileFailed => _get('openFileFailed');
+  String timeLeft(String t) => _get('timeLeft', {'t': t});
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

@@ -9,8 +9,17 @@ class DownloadCard extends StatefulWidget {
   final VoidCallback? onCancel;
   final VoidCallback? onRetry;
   final VoidCallback? onDelete;
+  final VoidCallback? onOpen;
+  final VoidCallback? onShare;
 
-  const DownloadCard({super.key, required this.task, this.onCancel, this.onRetry, this.onDelete});
+  const DownloadCard(
+      {super.key,
+      required this.task,
+      this.onCancel,
+      this.onRetry,
+      this.onDelete,
+      this.onOpen,
+      this.onShare});
 
   @override
   State<DownloadCard> createState() => _DownloadCardState();
@@ -95,7 +104,9 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
       case DownloadStatus.downloading:
         statusColor = cs.primary;
         statusIcon = Icons.download;
-        statusText = '${task.progressFormatted}  ${task.speedFormatted}';
+        final eta = task.etaFormatted;
+        statusText = '${task.progressFormatted}  ${task.speedFormatted}'
+            '${eta.isNotEmpty ? '  •  ${loc.timeLeft(eta)}' : ''}';
         break;
       case DownloadStatus.processing:
         statusColor = cs.secondary;
@@ -290,19 +301,43 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
       );
     }
 
-    if (widget.task.status == DownloadStatus.completed ||
-        widget.task.status == DownloadStatus.cancelled) {
-      return IconButton(
+if (widget.task.status == DownloadStatus.completed ||
+    widget.task.status == DownloadStatus.cancelled) {
+  final completed = widget.task.status == DownloadStatus.completed;
+  return Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      if (completed && widget.onOpen != null)
+        IconButton(
+          icon: const Icon(Icons.open_in_new, size: 20),
+          onPressed: widget.onOpen,
+          color: cs.primary,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+        ),
+      if (completed && widget.onOpen != null) const SizedBox(width: 8),
+      if (completed && widget.onShare != null)
+        IconButton(
+          icon: const Icon(Icons.share_outlined, size: 20),
+          onPressed: widget.onShare,
+          color: cs.onSurfaceVariant,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+        ),
+      if (completed && widget.onShare != null) const SizedBox(width: 8),
+      IconButton(
         icon: Icon(
-          widget.task.status == DownloadStatus.completed ? Icons.check_circle : Icons.cancel_outlined,
+          completed ? Icons.delete_outline : Icons.cancel_outlined,
           size: 20,
         ),
         onPressed: widget.onDelete,
-        color: widget.task.status == DownloadStatus.completed ? AppColors.success : cs.onSurfaceVariant,
+        color: completed ? AppColors.error : cs.onSurfaceVariant,
         padding: EdgeInsets.zero,
         constraints: const BoxConstraints(),
-      );
-    }
+      ),
+    ],
+  );
+}
 
     return const SizedBox.shrink();
   }

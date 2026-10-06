@@ -47,7 +47,36 @@ class LocalExtractionService {
     'Education', 'Science', 'Comedy', 'Podcasts',
   ];
 
+  /// Expandable genre groups (music / video / audio / series). Every entry
+  /// maps to a real search query; the map is data, not UI, so new genres
+  /// only require adding a string here.
+  static const Map<String, List<String>> categoryGroups = {
+    'Música': [
+      'Pop', 'Rock', 'Reggaetón', 'Hip Hop', 'Rap', 'Electrónica', 'Jazz',
+      'Clásica', 'Salsa', 'Cumbia', 'Bachata', 'K-Pop', 'Metal', 'Indie',
+      'Lo-fi',
+    ],
+    'Video': [
+      'Shorts', 'Entretenimiento', 'Noticias', 'Deportes', 'Tecnología',
+      'Gaming', 'Tutoriales', 'Educación', 'Comedia', 'Documentales', 'Vlogs',
+    ],
+    'Audio': [
+      'Podcasts', 'Entrevistas', 'Audiolibros', 'Programas', 'Radio',
+    ],
+    'Series': [
+      'Series', 'Películas', 'Tráilers', 'Animación', 'Clips',
+    ],
+  };
+
   static const _supportedPlatforms = ['youtube.com', 'youtu.be'];
+
+  /// In-memory search cache (10 min TTL): repeat visits and tab switches
+  /// feel instant and don't hammer the network.
+  static const _cacheTtl = Duration(minutes: 10);
+  final Map<String, _CachedSearch> _searchCache = {};
+
+  /// Last fetched page per query, for real pagination ("load more").
+  final Map<String, VideoSearchList> _pages = {};
 
   void dispose() {
     _ytc.close();
@@ -145,22 +174,91 @@ class LocalExtractionService {
   }
 
   Future<List<ExploreVideo>> search(String query, {int limit = 10}) async {
-    final searchList = await _ytc.search.search(query, filter: TypeFilters.video);
-    final results = <ExploreVideo>[];
-
-    for (final video in searchList.take(limit)) {
-      results.add(ExploreVideo(
-        id: video.id.value,
-        title: video.title,
-        url: 'https://www.youtube.com/watch?v=${video.id.value}',
-        thumbnail: video.thumbnails.maxResUrl,
-        channel: video.author,
-        duration: video.duration?.inSeconds,
-        viewCount: null,
-      ));
+    final key = query.trim().toLowerCase();
+    final hit = _searchCache[key];
+    if (hit != null &&
+        DateTime.now().difference(hit.at) < _cacheTtl &&
+        hit.videos.length >= limit) {
+      return hit.videos.take(limit).toList();
     }
-
+    final searchList = await _ytc.search.search(query, filter: TypeFilters.video);
+    _pages[key] = searchList;
+    final results = _toVideos(searchList.take(limit));
+    final prev = hit?.videos ?? const <ExploreVideo>[];
+    final merged = <ExploreVideo>[...results];
+    final seen = merged.map((e) => e.id).toSet();
+    for (final v in prev) {
+      if (merged.length >= limit && hit != null) break;
+      if (seen.add(v.id)) merged.add(v);
+    }
+    _searchCache[key] = _CachedSearch(merged, DateTime.now());
     return results;
+  }
+
+  /// Next page of a previous [search] (infinite scroll). Returns [] when
+  /// there is nothing more.
+  Future<List<ExploreVideo>> searchMore(String query, {int limit = 10}) async {
+    final key = query.trim().toLowerCase();
+    var page = _pages[key];
+    if (page == null) return search(query, limit: limit);
+    try {
+      final next = await page.nextPage();
+      if (next == null || next.isEmpty) return [];
+      _pages[key] = next;
+      final results = _toVideos(next.take(limit));
+      final hit = _searchCache[key];
+      if (hit != null) {
+        final seen = hit.videos.map((e) => e.id).toSet();
+        final grown = <ExploreVideo>[...hit.videos];
+        for (final v in results) {
+          if (seen.add(v.id)) grown.add(v);
+        }
+        _searchCache[key] = _CachedSearch(grown, hit.at);
+      }
+      return results;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Short vertical-friendly videos: real search results filtered to short
+  /// durations (YouTube Shorts live ≤ 3 min).
+  Future<List<ExploreVideo>> searchShorts(String query, {int limit = 12}) async {
+    final results = await search(query, limit: limit * 2);
+    final shorts = results
+        .where((v) => v.duration != null && v.duration! > 0 && v.duration! <= 180)
+        .take(limit)
+        .toList();
+    if (shorts.length >= limit ~/ 2) return shorts;
+    // Top up with a second query when the first had few short videos.
+    try {
+      final more = await search('$query shorts', limit: limit);
+      final seen = shorts.map((e) => e.id).toSet();
+      for (final v in more) {
+        if (shorts.length >= limit) break;
+        if (v.duration != null &&
+            v.duration! > 0 &&
+            v.duration! <= 180 &&
+            seen.add(v.id)) {
+          shorts.add(v);
+        }
+      }
+    } catch (_) {}
+    return shorts;
+  }
+
+  List<ExploreVideo> _toVideos(Iterable<Video> videos) {
+    return videos
+        .map((video) => ExploreVideo(
+              id: video.id.value,
+              title: video.title,
+              url: 'https://www.youtube.com/watch?v=${video.id.value}',
+              thumbnail: video.thumbnails.maxResUrl,
+              channel: video.author,
+              duration: video.duration?.inSeconds,
+              viewCount: null,
+            ))
+        .toList();
   }
 
   List<FormatOption> _buildFormats(StreamManifest manifest) {
@@ -312,4 +410,11 @@ class LocalExtractionService {
       return [];
     }
   }
+}
+
+/// Cached search result with fetch time (TTL enforced by callers).
+class _CachedSearch {
+  final List<ExploreVideo> videos;
+  final DateTime at;
+  const _CachedSearch(this.videos, this.at);
 }

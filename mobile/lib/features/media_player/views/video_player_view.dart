@@ -4,8 +4,12 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../services/display_service.dart';
 import '../../../services/media_engine.dart';
 import '../../../data/models/library_file.dart';
+import '../widgets/mini_player.dart' show VideoPlayerFullScreen;
+import '../widgets/video_controls_controller.dart';
+import '../widgets/video_controls_overlay.dart';
 
 class VideoPlayerView extends StatefulWidget {
   final LibraryFile file;
@@ -17,53 +21,55 @@ class VideoPlayerView extends StatefulWidget {
 }
 
 class _VideoPlayerViewState extends State<VideoPlayerView> {
-  bool _showControls = true;
-  Timer? _hideTimer;
+  late final VideoControlsController _controls;
+  bool _dragH = false;
+  bool _dragV = false;
+  bool _dragLeft = true;
+  double _accDx = 0;
+  double _accDy = 0;
+  double _baseBright = 0.5;
+  double _baseVol = 1.0;
+  Duration _seekBase = Duration.zero;
 
   @override
   void initState() {
     super.initState();
+    _controls = VideoControlsController();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       context.read<MediaEngine>().playFile(widget.file);
-      _startHideTimer();
+      _controls.canHide = () => context.read<MediaEngine>().isPlaying;
+      _controls.show();
     });
   }
 
   @override
   void dispose() {
-    _hideTimer?.cancel();
+    _controls.dispose();
+    DisplayService.resetBrightness();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     super.dispose();
   }
 
-  void _startHideTimer() {
-    _hideTimer?.cancel();
-    _hideTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted && context.read<MediaEngine>().isPlaying) {
-        setState(() => _showControls = false);
-      }
-    });
+  String _fmt(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    final h = d.inHours;
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
   }
 
-  void _toggleControls() {
-    setState(() => _showControls = !_showControls);
-    if (_showControls) _startHideTimer();
+  Duration _clampedSeek(MediaEngine engine, Duration target) {
+    if (target < Duration.zero) return Duration.zero;
+    if (target > engine.duration) return engine.duration;
+    return target;
   }
 
-  void _toggleFullscreen() {
-    if (_showControls) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-      SystemChrome.setPreferredOrientations([
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
-    } else {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    }
-    setState(() => _showControls = !_showControls);
-    if (_showControls) _startHideTimer();
+  void _openFullscreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const VideoPlayerFullScreen()),
+    );
   }
 
   @override
@@ -72,186 +78,105 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
       backgroundColor: Colors.black,
       body: Consumer<MediaEngine>(
         builder: (context, engine, _) {
-          return GestureDetector(
-            onTap: _toggleControls,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                if (engine.videoController != null &&
-                    engine.videoController!.value.isInitialized)
-                  Center(
-                    child: AspectRatio(
-                      aspectRatio: engine.videoController!.value.aspectRatio,
-                      child: VideoPlayer(engine.videoController!),
-                    ),
-                  )
-                else
-                  const Center(
-                    child: CircularProgressIndicator(color: Colors.white),
-                  ),
-                AnimatedOpacity(
-                  opacity: _showControls ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 250),
-                  child: IgnorePointer(
-                    ignoring: !_showControls,
-                    child: _buildOverlay(engine),
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildOverlay(MediaEngine engine) {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Colors.black54, Colors.transparent, Colors.transparent, Colors.black54],
-          stops: [0, 0.2, 0.8, 1],
-        ),
-      ),
-      child: Column(
-        children: [
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                  Expanded(
-                    child: Text(
-                      widget.file.title,
-                      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white),
-                    onPressed: () async {
-                      final available = await engine.isPiPAvailable();
-                      final entered = available && await engine.enterPiP();
-if (!entered && context.mounted) {
-ScaffoldMessenger.of(context).showSnackBar(
-SnackBar(content: Text(AppLocalizations.of(context).piPNotAvailable)),
-);
-}
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const Spacer(),
-          _buildControls(engine),
-          const Spacer(),
-          _buildBottomBar(engine),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildControls(MediaEngine engine) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        if (engine.queue.length > 1)
-          IconButton(
-            icon: Icon(Icons.skip_previous, color: engine.hasPrevious ? Colors.white : Colors.white30, size: 32),
-            onPressed: engine.hasPrevious ? () => engine.skipToPrevious() : null,
-          ),
-        if (engine.queue.length > 1) const SizedBox(width: 12),
-        IconButton(
-          icon: const Icon(Icons.replay_10, color: Colors.white, size: 32),
-          onPressed: () {
-            final newPos = engine.position - const Duration(seconds: 10);
-            engine.seek(newPos.isNegative ? Duration.zero : newPos);
-          },
-        ),
-        const SizedBox(width: 24),
-        Container(
-          decoration: const BoxDecoration(
-            color: Colors.white24,
-            shape: BoxShape.circle,
-          ),
-          child: IconButton(
-            icon: Icon(
-              engine.isPlaying ? Icons.pause : Icons.play_arrow,
-              color: Colors.white,
-              size: 48,
-            ),
-            onPressed: () {
-              if (engine.isPlaying) {
-                engine.pause();
-              } else if (engine.state.isPaused) {
-                engine.resume();
-              } else {
-                engine.playFile(widget.file);
-              }
-              _startHideTimer();
-            },
-          ),
-        ),
-        const SizedBox(width: 24),
-        IconButton(
-          icon: const Icon(Icons.forward_30, color: Colors.white, size: 32),
-          onPressed: () {
-            final newPos = engine.position + const Duration(seconds: 30);
-            engine.seek(newPos > engine.duration ? engine.duration : newPos);
-          },
-        ),
-        if (engine.queue.length > 1) const SizedBox(width: 12),
-        if (engine.queue.length > 1)
-          IconButton(
-            icon: Icon(Icons.skip_next, color: engine.hasNext ? Colors.white : Colors.white30, size: 32),
-            onPressed: engine.hasNext ? () => engine.skipToNext() : null,
-          ),
-      ],
-    );
-  }
-
-  Widget _buildBottomBar(MediaEngine engine) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-      child: Column(
-        children: [
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 3,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-              overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-            ),
-            child: Slider(
-              value: engine.progress,
-              onChanged: (v) => engine.seekProgress(v),
-            ),
-          ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          final vc = engine.videoController;
+          final ready =
+              vc != null && vc.value.isInitialized && !vc.value.hasError;
+          return Stack(
+            fit: StackFit.expand,
             children: [
-              Text(
-                engine.positionFormatted,
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-              IconButton(
-                icon: const Icon(Icons.fullscreen, color: Colors.white, size: 22),
-                onPressed: _toggleFullscreen,
-              ),
-              Text(
-                engine.durationFormatted,
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              if (ready)
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _controls.toggle,
+                    onDoubleTap: () {
+                      final target = _clampedSeek(engine,
+                          engine.position + const Duration(seconds: 10));
+                      engine.seek(target);
+                      _controls.flashHint(
+                          '+10s  ${_fmt(target)}', Icons.forward_10);
+                      _controls.poke();
+                    },
+                    onHorizontalDragStart: (_) {
+                      _dragH = true;
+                      _accDx = 0;
+                      _seekBase = engine.position;
+                    },
+                    onHorizontalDragUpdate: (d) {
+                      if (!_dragH) return;
+                      _accDx += d.delta.dx;
+                      final target = _clampedSeek(
+                          engine,
+                          _seekBase +
+                              Duration(seconds: (_accDx / 8).round()));
+                      _controls.flashHint(_fmt(target), Icons.fast_forward);
+                    },
+                    onHorizontalDragEnd: (_) {
+                      if (!_dragH) return;
+                      _dragH = false;
+                      final target = _clampedSeek(
+                          engine,
+                          _seekBase +
+                              Duration(seconds: (_accDx / 8).round()));
+                      engine.seek(target);
+                      _controls.clearHint();
+                      _controls.show();
+                    },
+                    onVerticalDragStart: (d) async {
+                      _dragV = true;
+                      _accDy = 0;
+                      _dragLeft = d.globalPosition.dx <
+                          MediaQuery.of(context).size.width / 2;
+                      if (_dragLeft) {
+                        final b = await DisplayService.brightness();
+                        _baseBright = b < 0 ? 0.5 : b;
+                      } else {
+                        _baseVol = engine.videoVolume;
+                      }
+                    },
+                    onVerticalDragUpdate: (d) {
+                      if (!_dragV) return;
+                      _accDy += d.delta.dy;
+                      if (_dragLeft) {
+                        final v =
+                            (_baseBright - _accDy / 400).clamp(0.05, 1.0);
+                        DisplayService.setBrightness(v);
+                        _controls.flashHint(
+                            '${(v * 100).round()}%', Icons.brightness_6);
+                      } else {
+                        final v =
+                            (_baseVol - _accDy / 300).clamp(0.0, 1.0);
+                        engine.setVideoVolume(v);
+                        _controls.flashHint('${(v * 100).round()}%',
+                            v == 0 ? Icons.volume_off : Icons.volume_up);
+                      }
+                    },
+                    onVerticalDragEnd: (_) {
+                      _dragV = false;
+                      _controls.clearHint();
+                      _controls.show();
+                    },
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: vc.value.aspectRatio,
+                        child: VideoPlayer(vc),
+                      ),
+                    ),
+                  ),
+                )
+              else
+                const Center(
+                    child: CircularProgressIndicator(color: Colors.white)),
+              ProVideoOverlay(
+                controls: _controls,
+                title: widget.file.title,
+                isFullscreen: false,
+                onBack: () => Navigator.pop(context),
+                onToggleFullscreen: _openFullscreen,
               ),
             ],
-          ),
-        ],
+          );
+        },
       ),
     );
   }

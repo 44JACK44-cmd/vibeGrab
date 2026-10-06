@@ -63,6 +63,9 @@ class MainActivity : AudioServiceActivity() {
     private val mediaDrawables = mapOf(
         "ic_music_note" to R.drawable.ic_music_note,
         "ic_vibegrab_repeat" to R.drawable.ic_vibegrab_repeat,
+        "ic_vibegrab_repeat_one" to R.drawable.ic_vibegrab_repeat_one,
+        "ic_vibegrab_repeat_off" to R.drawable.ic_vibegrab_repeat_off,
+        "ic_vibegrab_shuffle" to R.drawable.ic_vibegrab_shuffle,
         "ic_vibegrab_favorite" to R.drawable.ic_vibegrab_favorite,
         "ic_vibegrab_favorite_filled" to R.drawable.ic_vibegrab_favorite_filled
     )
@@ -387,6 +390,33 @@ class MainActivity : AudioServiceActivity() {
                         result.success(true)
                     }
                 }
+                // Opens a downloaded file with the system viewer.
+                "openFile" -> {
+                    val path = call.argument<String>("path")
+                    val mime = call.argument<String>("mime") ?: "*/*"
+                    val file = if (path != null) File(path) else null
+                    if (file == null || !file.exists()) {
+                        result.error("ENOENT", "File not found", null)
+                    } else {
+                        try {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                this, "$packageName.fileprovider", file
+                            )
+                            val intent = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(uri, mime)
+                                addFlags(
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                        Intent.FLAG_ACTIVITY_NEW_TASK
+                                )
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            android.util.Log.w("VibeGrab", "openFile failed: ${e.message}")
+                            result.success(false)
+                        }
+                    }
+                }
                 "backgroundOverlay" -> {
                     runOnUiThread {
                         try {
@@ -418,6 +448,27 @@ class MainActivity : AudioServiceActivity() {
                     } catch (e: Exception) {
                         android.util.Log.w("VibeGrab", "scanMedia failed: ${e.message}")
                         result.success(false)
+                    }
+                }
+                // Screen brightness for the video player (window attribute).
+                "setBrightness" -> {
+                    try {
+                        val v = (call.argument<Number>("value")?.toFloat()) ?: -1f
+                        runOnUiThread {
+                            val lp = window.attributes
+                            lp.screenBrightness = v.coerceIn(-1f, 1f)
+                            window.attributes = lp
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+                "getBrightness" -> {
+                    try {
+                        result.success(window.attributes.screenBrightness)
+                    } catch (e: Exception) {
+                        result.success(-1.0)
                     }
                 }
                 else -> result.notImplemented()

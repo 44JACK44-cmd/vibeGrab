@@ -236,8 +236,9 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Future.delayed(const Duration(milliseconds: 500), () {
-        if (!mounted) return;
-        context.read<MediaEngine>().initAudioService().then((_) {
+if (!mounted) return;
+context.read<MediaEngine>().loadPlayMode();
+context.read<MediaEngine>().initAudioService().then((_) {
           debugPrint('[MainShell] AudioService initialized');
         }).catchError((e) {
           debugPrint('[MainShell] AudioService init failed: $e');

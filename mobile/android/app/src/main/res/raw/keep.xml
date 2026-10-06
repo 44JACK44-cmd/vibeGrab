@@ -7,4 +7,4 @@
   system media card never appeared.
 -->
 <resources xmlns:tools="http://schemas.android.com/tools"
-    tools:keep="@drawable/ic_music_note,@drawable/ic_vibegrab_repeat,@drawable/ic_vibegrab_favorite,@drawable/ic_vibegrab_favorite_filled,@drawable/audio_service_stop,@drawable/audio_service_pause,@drawable/audio_service_play_arrow,@drawable/audio_service_fast_forward,@drawable/audio_service_fast_rewind,@drawable/audio_service_skip_next,@drawable/audio_service_skip_previous" />
+    tools:keep="@drawable/ic_music_note,@drawable/ic_vibegrab_repeat,@drawable/ic_vibegrab_repeat_one,@drawable/ic_vibegrab_repeat_off,@drawable/ic_vibegrab_shuffle,@drawable/ic_vibegrab_favorite,@drawable/ic_vibegrab_favorite_filled,@drawable/audio_service_stop,@drawable/audio_service_pause,@drawable/audio_service_play_arrow,@drawable/audio_service_fast_forward,@drawable/audio_service_fast_rewind,@drawable/audio_service_skip_next,@drawable/audio_service_skip_previous" />

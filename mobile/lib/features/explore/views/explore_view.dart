@@ -8,6 +8,7 @@ import '../controllers/explore_controller.dart';
 import '../widgets/search_result_card.dart';
 import '../widgets/recent_searches.dart';
 import 'video_detail_view.dart';
+import 'shorts_view.dart';
 
 class ExploreView extends StatefulWidget {
   const ExploreView({super.key});
@@ -17,8 +18,9 @@ class ExploreView extends StatefulWidget {
 }
 
 class _ExploreViewState extends State<ExploreView> {
-  final _searchController = TextEditingController();
-  final _focusNode = FocusNode();
+final _searchController = TextEditingController();
+final _focusNode = FocusNode();
+bool _forYouAsked = false;
 
   @override
   void initState() {
@@ -185,7 +187,14 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
   }
 
   Widget _buildTrendingRich(ExploreController controller, AppLocalizations loc, ColorScheme cs) {
-    if (controller.trendingLoading) {
+    // "Para ti" loads once, lazily, without blocking trending.
+    if (!_forYouAsked && controller.forYou.isEmpty && !controller.forYouLoading) {
+      _forYouAsked = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.read<ExploreController>().loadForYou();
+      });
+    }
+    if (controller.trendingLoading && controller.trending.isEmpty) {
       return _buildSkeleton(cs);
     }
 
@@ -249,6 +258,17 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
       child: ListView(
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
+          if (controller.forYou.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(loc.forYou, style: TextStyle(
+                color: cs.onSurface, fontSize: 18, fontWeight: FontWeight.bold,
+              )),
+            ),
+            const SizedBox(height: 8),
+            _buildHorizontalRow(controller.forYou, cs),
+            const SizedBox(height: 16),
+          ],
           if (controller.trending.isNotEmpty) ...[
             _buildHeroCard(controller.trending.first, cs),
             const SizedBox(height: 16),
@@ -408,47 +428,99 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
       return _buildCategoryResults(controller, loc, cs);
     }
 
-    return GridView.builder(
+    final groups = controller.categoryGroups;
+    const groupIcons = {
+      'Música': Icons.music_note,
+      'Video': Icons.videocam_outlined,
+      'Audio': Icons.podcasts,
+      'Series': Icons.movie_outlined,
+    };
+    return ListView(
       padding: const EdgeInsets.all(16),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 10,
-        mainAxisSpacing: 10,
-        childAspectRatio: 1.2,
-      ),
-      itemCount: controller.categories.length,
-      itemBuilder: (context, index) {
-        final category = controller.categories[index];
-        final icons = [
-          Icons.music_note, Icons.sports_esports, Icons.newspaper,
-          Icons.sports_soccer, Icons.movie, Icons.school,
-          Icons.science, Icons.psychology, Icons.podcasts,
-        ];
-        return GestureDetector(
-          onTap: () => controller.selectCategory(category),
+      children: [
+        GestureDetector(
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const ShortsView()),
+          ),
           child: Container(
+            padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: cs.primaryContainer.withValues(alpha: 0.5),
-              borderRadius: BorderRadius.circular(12),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  cs.primary,
+                  cs.primary.withValues(alpha: 0.6),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(16),
             ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+            child: Row(
               children: [
-                Icon(icons[index % icons.length], color: cs.primary, size: 28),
-                const SizedBox(height: 6),
+                const Icon(Icons.slow_motion_video,
+                    color: Colors.white, size: 32),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        loc.shortsSection,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        loc.watchShorts,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.85),
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right, color: Colors.white),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        for (final entry in groups.entries) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8, top: 8),
+            child: Row(
+              children: [
+                Icon(groupIcons[entry.key] ?? Icons.category_outlined,
+                    color: cs.primary, size: 20),
+                const SizedBox(width: 8),
                 Text(
-                  category,
+                  entry.key,
                   style: TextStyle(
-                    color: cs.onPrimaryContainer,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
+                    color: cs.onSurface,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ],
             ),
           ),
-        );
-      },
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: entry.value
+                .map((category) => ActionChip(
+                      label: Text(category,
+                          style: const TextStyle(fontSize: 13)),
+                      onPressed: () => controller.selectCategory(category),
+                    ))
+                .toList(),
+          ),
+        ],
+      ],
     );
   }
 
@@ -484,8 +556,22 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                 )
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
-                  itemCount: controller.categoryResults.length,
+                  itemCount: controller.categoryResults.length + 1,
                   itemBuilder: (context, index) {
+                    if (index >= controller.categoryResults.length) {
+                      if (controller.categoryExhausted) {
+                        return const SizedBox.shrink();
+                      }
+                      if (!controller.loadingMore) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) controller.loadMoreCategory();
+                        });
+                      }
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: Center(child: CircularProgressIndicator()),
+                      );
+                    }
                     final video = controller.categoryResults[index];
                     return SearchResultCard(
                       video: video,
@@ -567,8 +653,11 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
       },
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        itemCount: controller.results.length,
+        itemCount: controller.results.length + 1,
         itemBuilder: (context, index) {
+          if (index >= controller.results.length) {
+            return _buildLoadMore(controller);
+          }
           final video = controller.results[index];
           return FadeSlideIn(
             key: ValueKey(video.url),
@@ -581,6 +670,22 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
           );
         },
       ),
+    );
+  }
+
+  /// Trailing loader: fetches the next page once when scrolled into view.
+  Widget _buildLoadMore(ExploreController controller) {
+    if (controller.query.isEmpty || controller.searchExhausted) {
+      return const SizedBox.shrink();
+    }
+    if (!controller.loadingMore) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) controller.loadMoreResults();
+      });
+    }
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 16),
+      child: Center(child: CircularProgressIndicator()),
     );
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_animations.dart';
@@ -8,9 +9,54 @@ import '../controllers/downloads_controller.dart';
 import '../widgets/download_card.dart';
 
 class DownloadsView extends StatelessWidget {
+  static const _appChannel = MethodChannel('com.example.vibegrab/app');
+  static const _statusChannel = MethodChannel('com.example.vibegrab/status');
+
   final VoidCallback? onNavigateToAnalyze;
 
   const DownloadsView({super.key, this.onNavigateToAnalyze});
+
+  String _mimeFor(DownloadTask task) {
+    final ext = (task.fileExt ?? '').toLowerCase();
+    if (task.hasVideo) {
+      if (ext == 'webm') return 'video/webm';
+      return 'video/mp4';
+    }
+    if (ext == 'opus' || ext == 'ogg') return 'audio/ogg';
+    if (ext == 'wav') return 'audio/wav';
+    if (ext == 'm4a' || ext == 'mp4') return 'audio/mp4';
+    return 'audio/mpeg';
+  }
+
+  Future<void> _openFile(BuildContext context, DownloadTask task) async {
+    final path = task.filePath;
+    if (path == null || path.isEmpty) return;
+    try {
+      final ok = await _appChannel.invokeMethod<bool>(
+          'openFile', {'path': path, 'mime': _mimeFor(task)});
+      if (ok != true && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(AppLocalizations.of(context).openFileFailed)));
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(AppLocalizations.of(context).openFileFailed)));
+      }
+    }
+  }
+
+  Future<void> _shareFile(BuildContext context, DownloadTask task) async {
+    final path = task.filePath;
+    if (path == null || path.isEmpty) return;
+    try {
+      await _statusChannel.invokeMethod('shareFile', {
+        'path': path,
+        'name': task.title,
+        'mime': _mimeFor(task),
+      });
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -56,6 +102,8 @@ class DownloadsView extends StatelessWidget {
                 onCancel: () => controller.cancelTask(task.id),
                 onRetry: () => controller.retryTask(task.id),
                 onDelete: () => _confirmDelete(context, controller, task),
+                onOpen: () => _openFile(context, task),
+                onShare: () => _shareFile(context, task),
               );
             },
           );

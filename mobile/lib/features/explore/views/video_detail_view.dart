@@ -12,6 +12,7 @@ import '../../../data/models/format_option.dart';
 import '../../../data/models/download_task.dart';
 import '../../../data/models/media_state.dart';
 import '../../../services/media_engine.dart';
+import '../../../services/media_metadata_service.dart';
 import '../../../services/api_service.dart';
 import '../../../features/analyzer/controllers/analyze_controller.dart';
 import '../../../features/downloads/controllers/downloads_controller.dart';
@@ -49,17 +50,34 @@ class _VideoDetailViewState extends State<VideoDetailView> {
   bool _liked = false;
   bool _disliked = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadRelated();
-    _loadComments();
-    _loadMeta();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      context.read<MediaEngine>().playExploreVideo(widget.video);
-    });
-  }
+@override
+void initState() {
+super.initState();
+_liked = MediaMetadataService().isLiked(widget.video.url);
+_loadRelated();
+_loadComments();
+_loadMeta();
+WidgetsBinding.instance.addPostFrameCallback((_) {
+if (!mounted) return;
+context.read<MediaEngine>().playExploreVideo(widget.video);
+});
+}
+
+Future<void> _toggleLike() async {
+  final engine = context.read<MediaEngine>();
+  await engine.toggleRemoteLike(
+    url: widget.video.url,
+    title: widget.video.title,
+    artist: widget.video.channel,
+    thumbnail: widget.video.thumbnail,
+    isVideo: true,
+  );
+  if (!mounted) return;
+  setState(() {
+    _liked = engine.isRemoteLiked(widget.video.url);
+    if (_liked) _disliked = false;
+  });
+}
 
   String get _videoId {
     final id = widget.video.id;
@@ -538,10 +556,7 @@ return Row(
           cs,
           _liked ? Icons.thumb_up : Icons.thumb_up_alt_outlined,
           _liked,
-          () => setState(() {
-            _liked = !_liked;
-            if (_liked) _disliked = false;
-          }),
+          _toggleLike,
           loc.like,
         ),
         _actionIcon(

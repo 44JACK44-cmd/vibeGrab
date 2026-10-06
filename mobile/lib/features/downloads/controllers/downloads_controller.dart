@@ -27,6 +27,18 @@ class DownloadsController extends ChangeNotifier {
 
   String unknownErrorFallback = 'Unknown error';
 
+  /// Finds an active or completed task for the same URL (no duplicates).
+  DownloadTask? findDuplicate(String url) {
+    if (url.isEmpty) return null;
+    try {
+      return _tasks.firstWhere((t) =>
+          t.url == url &&
+          (t.status == DownloadStatus.completed || t.isActive));
+    } catch (_) {
+      return null;
+    }
+  }
+
   final List<DownloadTask> _tasks = [];
   List<DownloadTask> get tasks => List.unmodifiable(_tasks);
 
