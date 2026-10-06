@@ -385,6 +385,41 @@ class MainActivity : AudioServiceActivity() {
             }
         }
 
+        val mediaDiagChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "vibegrab/media_diag")
+        mediaDiagChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                // True only when the user can actually SEE notifications:
+                // covers POST_NOTIFICATIONS (Android 13+) and the per-app
+                // toggle of OEM skins (MIUI/HyperOS, One UI, ...).
+                "notificationsEnabled" -> {
+                    result.success(
+                        androidx.core.app.NotificationManagerCompat.from(this)
+                            .areNotificationsEnabled()
+                    )
+                }
+                "openNotificationSettings" -> {
+                    try {
+                        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        try {
+                            val intent = Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:$packageName")
+                            )
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e2: Exception) {
+                            result.success(false)
+                        }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
         handleIntent(intent)
     }
 

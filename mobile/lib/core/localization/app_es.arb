@@ -190,7 +190,7 @@
   "preferBestQualityHint": "Seleccionar automáticamente el mejor formato",
   "saveMetadata": "Guardar metadatos",
   "saveMetadataHint": "Conservar título, miniatura y fuente",
-  "appVersion": "v1.1.11",
+  "appVersion": "v1.1.12",
   "mediaSessionLabel": "Sesión multimedia",
   "backendUrl": "URL del backend",
   "backendUrlHint": "URL del servidor backend de VibeGrab. Usa http://10.0.2.2:8000 para el emulador, o la IP local de tu PC para un dispositivo real.",

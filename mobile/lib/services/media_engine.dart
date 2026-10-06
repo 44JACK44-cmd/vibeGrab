@@ -36,6 +36,14 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   bool? notificationPermission;
   bool _initInFlight = false;
   int _initAttempts = 0;
+  // Native truth: NotificationManagerCompat.areNotificationsEnabled() —
+  // reflects the Android 13 permission AND the per-app system toggle.
+  bool? notificationsEnabledNative;
+  // Last platform error swallowed by audio_service (AudioService.asyncError).
+  String? lastSessionError;
+  bool _asyncErrorListened = false;
+  static const MethodChannel _mediaDiagChannel =
+      MethodChannel('vibegrab/media_diag');
   final YoutubeExplode _ytc = YoutubeExplode();
 
   MediaState _state = MediaState();
@@ -301,6 +309,17 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _initInFlight = true;
     mediaSessionStatus = 'running';
     notifyListeners();
+    // audio_service forwards every platform failure (setState NPE,
+    // ForegroundServiceStartNotAllowedException, ...) into asyncError and
+    // swallows it. Surface it so the diagnostic tile can never lie.
+    if (!_asyncErrorListened) {
+      _asyncErrorListened = true;
+      AudioService.asyncError.listen((e) {
+        lastSessionError = '$e';
+        debugPrint('[MEDIA_SESSION] asyncError: $e');
+        notifyListeners();
+      });
+    }
     try {
       debugPrint(
           '[MEDIA_SESSION] Initializing AudioService (attempt ${_initAttempts + 1})...');
@@ -313,6 +332,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         }
       } catch (e) {
         debugPrint('[MEDIA_SESSION] Notification permission check failed: $e');
+      }
+      // Real system state (covers OEM per-app notification toggles too).
+      try {
+        notificationsEnabledNative =
+            await _mediaDiagChannel.invokeMethod<bool>('notificationsEnabled');
+      } catch (e) {
+        debugPrint('[MEDIA_SESSION] Native notification check failed: $e');
       }
       PiPService.init();
       _audioHandler ??= VibeGrabAudioHandler(this);
@@ -341,6 +367,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       }
       _setupAudioSession();
       mediaSessionStatus = 'ok';
+      lastSessionError = null;
       debugPrint('[MEDIA_SESSION] Service started (AudioService.init ok)');
     } catch (e) {
       mediaSessionStatus = 'failed: $e';
@@ -450,7 +477,16 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     AudioProcessingState procState;
     switch (_state.status) {
       case MediaStatus.idle:
-        procState = AudioProcessingState.idle;
+        // audio_service tears down the Android media session (stops the
+        // foreground service and CANCELS the notification) the instant it
+        // sees processingState=idle. Mid-flow idles (stop-current before a
+        // new load, error fallbacks, player restarts) must NOT do that:
+        // report paused so the system media card/notification survives.
+        // Real teardown still works: the handler's stop() pushes idle
+        // directly, and a cold app (no media yet) keeps genuine idle.
+        procState = _state.hasMedia
+            ? AudioProcessingState.ready
+            : AudioProcessingState.idle;
         break;
       case MediaStatus.loading:
         procState = AudioProcessingState.loading;
@@ -481,7 +517,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _emitSessionSnapshot();
     if (_state.isPlaying) {
       _activateAudioSession();
-    } else if (_state.status == MediaStatus.idle) {
+    } else if (procState == AudioProcessingState.idle) {
       _deactivateAudioSession();
     }
   }
@@ -609,6 +645,31 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         break;
     }
     notifyListeners();
+  }
+
+  /// Toggles favorite for whatever is playing (used by the media
+  /// notification's heart button). Keys match MediaMetadataService so the
+  /// Library "Favorites" tab sees the same flag.
+  Future<void> toggleFavoriteCurrent() async {
+    String? key = _state.mediaId;
+    if (key == null) return;
+    if (_currentIndex >= 0 && _currentIndex < _queue.length) {
+      key = _queue[_currentIndex].extras?['filename'] as String? ?? key;
+    }
+    await MediaMetadataService().toggleFavorite(key);
+    debugPrint('[MEDIA_SESSION] Favorite toggled for $key');
+    notifyListeners();
+  }
+
+  /// Opens the system notification settings for this app (the exact screen
+  /// where the user can unblock the media notification).
+  Future<void> openNotificationSettings() async {
+    try {
+      await _mediaDiagChannel.invokeMethod('openNotificationSettings');
+    } catch (e) {
+      debugPrint('[MEDIA_SESSION] openNotificationSettings failed: $e');
+      await openAppSettings();
+    }
   }
 
   // --- Navigation ---

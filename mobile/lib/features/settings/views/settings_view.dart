@@ -691,40 +691,62 @@ class _SettingsViewState extends State<SettingsView> {
   Widget _buildMediaSessionTile(BuildContext context, ColorScheme cs, Color text1, Color text2) {
     final engine = context.watch<MediaEngine>();
     final st = engine.mediaSessionStatus;
+    final notifOk =
+        engine.notificationsEnabledNative ?? engine.notificationPermission;
+    final err = engine.lastSessionError;
+
+    const notRun = 'Sin iniciar';
+    const connecting = 'Conectando...';
+    String base;
+    if (st == 'ok') {
+      base = 'OK — conectado con Android';
+    } else if (st == 'running') {
+      base = connecting;
+    } else if (st == 'not_run') {
+      base = notRun;
+    } else {
+      base = st;
+    }
+
     final String label;
     final Color color;
-    if (st == 'ok') {
-      label = 'OK — conectado con Android';
+    if (err != null) {
+      final short = err.length > 140 ? '${err.substring(0, 140)}…' : err;
+      label = 'Error del sistema: $short';
+      color = Colors.redAccent;
+    } else if (notifOk == false) {
+      label = '$base · notificaciones BLOQUEADAS — tocar para abrir ajustes';
+      color = Colors.redAccent;
+    } else if (st == 'ok') {
+      label = notifOk == true ? '$base · notificaciones: OK' : base;
       color = Colors.green;
     } else if (st == 'running') {
-      label = 'Conectando...';
+      label = base;
       color = Colors.orange;
-    } else if (st == 'not_run') {
-      label = 'Sin iniciar';
-      color = Colors.redAccent;
     } else {
-      label = st;
+      label = base;
       color = Colors.redAccent;
     }
-    final notif = engine.notificationPermission;
-    final notifText = notif == null
-        ? ''
-        : notif
-            ? ' · notificaciones: OK'
-            : ' · notificaciones: BLOQUEADAS (activar en ajustes del sistema)';
+
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: Icon(Icons.music_note, color: color),
       title: Text(AppLocalizations.of(context).mediaSessionLabel,
           style: TextStyle(color: text1, fontSize: 15)),
       subtitle: Text(
-        '$label$notifText',
+        label,
         maxLines: 3,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(color: color.withValues(alpha: 0.85), fontSize: 12),
       ),
-      trailing: const Icon(Icons.refresh, size: 18),
-      onTap: () => engine.initAudioService(force: true),
+      trailing: Icon(Icons.refresh, size: 18, color: color.withValues(alpha: 0.7)),
+      onTap: () {
+        if (notifOk == false && err == null) {
+          engine.openNotificationSettings();
+        } else {
+          engine.initAudioService(force: true);
+        }
+      },
     );
   }
 

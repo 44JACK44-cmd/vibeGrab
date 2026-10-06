@@ -14,6 +14,8 @@ abstract class MediaEngineDelegate {
   Future<void> seek(Duration position);
   Future<void> skipToNext();
   Future<void> skipToPrevious();
+  void toggleRepeat();
+  Future<void> toggleFavoriteCurrent();
 }
 
 /// System media session adapter (Android MediaSession / notification /
@@ -66,10 +68,23 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
     final s = _engine.currentSessionSnapshot;
     playbackState.add(playbackState.value.copyWith(
       controls: [
+        // System media card design (lock screen / quick settings /
+        // notification): repeat, previous, play/pause, next, favorite.
+        const MediaControl(
+          androidIcon: 'drawable/ic_vibegrab_repeat',
+          label: 'Repetir',
+          action: MediaAction.custom,
+          customAction: CustomMediaAction(name: 'repeat'),
+        ),
         MediaControl.skipToPrevious,
         if (playing) MediaControl.pause else MediaControl.play,
         MediaControl.skipToNext,
-        MediaControl.stop,
+        const MediaControl(
+          androidIcon: 'drawable/ic_vibegrab_favorite',
+          label: 'Me gusta',
+          action: MediaAction.custom,
+          customAction: CustomMediaAction(name: 'favorite'),
+        ),
       ],
       systemActions: const {
         MediaAction.seek,
@@ -78,13 +93,28 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
         MediaAction.skipToNext,
         MediaAction.skipToPrevious,
       },
-      androidCompactActionIndices: const [0, 1, 2],
+      androidCompactActionIndices: const [1, 2, 3],
       processingState: processingState,
       playing: playing,
       updatePosition: s.position,
       bufferedPosition: s.bufferedPosition,
       speed: s.speed,
     ));
+  }
+
+  @override
+  Future<dynamic> customAction(String name,
+      [Map<String, dynamic>? extras]) async {
+    debugPrint('[MEDIA_SESSION] Custom action from system: $name');
+    switch (name) {
+      case 'repeat':
+        _engine.toggleRepeat();
+        break;
+      case 'favorite':
+        await _engine.toggleFavoriteCurrent();
+        break;
+    }
+    return null;
   }
 
   @override
