@@ -507,6 +507,15 @@ class AppLocalizations {
   String get playCheckConnection => _get('playCheckConnection');
 
   String get videoQuality => _get('videoQuality');
+
+  String get netTest => _get('netTest');
+  String get netTestHint => _get('netTestHint');
+  String get netTestTitle => _get('netTestTitle');
+  String get netTestRunning => _get('netTestRunning');
+  String get netBackend => _get('netBackend');
+  String get netStream => _get('netStream');
+  String get netManifest => _get('netManifest');
+  String get netDirect => _get('netDirect');
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

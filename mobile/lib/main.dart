@@ -187,6 +187,8 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   int _currentIndex = 0;
   StreamSubscription<String>? _shareSubscription;
   StreamSubscription<NotificationAction>? _notifActionSubscription;
+  Timer? _backendWarmupTimer;
+  bool _appResumed = true;
 
   void _navigateToTab(int index) {
     if (mounted) {
@@ -234,6 +236,16 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       }
     });
 
+    // Keep the backend warm while the app is open: the free tier sleeps
+    // after 15 min idle and waking takes ~40s, which looks exactly like
+    // "videos never play". A cheap ping every 10 min prevents the sleep.
+    _backendWarmupTimer =
+        Timer.periodic(const Duration(minutes: 10), (_) {
+      if (mounted && _appResumed) {
+        ApiService().checkHealth();
+      }
+    });
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Future.delayed(const Duration(milliseconds: 500), () {
 if (!mounted) return;
@@ -264,12 +276,14 @@ context.read<MediaEngine>().initAudioService().then((_) {
   void dispose() {
     _shareSubscription?.cancel();
     _notifActionSubscription?.cancel();
+    _backendWarmupTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appResumed = state == AppLifecycleState.resumed;
     final engine = context.read<MediaEngine>();
     switch (state) {
       case AppLifecycleState.paused:

@@ -190,7 +190,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   double get progress {
     if (_state.duration.inMilliseconds <= 0) return 0.0;
-    return (_state.position.inMilliseconds / _state.duration.inMilliseconds).clamp(0.0, 1.0);
+    final v =
+        _state.position.inMilliseconds / _state.duration.inMilliseconds;
+    if (!v.isFinite) return 0.0;
+    return v.clamp(0.0, 1.0);
   }
 
   String get positionFormatted => _formatDuration(_state.position);
@@ -1081,9 +1084,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           video: urls.video, audio: urls.audio, proxy: urls.proxy);
     },
     fetchManifest: (videoId) async {
+      // Slow networks need patience: the manifest call crosses the ocean
+      // and mobile latency regularly exceeds 10s.
       try {
         return await _ytc.videos.streamsClient.getManifest(videoId).timeout(
-          const Duration(seconds: 8),
+          const Duration(seconds: 25),
           onTimeout: () => throw TimeoutException('Stream manifest timed out'),
         );
       } catch (_) {
@@ -1359,15 +1364,15 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<StreamUrls?> _fetchStreamUrls(String videoId) async {
     _lastStreamError = null;
-    // Retries with backoff: a sleeping backend (cold start ~40s) answers
-    // 502 or times out once, then serves normally. Without this, the first
-    // play after a while always fails.
-    const delays = [Duration(seconds: 3), Duration(seconds: 8)];
-    for (var attempt = 0; attempt < 3; attempt++) {
+    // Slow networks need patience, not more routes: one generous attempt
+    // plus a single backoff retry (covers a waking backend). Short
+    // timeouts on high-latency carriers always die halfway.
+    const delays = [Duration(seconds: 5)];
+    for (var attempt = 0; attempt < 2; attempt++) {
       try {
         final response = await http
             .get(Uri.parse('${ApiConfig.exploreStreamUrl}?v=$videoId'))
-            .timeout(const Duration(seconds: 15));
+            .timeout(const Duration(seconds: 25));
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body) as Map<String, dynamic>;
           if (data['success'] != false) {

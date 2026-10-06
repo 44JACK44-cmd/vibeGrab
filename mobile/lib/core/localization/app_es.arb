@@ -190,7 +190,7 @@
   "preferBestQualityHint": "Seleccionar automáticamente el mejor formato",
   "saveMetadata": "Guardar metadatos",
   "saveMetadataHint": "Conservar título, miniatura y fuente",
-  "appVersion": "v1.1.22",
+  "appVersion": "v1.1.23",
   "mediaSessionLabel": "Sesión multimedia",
   "backendUrl": "URL del backend",
   "backendUrlHint": "URL del servidor backend de VibeGrab. Usa http://10.0.2.2:8000 para el emulador, o la IP local de tu PC para un dispositivo real.",
@@ -470,5 +470,13 @@
   "playStageDirect": "Probando conexión directa…",
   "playStageAudio": "Cargando audio…",
   "playCheckConnection": "Si el error menciona al servidor, revisa tu conexión a internet o prueba con otra red Wi-Fi o datos.",
-  "videoQuality": "Calidad"
+  "videoQuality": "Calidad",
+  "netTest": "Probar conexión",
+  "netTestHint": "Mide cada eslabón de la reproducción en este teléfono",
+  "netTestTitle": "Diagnóstico de red",
+  "netTestRunning": "Probando… esto tarda unos segundos",
+  "netBackend": "Servidor VibeGrab",
+  "netStream": "URLs del servidor",
+  "netManifest": "Manifiesto en el teléfono",
+  "netDirect": "Video directo"
 }

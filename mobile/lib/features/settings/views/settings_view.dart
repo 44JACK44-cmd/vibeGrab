@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/theme/vibe_presets.dart';
+import '../../../services/network_diagnostics.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/localization/language_provider.dart';
 import '../../../core/constants/api_constants.dart';
@@ -221,6 +222,7 @@ class _SettingsViewState extends State<SettingsView> {
               _sectionHeader(loc.sectionAbout, cs.primary),
               _buildAboutTile(context, cs, text1, text2),
               _buildMediaSessionTile(context, cs, text1, text2),
+              _buildNetTestTile(context, cs, text1, text2),
             ],
           );
         },
@@ -814,6 +816,122 @@ return Padding(
         }
       },
     );
+  }
+
+  /// Network self-test: measures every link of the playback chain on
+  /// THIS phone so failures stop being guesswork.
+  Widget _buildNetTestTile(
+      BuildContext context, ColorScheme cs, Color text1, Color text2) {
+    final loc = AppLocalizations.of(context);
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(Icons.network_check, color: text2),
+      title: Text(loc.netTest,
+          style: TextStyle(color: text1, fontSize: 15)),
+      subtitle: Text(loc.netTestHint,
+          style: TextStyle(
+              color: text2.withValues(alpha: 0.7), fontSize: 12)),
+      trailing: const Icon(Icons.chevron_right, size: 20),
+      onTap: () => _runNetTest(context, loc, cs),
+    );
+  }
+
+  Future<void> _runNetTest(
+      BuildContext context, AppLocalizations loc, ColorScheme cs) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Text(loc.netTestTitle),
+        content: Row(
+          children: [
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
+            const SizedBox(width: 14),
+            Expanded(child: Text(loc.netTestRunning)),
+          ],
+        ),
+      ),
+    );
+    List<DiagResult> results = const [];
+    try {
+      results = await NetworkDiagnostics.run();
+    } catch (_) {}
+    if (!context.mounted) return;
+    Navigator.pop(context); // close progress
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(loc.netTestTitle),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: results
+                .map((r) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            r.ok ? Icons.check_circle : Icons.cancel,
+                            color:
+                                r.ok ? Colors.green : Colors.redAccent,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '${_netLabel(loc, r.key)} · ${r.ms} ms',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13),
+                                ),
+                                Text(
+                                  r.detail,
+                                  style: TextStyle(
+                                      color: cs.onSurfaceVariant,
+                                      fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ))
+                .toList(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(loc.close),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _netLabel(AppLocalizations loc, String key) {
+    switch (key) {
+      case 'backend':
+        return loc.netBackend;
+      case 'stream':
+        return loc.netStream;
+      case 'manifest':
+        return loc.netManifest;
+      case 'direct':
+        return loc.netDirect;
+      default:
+        return key;
+    }
   }
 
   void _showLanguageDialog(BuildContext context, AppLocalizations loc, LanguageProvider langProv) {
