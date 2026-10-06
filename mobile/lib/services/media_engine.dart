@@ -1086,6 +1086,22 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   /// Current resolution step, shown under the loading spinner.
   /// Holds an ARB key (see playStage*), null when not resolving.
   String? loadingStageKey;
+
+  /// Expected total length from metadata, used when the stream itself
+  /// declares no duration (server merge). Cleared on every stop.
+  Duration? _expectedDuration;
+
+  /// Adaptive shortcut: carriers that block googlevideo fail the direct
+  /// attempt every time. After 2 consecutive direct failures we skip it
+  /// for 10 minutes and go straight to the server paths.
+  int _directFails = 0;
+  DateTime? _directSkipUntil;
+
+  bool get _shouldTryDirect {
+    final until = _directSkipUntil;
+    if (until != null && DateTime.now().isBefore(until)) return false;
+    return true;
+  }
   String? _watchdogMedia;
 
   void _setStage(String? key) {
@@ -1165,16 +1181,24 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       errs.add('servidor: ${_lastStreamError ?? "sin url"}');
     } else {
       // 1a) Direct googlevideo URL (fastest when the carrier doesn't
-      // block it; fails fast with 403 otherwise).
-      if (urls.video != null) {
+      // block it; fails fast with 403 otherwise). Skipped adaptively
+      // after repeated failures.
+      if (urls.video != null && _shouldTryDirect) {
         final started = await _tryStartNetworkVideo(
             Uri.parse(urls.video!), youtubeUrl, mediaItem,
-            initTimeout: const Duration(seconds: 8));
+            initTimeout: const Duration(seconds: 5));
         if (started) {
+          _directFails = 0;
+          _directSkipUntil = null;
           _clearStage();
           return;
         }
         errs.add('video: ${_lastVideoError ?? "init falló"}');
+        _directFails++;
+        if (_directFails >= 2) {
+          _directSkipUntil = DateTime.now().add(const Duration(minutes: 10));
+          debugPrint('[MediaEngine] Direct video skipped for 10 min');
+        }
       }
       // 1b) Server-forwarded video bytes: no IP lockout, seeking works.
       if (urls.video != null) {
@@ -1273,6 +1297,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       Uri streamUrl, String youtubeUrl, MediaItem mediaItem,
       {Duration initTimeout = const Duration(seconds: 15)}) async {
     await _stopCurrentSilent();
+    // The relay merge streams without a declared length (unknown duration).
+    // Keep the metadata duration as the expected one so progress, total
+    // time and end-of-track detection keep working.
+    _expectedDuration = mediaItem.duration;
     _state = _state.copyWith(
       mediaId: youtubeUrl,
       title: mediaItem.title,
@@ -1404,12 +1432,20 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         if (!controller.value.isInitialized) return;
         if (controller.value.hasError) return;
         final pos = controller.value.position;
-        final dur = controller.value.duration;
+        final rawDur = controller.value.duration;
+        // Relay/merge streams report zero duration: fall back to the
+        // expected one from metadata so progress + total time render.
+        final dur = (rawDur > Duration.zero && rawDur.inHours < 24)
+            ? rawDur
+            : (_expectedDuration ?? Duration.zero);
         _state = _state.copyWith(position: pos, duration: dur);
         _savePosition(mediaId, pos);
         _syncPlaybackStateToHandler();
 
-        if (!_completionHandled && pos >= dur && dur > Duration.zero) {
+        if (!_completionHandled &&
+            pos >= dur &&
+            dur > Duration.zero &&
+            !controller.value.isPlaying) {
           _completionHandled = true;
           _handlePlaybackComplete();
         }
@@ -2116,6 +2152,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();
+    _expectedDuration = null;
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
       await _savePosition(_state.mediaId!, _state.position);
@@ -2135,6 +2172,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();
+    _expectedDuration = null;
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
       await _savePosition(_state.mediaId!, _state.position);
