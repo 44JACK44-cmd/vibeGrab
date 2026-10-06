@@ -505,6 +505,8 @@ class AppLocalizations {
   String get playStageAudio => _get('playStageAudio');
 
   String get playCheckConnection => _get('playCheckConnection');
+
+  String get videoQuality => _get('videoQuality');
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

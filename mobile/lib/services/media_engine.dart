@@ -19,6 +19,8 @@ import '../data/models/explore_video.dart';
 import '../data/models/stream_urls.dart';
 import '../services/storage_service.dart';
 import '../services/media_metadata_service.dart';
+import '../services/media_source.dart';
+import '../services/media_source_resolver.dart';
 import '../services/equalizer_service.dart';
 import '../services/vibe_grab_audio_handler.dart';
 import '../services/session_snapshot.dart';
@@ -983,6 +985,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<void> _playCurrentQueueItem() async {
     if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
+    _videoQuality = 0; // new item => Auto quality
     final item = _queue[_currentIndex];
     _completionHandled = false;
 
@@ -1067,7 +1070,30 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     await _playLocalFile(file);
   }
 
+  /// Single media-source resolver (Explorer → compatible sources).
+  /// Owns the URL cache (with exact expiry), the manifest cache and the
+  /// candidate ranking. Engine only iterates and plays.
+  late final MediaSourceResolver _resolver = MediaSourceResolver(
+    fetchUrls: (videoId) async {
+      final urls = await _fetchStreamUrls(videoId);
+      if (urls == null) return null;
+      return StreamUrlsPayload(
+          video: urls.video, audio: urls.audio, proxy: urls.proxy);
+    },
+    fetchManifest: (videoId) async {
+      try {
+        return await _ytc.videos.streamsClient.getManifest(videoId).timeout(
+          const Duration(seconds: 8),
+          onTimeout: () => throw TimeoutException('Stream manifest timed out'),
+        );
+      } catch (_) {
+        return null;
+      }
+    },
+  );
+
   Future<void> playExploreVideo(ExploreVideo video) async {
+    _playToken++;
     await _stopCurrent();
     final item = _exploreVideoToMediaItem(video);
     _queue.add(item);
@@ -1097,14 +1123,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   // --- YouTube Video Playback ---
   //
-  // Strategy (backend first): the on-device manifest is frequently
-  // bot-blocked on mobile networks and burns 10s doing nothing. The warm
-  // backend resolves stream URLs in seconds, and its proxy/relay endpoints
-  // sidestep the googlevideo IP lockout. Resolved URLs are cached per video
-  // so retries are instant instead of starting from zero.
-
-  final Map<String, _CachedStreams> _streamUrlCache = {};
-  static const _streamCacheTtl = Duration(hours: 4);
+  // Strategy (backend first) now lives in MediaSourceResolver; the engine
+  // only iterates ranked candidates and plays. Cache/TTL/expiry/ranking
+  // are the resolver's job.
 
   /// Current resolution step, shown under the loading spinner.
   /// Holds an ARB key (see playStage*), null when not resolving.
@@ -1169,23 +1190,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     });
   }
 
-  Uri _proxyUri(String target) =>
-      Uri.parse('${ApiConfig.baseUrl}/api/explore/proxy')
-          .replace(queryParameters: {'u': target});
-
-  Future<StreamUrls?> _fetchStreamUrlsCached(String videoId) async {
-    final hit = _streamUrlCache[videoId];
-    if (hit != null &&
-        DateTime.now().difference(hit.at) < _streamCacheTtl) {
-      debugPrint('[MediaEngine] Stream URLs from cache for $videoId');
-      return hit.urls;
-    }
-    final urls = await _fetchStreamUrls(videoId);
-    if (urls != null) {
-      _streamUrlCache[videoId] = _CachedStreams(urls, DateTime.now());
-    }
-    return urls;
-  }
+  /// Monotonic play generation: rapid taps (A then B) abandon the stale
+  /// resolution chain instead of letting it hijack the new playback.
+  int _playToken = 0;
 
   Future<void> _playYouTubeVideo(String youtubeUrl, MediaItem mediaItem) async {
     final videoId = _parseVideoIdFromUrl(youtubeUrl);
@@ -1195,101 +1202,54 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _failPlayback('URL inválida');
       return;
     }
-    final errs = <String>[];
+    final token = _playToken;
+    bool stale() => token != _playToken;
 
-    // 1) Server stream URLs first (fast + warm; cached per video).
-    _setStage('playStageServer');
-    final urls = await _fetchStreamUrlsCached(videoId);
-    if (urls == null) {
+    final errs = <String>[];
+    late final MediaResolution res;
+    try {
+      res = await _resolver.resolve(videoId, onStage: _setStage);
+    } catch (e) {
+      debugPrint('[MediaEngine] Resolve failed: $e');
+      _clearStage();
+      _failPlayback(_short(e.toString()));
+      return;
+    }
+    if (stale()) return;
+    if (res.fetchError != null) {
       errs.add('servidor: ${_lastStreamError ?? "sin url"}');
-    } else {
-      // 1a) Direct googlevideo URL (fastest when the carrier doesn't
-      // block it; fails fast with 403 otherwise). Skipped adaptively
-      // after repeated failures.
-      if (urls.video != null && _shouldTryDirect) {
-        final started = await _tryStartNetworkVideo(
-            Uri.parse(urls.video!), youtubeUrl, mediaItem,
-            initTimeout: const Duration(seconds: 5));
-        if (started) {
-          _directFails = 0;
-          _directSkipUntil = null;
-          _clearStage();
-          return;
-        }
-        errs.add('video: ${_lastVideoError ?? "init falló"}');
-        _directFails++;
-        if (_directFails >= 2) {
-          _directSkipUntil = DateTime.now().add(const Duration(minutes: 10));
-          debugPrint('[MediaEngine] Direct video skipped for 10 min');
-        }
-      }
-      // 1b) Server-forwarded muxed bytes: no IP lockout, seeking works.
-      if (urls.video != null) {
-        final started = await _tryStartNetworkVideo(
-            _proxyUri(urls.video!), youtubeUrl, mediaItem,
-            initTimeout: const Duration(seconds: 18));
-        if (started) {
-          _clearStage();
-          return;
-        }
-        errs.add('proxy: ${_lastVideoError ?? "init falló"}');
-      }
-      // 1d) Server-forwarded audio (full state: thumbnail + time work).
-      if (urls.audio != null) {
-        _setStage('playStageAudio');
-        final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
-            streamUri: _proxyUri(urls.audio!));
-        if (ok) {
-          _clearStage();
-          return;
-        }
-        errs.add('audio: ${_lastAudioError ?? "falló"}');
-      }
     }
 
-    // 1c) Server-side merge (ffmpeg joins adaptive video+audio).
-    // Independent from stream-urls on purpose: the merge endpoint resolves
-    // its own sources, so it still works when the URL fetch failed but the
-    // server is reachable. This is the ONLY path for videos without a
-    // muxed format (most music videos in HD).
-    {
+    for (final c in res.video) {
+      if (stale()) return;
       final started = await _tryStartNetworkVideo(
-          Uri.parse('${ApiConfig.baseUrl}/api/explore/relay?v=$videoId'),
-          youtubeUrl, mediaItem,
-          initTimeout: const Duration(seconds: 25));
+          c.uri, youtubeUrl, mediaItem,
+          initTimeout: c.initTimeout, playToken: token);
+      if (stale()) return;
       if (started) {
         _clearStage();
         return;
       }
-      errs.add('unión: ${_lastVideoError ?? "init falló"}');
+      errs.add('${c.errTag}: ${_lastVideoError ?? "init falló"}');
     }
-    // 2) Direct device manifest (last resort: often bot-blocked on mobile).
-    _setStage('playStageDirect');
-    StreamManifest? manifest;
-    try {
-      manifest = await _ytc.videos.streamsClient.getManifest(videoId).timeout(
-        const Duration(seconds: 8),
-        onTimeout: () => throw TimeoutException('Stream manifest timed out'),
-      );
-    } catch (e) {
-      debugPrint('[MediaEngine] Device stream path failed: $e');
-      errs.add('directo: ${_short(e.toString())}');
-    }
-    if (manifest != null) {
-      final muxedStream = _bestMuxedStream(manifest);
-      if (muxedStream != null) {
-        final started = await _tryStartNetworkVideo(
-            muxedStream.url, youtubeUrl, mediaItem,
-            initTimeout: const Duration(seconds: 12));
-        if (started) {
-          _clearStage();
-          return;
-        }
-        errs.add('directo: ${_lastVideoError ?? "init falló"}');
-      }
+
+    if (res.audioUri != null) {
       _setStage('playStageAudio');
+      if (stale()) return;
+      final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
+          streamUri: res.audioUri);
+      if (ok) {
+        _clearStage();
+        return;
+      }
+      errs.add('audio: ${_lastAudioError ?? "falló"}');
+    }
+
+    if (res.manifest != null) {
+      _setStage('playStageAudio');
+      if (stale()) return;
       final ok =
-          await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
+          await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: res.manifest);
       if (ok) {
         _clearStage();
         return;
@@ -1297,6 +1257,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       errs.add('audio directo: ${_lastAudioError ?? "falló"}');
     }
 
+    if (stale()) return;
     _clearStage();
     final detail = errs.join(' · ');
     _failPlayback(detail.isEmpty
@@ -1304,11 +1265,60 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         : '${detail.length > 280 ? '${detail.substring(0, 280)}…' : detail}');
   }
 
+  /// Current video quality height, 0 = Auto.
+  int _videoQuality = 0;
+  int get videoQuality => _videoQuality;
+
+  /// Real qualities known for the current video (empty = Auto only).
+  List<MediaQuality> get videoQualities {
+    final id = _state.mediaId;
+    if (id == null || !isVideo) return const [];
+    final videoId = _parseVideoIdFromUrl(id);
+    if (videoId == null) return const [];
+    return _resolver.qualitiesFor(videoId);
+  }
+
+  /// Switches video quality preserving the position when possible.
+  /// height == 0 means Auto (default resolution chain).
+  Future<void> switchVideoQuality(int height) async {
+    final mediaId = _state.mediaId;
+    if (mediaId == null || _videoController == null) return;
+    final videoId = _parseVideoIdFromUrl(mediaId);
+    if (videoId == null) return;
+    final savedPos =
+        _state.position > const Duration(seconds: 1) ? _state.position : Duration.zero;
+    final token = ++_playToken;
+    bool ok = false;
+    if (height > 0) {
+      final uri = _resolver.muxedUrlFor(videoId, height);
+      if (uri != null) {
+        ok = await _tryStartNetworkVideo(uri, mediaId,
+            _createMediaItemFromState(),
+            initTimeout: const Duration(seconds: 12), playToken: token);
+        if (ok) _videoQuality = height;
+      }
+    } else {
+      final item = (_currentIndex >= 0 && _currentIndex < _queue.length)
+          ? _queue[_currentIndex]
+          : _createMediaItemFromState();
+      await _playYouTubeVideo(mediaId, item);
+      ok = _state.isPlaying && _state.mediaId == mediaId;
+      if (ok) _videoQuality = 0;
+    }
+    if (token != _playToken) return;
+    if (ok && savedPos > Duration.zero) {
+      await seek(savedPos);
+    }
+    _syncPlaybackStateToHandler();
+    notifyListeners();
+  }
+
   static String _short(String s) => s.length > 70 ? s.substring(0, 70) : s;
 
   Future<bool> _tryStartNetworkVideo(
       Uri streamUrl, String youtubeUrl, MediaItem mediaItem,
-      {Duration initTimeout = const Duration(seconds: 15)}) async {
+      {Duration initTimeout = const Duration(seconds: 15),
+      int? playToken}) async {
     await _stopCurrentSilent();
     // The relay merge streams without a declared length (unknown duration).
     // Keep the metadata duration as the expected one so progress, total
@@ -1325,8 +1335,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _syncToAudioHandler(mediaItem);
     notifyListeners();
 
-    final started =
-        await _startNetworkVideo(streamUrl, youtubeUrl, initTimeout: initTimeout);
+    final started = await _startNetworkVideo(streamUrl, youtubeUrl,
+        initTimeout: initTimeout, playToken: playToken);
     if (!started) return false;
     playbackError = null;
 
@@ -1400,6 +1410,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     String mediaId, {
     Duration startAt = Duration.zero,
     Duration initTimeout = const Duration(seconds: 15),
+    int? playToken,
   }) async {
     _lastVideoError = null;
     await _videoController?.dispose();
@@ -1468,6 +1479,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _state = _state.copyWith(status: MediaStatus.playing, position: startAt);
       _syncPlaybackStateToHandler();
       notifyListeners();
+      // A newer play started while we initialized: abandon instead of
+      // hijacking it.
+      if (playToken != null && playToken != _playToken) {
+        await controller.dispose();
+        if (identical(_videoController, controller)) _videoController = null;
+        return false;
+      }
       await controller.play();
       return true;
     } catch (e) {
@@ -2128,6 +2146,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       if (_currentIndex >= 0 && _currentIndex < _queue.length) {
         playbackError = null;
         _completionHandled = false;
+        _playToken++;
         final item = _queue[_currentIndex];
         final videoId = _parseVideoIdFromUrl(item.id);
         if (videoId != null && _state.mediaType == MediaType.video) {
@@ -2201,6 +2220,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   Future<void> stop() async {
+    _playToken++;
     await _stopCurrent();
     _state = MediaState();
     _syncPlaybackStateToHandler();
@@ -2228,12 +2248,4 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _ytc.close();
     super.dispose();
   }
-}
-
-/// Server stream URLs resolved for one video, with fetch time (TTL enforced
-/// by callers). Retries reuse them instead of resolving from zero.
-class _CachedStreams {
-  final StreamUrls urls;
-  final DateTime at;
-  const _CachedStreams(this.urls, this.at);
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../services/media_engine.dart';
+import '../../../services/media_source.dart';
 import '../widgets/play_mode_button.dart';
 import '../widgets/equalizer_sheet.dart';
 import 'video_controls_controller.dart';
@@ -312,6 +313,15 @@ class ProVideoOverlay extends StatelessWidget {
                         fontSize: 12),
                   ),
                   const Spacer(),
+                  if (engine.videoQualities.isNotEmpty)
+                    _QualityButton(
+                      qualities: engine.videoQualities,
+                      current: engine.videoQuality,
+                      onSelect: (h) {
+                        controls.poke();
+                        engine.switchVideoQuality(h);
+                      },
+                    ),
                   _SpeedButton(
                       speed: engine.speed,
                       onTap: () {
@@ -347,8 +357,75 @@ class ProVideoOverlay extends StatelessWidget {
   }
 }
 
-class _SpeedButton extends StatelessWidget {
-  final double speed;
+/// Real quality selector: only lists qualities the resolver actually
+/// knows for this video (Auto + manifest heights). Switching preserves
+/// the current position.
+class _QualityButton extends StatelessWidget {
+  final List<MediaQuality> qualities;
+  final int current;
+  final ValueChanged<int> onSelect;
+
+  const _QualityButton({
+    required this.qualities,
+    required this.current,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final loc = AppLocalizations.of(context);
+    final label = current == 0 ? 'Auto' : '${current}p';
+    return TextButton(
+      onPressed: () => _pick(context, loc),
+      style: TextButton.styleFrom(
+        minimumSize: const Size(56, 36),
+        padding: EdgeInsets.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+
+  void _pick(BuildContext context, AppLocalizations loc) {
+    final options = <int>[0, ...qualities.map((q) => q.height)];
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(loc.videoQuality,
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            for (final h in options)
+              ListTile(
+                title: Text(h == 0 ? 'Auto' : '${h}p'),
+                trailing: h == current
+                    ? const Icon(Icons.check, color: Colors.white)
+                    : null,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  if (h != current) onSelect(h);
+                },
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SpeedButton extends StatelessWidget {  final double speed;
   final VoidCallback onTap;
 
   const _SpeedButton({required this.speed, required this.onTap});
