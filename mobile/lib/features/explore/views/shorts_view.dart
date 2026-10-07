@@ -49,7 +49,9 @@ class _ShortsViewState extends State<ShortsView> {
   void _playAt(int i, List<ExploreVideo> shorts) {
     if (i < 0 || i >= shorts.length) return;
     _index = i;
-    context.read<MediaEngine>().playExploreVideo(shorts[i]);
+    // The whole feed is the queue: auto-next, the notification controls and
+    // previous/next all walk it through the shared MediaEngine.
+    context.read<MediaEngine>().playExploreQueue(shorts, startIndex: i);
   }
 
   @override

@@ -478,5 +478,20 @@
   "netBackend": "Servidor VibeGrab",
   "netStream": "URLs del servidor",
   "netManifest": "Manifiesto en el teléfono",
-  "netDirect": "Video directo"
+  "netDirect": "Video directo",
+  "continueWatching": "Continuar viendo",
+  "recommended": "Recomendados",
+  "sortRelevance": "Relevancia",
+  "sortViews": "Más vistos",
+  "whenAny": "Cualquier fecha",
+  "whenHour": "Última hora",
+  "whenToday": "Hoy",
+  "whenWeek": "Esta semana",
+  "pasteLink": "Pegar enlace",
+  "copyLink": "Copiar enlace",
+  "linkNotPlayable": "Este enlace no se puede reproducir en la app. Puedes descargarlo.",
+  "linkResolveFailed": "No se pudo leer este enlace.",
+  "prevVideo": "Anterior",
+  "nextVideo": "Siguiente",
+  "addedToQueue": "Añadido a la cola"
 }

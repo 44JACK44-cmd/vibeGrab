@@ -7,15 +7,36 @@ class ExploreVideo(BaseModel):
     url: str
     thumbnail: str | None = None
     channel: str | None = None
+    channel_id: str | None = None
     duration: int | None = None
     duration_string: str | None = None
     view_count: int | None = None
+    views_label: str | None = None
+    age: str | None = None
+    provider: str = "youtube"
 
 
 class ExploreSearchResponse(BaseModel):
     success: bool = True
     query: str
+    page: int = 1
+    has_more: bool = False
     results: list[ExploreVideo]
+
+
+class TrendingResponse(BaseModel):
+    success: bool = True
+    source: str = "search"
+    results: list[ExploreVideo]
+
+
+class LinkMetadataResponse(BaseModel):
+    success: bool = True
+    provider: str
+    playable: bool = False
+    downloadable: bool = True
+    reason: str | None = None
+    video: ExploreVideo | None = None
 
 
 class RelatedVideo(BaseModel):

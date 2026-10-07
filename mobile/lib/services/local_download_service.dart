@@ -586,14 +586,49 @@ class LocalDownloadService {
         _log('MUX STEP 3: FFmpeg failed (non-fatal): $e');
       }
 
-      String finalPath;
-      int fileBytes;
+String finalPath = '';
+        int fileBytes = 0;
 
       if (muxed) {
         await _cleanupTempFiles([videoTempPath, audioTempPath]);
         final f = File(outputPath);
         fileBytes = await f.exists() ? await f.length() : 0;
         finalPath = outputPath;
+      } else if (task.mediaType == DownloadMediaType.audio) {
+        // For audio-only downloads, convert to MP3 using FFmpeg
+        final audioPath = '$dir/${safeTitle}.mp3';
+        bool converted = false;
+        try {
+          _log('AUDIO: Converting to MP3...');
+          final result = await Process.run('ffmpeg', [
+            '-y', '-i', audioTempPath,
+            '-c:a', 'libmp3lame',
+            '-q:a', '2', // VBR quality ~190kbps
+            audioPath,
+          ]).timeout(const Duration(seconds: 120));
+          
+          if (result.exitCode == 0) {
+            await _cleanupTempFiles([audioTempPath]);
+            final f = File(audioPath);
+            fileBytes = await f.exists() ? await f.length() : 0;
+            finalPath = audioPath;
+            converted = true;
+            _log('AUDIO: Converted to MP3 successfully');
+          } else {
+            _log('AUDIO: FFmpeg failed: ${result.stderr}');
+          }
+        } catch (e) {
+          _log('AUDIO: Conversion failed: $e');
+        }
+        
+        if (!converted) {
+          // Fallback: use original audio file with proper extension
+          final audioExt = _getExtension(audioStream);
+          final audioPath = '$dir/${safeTitle}.$audioExt';
+          await File(audioTempPath).rename(audioPath);
+          finalPath = audioPath;
+          _log('AUDIO: Using original format as fallback');
+        }
       } else {
         final videoFile = File(videoTempPath);
         final fallbackPath = '$dir/$safeTitle.$videoExt';
@@ -601,8 +636,6 @@ class LocalDownloadService {
           await videoFile.rename(fallbackPath);
         }
         await File(audioTempPath).delete().catchError((_) {});
-        final fallbackFile = File(fallbackPath);
-        fileBytes = await fallbackFile.exists() ? await fallbackFile.length() : 0;
         finalPath = fallbackPath;
         _log('MUX: Fallback to video-only: $finalPath');
       }

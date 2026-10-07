@@ -495,6 +495,22 @@ class AppLocalizations {
   String get shortsSection => _get('shortsSection');
   String get watchShorts => _get('watchShorts');
 
+  String get continueWatching => _get('continueWatching');
+  String get recommended => _get('recommended');
+  String get sortRelevance => _get('sortRelevance');
+  String get sortViews => _get('sortViews');
+  String get whenAny => _get('whenAny');
+  String get whenHour => _get('whenHour');
+  String get whenToday => _get('whenToday');
+  String get whenWeek => _get('whenWeek');
+  String get pasteLink => _get('pasteLink');
+  String get copyLink => _get('copyLink');
+  String get linkNotPlayable => _get('linkNotPlayable');
+  String get linkResolveFailed => _get('linkResolveFailed');
+  String get prevVideo => _get('prevVideo');
+  String get nextVideo => _get('nextVideo');
+  String get addedToQueue => _get('addedToQueue');
+
   String get alreadyDownloaded => _get('alreadyDownloaded');
   String get downloadAgain => _get('downloadAgain');
   String get openFileFailed => _get('openFileFailed');

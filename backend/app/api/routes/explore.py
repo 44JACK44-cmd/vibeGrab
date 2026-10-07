@@ -10,13 +10,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.schemas.explore import (
     CommentsResponse,
     ExploreSearchResponse,
+    LinkMetadataResponse,
     PlayUrlResponse,
     RelatedResponse,
     StreamUrlResponse,
+    TrendingResponse,
 )
 from app.services.anubis_client import ANTUBIS_UA, open_stream
 from app.services import relay_warm
-from app.services.explore_service import search_videos
+from app.services.explore_service import get_link_metadata, get_trending, search_videos
 from app.services.youtube_watch_service import (
     WatchError,
     get_comments,
@@ -207,7 +209,7 @@ def relay_debug(v: str):
 
 
 @router.get("/search")
-def search(q: str, limit: int = 10):
+def search(q: str, limit: int = 10, page: int = 1, sort: str = "relevance", when: str = "any"):
     if not q or not q.strip():
         return JSONResponse(
             status_code=400,
@@ -215,15 +217,57 @@ def search(q: str, limit: int = 10):
         )
 
     limit = max(1, min(limit, 20))
+    page = max(1, page)
+    if sort not in ("relevance", "date", "views"):
+        sort = "relevance"
+    if when not in ("any", "hour", "today", "week"):
+        when = "any"
 
     try:
-        results = search_videos(q.strip(), limit=limit)
-        return ExploreSearchResponse(query=q.strip(), results=results)
+        results = search_videos(
+            q.strip(), limit=limit, page=page, sort=sort, when=when
+        )
+        return ExploreSearchResponse(
+            query=q.strip(),
+            page=page,
+            has_more=len(results) >= limit,
+            results=results,
+        )
     except Exception as e:
         logger.error(f"Search failed: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "detail": f"Search failed: {str(e)}"},
+        )
+
+
+@router.get("/trending")
+def trending(limit: int = 20):
+    try:
+        results, source = get_trending(limit=limit)
+        return TrendingResponse(source=source, results=results)
+    except Exception as e:
+        logger.error(f"Trending failed: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": "Trending unavailable"},
+        )
+
+
+@router.get("/link-metadata")
+def link_metadata(url: str):
+    if not url or not url.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "detail": "url is required"},
+        )
+    try:
+        return LinkMetadataResponse(**get_link_metadata(url.strip()))
+    except Exception as e:
+        logger.error(f"Link metadata failed: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": f"Metadata unavailable: {str(e)[:160]}"},
         )
 
 

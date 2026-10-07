@@ -7,6 +7,8 @@ import '../data/models/download_task.dart';
 import '../data/models/library_file.dart';
 import '../data/models/app_settings.dart';
 import '../data/models/explore_video.dart';
+import '../data/models/explore_search_page.dart';
+import '../data/models/link_metadata.dart';
 import '../data/models/related_video.dart';
 import '../data/models/comment_item.dart';
 import '../data/models/stream_urls.dart';
@@ -260,23 +262,81 @@ class ApiService {
     }
   }
 
-  Future<List<ExploreVideo>> searchExplore(String query, {int limit = 10}) async {
-    try {
-      final response = await _client
-          .get(Uri.parse(
-              '${ApiConfig.exploreSearchUrl}?q=${Uri.encodeComponent(query)}&limit=$limit'))
-          .timeout(_mediumTimeout);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return (data['results'] as List)
-            .map((v) => ExploreVideo.fromJson(v))
-            .toList();
-      }
+  /// Real YouTube search with pagination and optional ordering:
+  /// [sort] = relevance | date | views, [when] = any | hour | today | week.
+  Future<ExploreSearchPage> searchExplore(
+    String query, {
+    int limit = 12,
+    int page = 1,
+    String sort = 'relevance',
+    String when = 'any',
+  }) async {
+    final uri = Uri.parse(
+      '${ApiConfig.exploreSearchUrl}'
+      '?q=${Uri.encodeComponent(query)}'
+      '&limit=$limit&page=$page'
+      '&sort=${Uri.encodeComponent(sort)}'
+      '&when=${Uri.encodeComponent(when)}',
+    );
+    final response = await _client.get(uri).timeout(_mediumTimeout);
+    if (response.statusCode != 200) {
       throw NetworkException('Search failed', statusCode: response.statusCode);
-    } catch (e) {
-      throw NetworkException.fromError(e);
     }
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    if (data['success'] == false) {
+      throw NetworkException(
+        data['detail']?.toString() ?? 'Search failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return ExploreSearchPage(
+      results: (data['results'] as List? ?? const [])
+          .map((v) => ExploreVideo.fromJson(v as Map<String, dynamic>))
+          .toList(),
+      hasMore: data['has_more'] == true,
+      source: 'server',
+    );
+  }
+
+  /// Trending/"most viewed" feed (live content, never hardcoded).
+  Future<List<ExploreVideo>> fetchTrending({int limit = 20}) async {
+    final response = await _client
+        .get(Uri.parse('${ApiConfig.exploreTrendingUrl}?limit=$limit'))
+        .timeout(_mediumTimeout);
+    if (response.statusCode != 200) {
+      throw NetworkException('Trending failed',
+          statusCode: response.statusCode);
+    }
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    if (data['success'] == false) {
+      throw NetworkException(
+        data['detail']?.toString() ?? 'Trending failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return (data['results'] as List? ?? const [])
+        .map((v) => ExploreVideo.fromJson(v as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Resolves any pasted link (YouTube, TikTok, ...) to metadata.
+  Future<LinkMetadata> fetchLinkMetadata(String url) async {
+    final response = await _client
+        .get(Uri.parse(
+            '${ApiConfig.exploreLinkMetadataUrl}?url=${Uri.encodeComponent(url)}'))
+        .timeout(_longTimeout);
+    if (response.statusCode != 200) {
+      throw NetworkException('Metadata failed',
+          statusCode: response.statusCode);
+    }
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    if (data['success'] == false) {
+      throw NetworkException(
+        data['detail']?.toString() ?? 'Metadata failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return LinkMetadata.fromJson(data);
   }
 
   Future<List<RelatedVideo>> fetchRelated(String videoId) async {

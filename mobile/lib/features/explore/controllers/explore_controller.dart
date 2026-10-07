@@ -2,10 +2,13 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../../data/models/explore_search_page.dart';
 import '../../../data/models/explore_video.dart';
+import '../../../services/api_service.dart';
 import '../../../services/local_extraction_service.dart';
 import '../../../services/connectivity_service.dart';
 import '../../../services/media_metadata_service.dart';
+import '../../../services/media_provider_resolver.dart';
 
 enum ExploreError { none, noInternet, backendUnavailable, noResults, searchFailed }
 
@@ -13,9 +16,11 @@ enum ExploreTab { trending, categories }
 
 class ExploreController extends ChangeNotifier {
   final LocalExtractionService _extraction;
+  final ApiService _api;
 
-  ExploreController({LocalExtractionService? extraction})
-      : _extraction = extraction ?? LocalExtractionService();
+  ExploreController({LocalExtractionService? extraction, ApiService? api})
+      : _extraction = extraction ?? LocalExtractionService(),
+        _api = api ?? ApiService();
 
   List<ExploreVideo> _videos = [];
   List<ExploreVideo> get results => List.unmodifiable(_videos);
@@ -80,6 +85,36 @@ class ExploreController extends ChangeNotifier {
   bool _categoryExhausted = false;
   bool get categoryExhausted => _categoryExhausted;
 
+  // --- Search ordering (server side: relevance / views + date window) ---
+  String _sort = 'relevance';
+  String get sort => _sort;
+  String _when = 'any';
+  String get when => _when;
+  int _searchPage = 0;
+  int _categoryPage = 0;
+  bool _serverSearchFailed = false;
+  int _searchSeq = 0;
+
+  // --- Continue watching (resume points of remote videos) ---
+  List<ExploreVideo> _continueWatching = [];
+  List<ExploreVideo> get continueWatching => List.unmodifiable(_continueWatching);
+
+  // --- Home rails: one real result list per category, loaded lazily ---
+  final Map<String, List<ExploreVideo>> _rails = {};
+  bool _railsLoading = false;
+  bool get railsLoading => _railsLoading;
+  List<String> get railKeys => _rails.keys.toList(growable: false);
+  List<ExploreVideo> rail(String key) =>
+      List.unmodifiable(_rails[key] ?? const <ExploreVideo>[]);
+
+  // --- Pasted link resolution ---
+  PastedLinkResult? _linkResult;
+  PastedLinkResult? get linkResult => _linkResult;
+  bool _linkLoading = false;
+  bool get linkLoading => _linkLoading;
+  String? _linkError;
+  String? get linkError => _linkError;
+
   /// Ids shown in this session (trending/for-you): used to avoid repeating
   /// the same videos on every refresh when alternatives exist.
   final Set<String> _recentlyShown = <String>{};
@@ -100,9 +135,73 @@ class ExploreController extends ChangeNotifier {
     return fresh.isNotEmpty ? fresh : videos;
   }
 
+  /// Server search (innertube on the backend) with automatic local fallback.
+  /// Returns null when the server could not answer, so the caller can switch
+  /// to the on-device youtube_explode search instead of failing.
+  Future<ExploreSearchPage?> _serverSearch(
+    String query, {
+    int limit = 12,
+    int page = 1,
+    String? order,
+    String? window,
+  }) async {
+    if (!ConnectivityService.instance.hasInternet) return null;
+    try {
+      return await _api.searchExplore(
+        query,
+        limit: limit,
+        page: page,
+        sort: order ?? _sort,
+        when: window ?? _when,
+      );
+    } catch (e) {
+      debugPrint('[Explore] server search failed for "$query": $e');
+      return null;
+    }
+  }
+
+  void _appendUnique(List<ExploreVideo> target, List<ExploreVideo> items) {
+    final seen = target.map((e) => e.id).toSet();
+    for (final v in items) {
+      if (v.id.isNotEmpty && seen.add(v.id)) target.add(v);
+    }
+  }
+
   Future<void> init() async {
     await _loadRecentSearches();
+    await loadContinueWatching();
     await loadTrending();
+  }
+
+  /// Videos with a saved position: the "continue watching" rail.
+  Future<void> loadContinueWatching() async {
+    try {
+      final svc = MediaMetadataService();
+      final out = <ExploreVideo>[];
+      for (final h in svc.history) {
+        if (!h.filename.startsWith('http')) continue;
+        final meta = svc.getMeta(h.filename);
+        if (!meta.hasResume) continue;
+        out.add(ExploreVideo(
+          id: YouTubeProvider.extractVideoId(h.filename) ?? h.filename,
+          title: h.title,
+          url: h.filename,
+          thumbnail: h.thumbnail,
+          channel: h.source,
+          provider: 'youtube',
+          resumeMs: meta.lastPositionMs,
+          duration: meta.durationMs > 0 ? (meta.durationMs / 1000).round() : null,
+        ));
+        if (out.length >= 6) break;
+      }
+      if (out.length != _continueWatching.length ||
+          out.any((v) => !_continueWatching.any((c) => c.url == v.url))) {
+        _continueWatching = out;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('[Explore] continue watching load failed: $e');
+    }
   }
 
   Future<void> loadTrending() async {
@@ -118,9 +217,23 @@ class ExploreController extends ChangeNotifier {
         notifyListeners();
         return;
       }
-      // Progressive: rotate the query order every refresh, show the first
-      // batch immediately and append the rest as they arrive instead of
-      // blocking the whole UI on every query.
+
+      // 1) One server round trip gives a live, most-viewed feed.
+      try {
+        final live = await _api.fetchTrending(limit: 20);
+        if (live.isNotEmpty) {
+          _trending = _preferUnseen(live).take(14).toList();
+          _rememberShown(_trending);
+          _trendingLoading = false;
+          notifyListeners();
+        }
+      } catch (e) {
+        debugPrint('[Explore] trending endpoint failed: $e');
+      }
+      if (_trending.isNotEmpty) return;
+
+      // 2) Fallback: rotate real search queries, show the first batch as
+      // soon as it lands instead of blocking the whole UI on every query.
       final queries = List<String>.from(LocalExtractionService.trendingQueries)
         ..shuffle();
       final merged = <ExploreVideo>[];
@@ -169,25 +282,95 @@ class ExploreController extends ChangeNotifier {
     }
   }
 
+  /// Home rails (one per category), loaded progressively so the first row
+  /// appears without waiting for the rest.
+  Future<void> loadRails({int count = 4}) async {
+    if (_railsLoading) return;
+    _railsLoading = true;
+    notifyListeners();
+    try {
+      for (final label in LocalExtractionService.categories) {
+        if (_rails.length >= count) break;
+        if (_rails.containsKey(label)) continue;
+        await _loadRail(label);
+      }
+    } finally {
+      _railsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Adds the next unloaded category to the home feed (infinite rails).
+  Future<void> loadMoreRails() async {
+    if (_railsLoading) return;
+    final next = LocalExtractionService.categories
+        .where((c) => !_rails.containsKey(c))
+        .toList();
+    if (next.isEmpty) return;
+    _railsLoading = true;
+    notifyListeners();
+    try {
+      await _loadRail(next.first);
+    } finally {
+      _railsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _loadRail(String label) async {
+    List<ExploreVideo> items = const [];
+    final page = await _serverSearch(label, limit: 8, page: 1, order: 'relevance');
+    if (page != null && page.results.isNotEmpty) {
+      items = page.results;
+    }
+    if (items.isEmpty) {
+      try {
+        items = await _extraction.searchCategory(label, limit: 8);
+      } catch (e) {
+        debugPrint('[Explore] rail "$label" failed: $e');
+      }
+    }
+    if (items.isEmpty) return;
+    final used = _rails.values.expand((v) => v.map((e) => e.id)).toSet();
+    final fresh = items.where((v) => !used.contains(v.id)).toList();
+    _rails[label] = (fresh.isNotEmpty ? fresh : items).take(8).toList();
+    notifyListeners();
+  }
+
   /// Appends the next page of the current search (infinite scroll).
   Future<void> loadMoreResults() async {
     if (_loadingMore || _query.isEmpty || _searchExhausted) return;
+    final seq = _searchSeq;
     _loadingMore = true;
     notifyListeners();
     try {
-      final more = await _extraction.searchMore(_query, limit: 10);
-      if (more.isEmpty) {
-        _searchExhausted = true;
+      if (_serverSearchFailed) {
+        final more = await _extraction.searchMore(_query, limit: 10);
+        if (seq != _searchSeq) return;
+        if (more.isEmpty) {
+          _searchExhausted = true;
+        } else {
+          _appendUnique(_videos, more);
+        }
       } else {
-        final seen = _videos.map((e) => e.id).toSet();
-        for (final v in more) {
-          if (seen.add(v.id)) _videos.add(v);
+        final page = await _serverSearch(_query, page: _searchPage + 1);
+        if (seq != _searchSeq) return;
+        if (page == null) {
+          _serverSearchFailed = true;
+          _searchExhausted = true;
+        } else {
+          _searchPage++;
+          _searchExhausted = !page.hasMore;
+          if (page.results.isNotEmpty) _appendUnique(_videos, page.results);
+          if (_videos.isEmpty) _searchExhausted = true;
         }
       }
     } catch (_) {
     } finally {
-      _loadingMore = false;
-      notifyListeners();
+      if (seq == _searchSeq) {
+        _loadingMore = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -195,22 +378,38 @@ class ExploreController extends ChangeNotifier {
   Future<void> loadMoreCategory() async {
     final cat = _selectedCategory;
     if (_loadingMore || cat == null || _categoryExhausted) return;
+    final seq = _searchSeq;
     _loadingMore = true;
     notifyListeners();
     try {
-      final more = await _extraction.searchMore('$cat popular', limit: 8);
-      if (more.isEmpty) {
-        _categoryExhausted = true;
+      if (_serverSearchFailed) {
+        final more = await _extraction.searchMore('$cat popular', limit: 8);
+        if (seq != _searchSeq) return;
+        if (more.isEmpty) {
+          _categoryExhausted = true;
+        } else {
+          _appendUnique(_categoryResults, more);
+        }
       } else {
-        final seen = _categoryResults.map((e) => e.id).toSet();
-        for (final v in more) {
-          if (seen.add(v.id)) _categoryResults.add(v);
+        final page = await _serverSearch(cat, page: _categoryPage + 1);
+        if (seq != _searchSeq) return;
+        if (page == null) {
+          _categoryExhausted = true;
+        } else {
+          _categoryPage++;
+          _categoryExhausted = !page.hasMore;
+          if (page.results.isNotEmpty) {
+            _appendUnique(_categoryResults, page.results);
+          }
+          if (_categoryResults.isEmpty) _categoryExhausted = true;
         }
       }
     } catch (_) {
     } finally {
-      _loadingMore = false;
-      notifyListeners();
+      if (seq == _searchSeq) {
+        _loadingMore = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -236,19 +435,26 @@ class ExploreController extends ChangeNotifier {
         }
       }
 
+      Future<void> searchAny(String q, {int limit = 6}) async {
+        final page = await _serverSearch(q, limit: limit, page: 1);
+        if (page != null && page.results.isNotEmpty) {
+          absorb(page.results);
+          return;
+        }
+        try {
+          absorb(await _extraction.search(q, limit: limit));
+        } catch (_) {}
+      }
+
       for (final kw in interests.take(3)) {
         if (fresh.length >= 10) break;
-        try {
-          absorb(await _extraction.search('$kw music', limit: 6));
-        } catch (_) {}
+        await searchAny('$kw music');
       }
       final rotating =
           List<String>.from(LocalExtractionService.trendingQueries)..shuffle();
       for (final q in rotating.take(2)) {
         if (fresh.length >= 14) break;
-        try {
-          absorb(await _extraction.search(q, limit: 6));
-        } catch (_) {}
+        await searchAny(q);
       }
       try {
         final cats = List<String>.from(LocalExtractionService.categories)
@@ -343,6 +549,8 @@ class ExploreController extends ChangeNotifier {
     _categoryLoading = true;
     _categoryResults = [];
     _categoryExhausted = false;
+    _categoryPage = 1;
+    _searchSeq++;
     notifyListeners();
 
     try {
@@ -351,8 +559,17 @@ class ExploreController extends ChangeNotifier {
         notifyListeners();
         return;
       }
-      _categoryResults = await _extraction.searchCategory(category, limit: 8);
-    } catch (_) {} finally {
+      final page = await _serverSearch(category, limit: 12, page: 1);
+      if (page != null && page.results.isNotEmpty) {
+        _categoryResults = page.results;
+        _categoryExhausted = !page.hasMore;
+      } else {
+        _categoryResults = await _extraction.searchCategory(category, limit: 8);
+        _categoryExhausted = true;
+      }
+    } catch (_) {
+      _categoryResults = [];
+    } finally {
       _categoryLoading = false;
       notifyListeners();
     }
@@ -403,37 +620,72 @@ class ExploreController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Real search with pagination. The backend (innertube) answers first; the
+  /// on-device youtube_explode search takes over when it cannot.
   Future<void> search(String query) async {
     if (query.trim().isEmpty) return;
     _query = query.trim();
+    final seq = ++_searchSeq;
     _loading = true;
     _exploreError = ExploreError.none;
     _error = null;
     _activeTab = ExploreTab.trending;
     _searchExhausted = false;
+    _searchPage = 1;
+    _serverSearchFailed = false;
     notifyListeners();
 
     try {
       if (!ConnectivityService.instance.hasInternet) {
         _exploreError = ExploreError.noInternet;
-        _error = null;
         _loading = false;
         notifyListeners();
         return;
       }
 
-      _videos = await _extraction.search(_query);
+      final page = await _serverSearch(_query, page: 1);
+      if (seq != _searchSeq) return;
+
+      if (page != null && page.results.isNotEmpty) {
+        _videos = page.results;
+        _searchExhausted = !page.hasMore;
+      } else {
+        if (page == null) _serverSearchFailed = true;
+        final local = await _extraction.search(_query);
+        if (seq != _searchSeq) return;
+        _videos = local;
+        _searchExhausted = local.length < 10;
+      }
       _addRecentSearch(_query);
       if (_videos.isEmpty) {
         _exploreError = ExploreError.noResults;
       }
     } catch (e) {
+      if (seq != _searchSeq) return;
       _exploreError = ExploreError.searchFailed;
       _error = e.toString().replaceFirst('Exception: ', '');
     } finally {
-      _loading = false;
-      notifyListeners();
+      if (seq == _searchSeq) {
+        _loading = false;
+        notifyListeners();
+      }
     }
+  }
+
+  /// Re-runs the active search with a new ordering (relevance / views).
+  Future<void> setSort(String value) async {
+    if (_sort == value || value.isEmpty) return;
+    _sort = value;
+    notifyListeners();
+    if (_query.isNotEmpty) await search(_query);
+  }
+
+  /// Re-runs the active search with a date window (hour / today / week).
+  Future<void> setWhen(String value) async {
+    if (_when == value || value.isEmpty) return;
+    _when = value;
+    notifyListeners();
+    if (_query.isNotEmpty) await search(_query);
   }
 
   void searchImmediate(String query) {
@@ -449,10 +701,44 @@ class ExploreController extends ChangeNotifier {
   }
 
   void clearResults() {
+    _searchSeq++; // drop any in-flight search
     _videos = [];
     _query = '';
+    _loading = false;
+    _searchExhausted = false;
     _exploreError = ExploreError.none;
     _error = null;
+    notifyListeners();
+  }
+
+  /// Resolves a pasted / shared link through the provider resolver and keeps
+  /// the outcome so the UI can offer play / download / honest fallback.
+  Future<PastedLinkResult?> resolveLink(String url) async {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return null;
+    _linkLoading = true;
+    _linkResult = null;
+    _linkError = null;
+    notifyListeners();
+    try {
+      if (!ConnectivityService.instance.hasInternet) {
+        throw const NetworkException('no internet');
+      }
+      _linkResult =
+          await MediaProviderResolver.resolveLink(trimmed, api: _api);
+    } catch (e) {
+      _linkError = e.toString().replaceFirst('Exception: ', '');
+      debugPrint('[Explore] link resolve failed: $e');
+    } finally {
+      _linkLoading = false;
+      notifyListeners();
+    }
+    return _linkResult;
+  }
+
+  void clearLink() {
+    _linkResult = null;
+    _linkError = null;
     notifyListeners();
   }
 

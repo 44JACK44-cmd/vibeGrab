@@ -22,7 +22,12 @@ import '../../media_player/views/video_fullscreen_view.dart';
 class VideoDetailView extends StatefulWidget {
   final ExploreVideo video;
 
-  const VideoDetailView({super.key, required this.video});
+  /// Queue this video belongs to (the list it was opened from). When set,
+  /// next/previous and end-of-video auto-advance operate on that queue
+  /// through the shared MediaEngine.
+  final List<ExploreVideo>? queue;
+
+  const VideoDetailView({super.key, required this.video, this.queue});
 
   @override
   State<VideoDetailView> createState() => _VideoDetailViewState();
@@ -30,6 +35,15 @@ class VideoDetailView extends StatefulWidget {
 
 class _VideoDetailViewState extends State<VideoDetailView> {
   final ApiService _api = ApiService();
+
+  /// Video currently displayed. Starts as the opened one and follows the
+  /// engine when the queue advances (auto-next / next button / related tap).
+  late ExploreVideo _current;
+
+  /// Queue driving this page: the list it was opened from, replaced by the
+  /// related list when a related video is tapped in place.
+  List<ExploreVideo>? _queue;
+  final ScrollController _scroll = ScrollController();
 
   bool _showFormats = false;
 
@@ -53,42 +67,113 @@ class _VideoDetailViewState extends State<VideoDetailView> {
 @override
 void initState() {
 super.initState();
-_liked = MediaMetadataService().isLiked(widget.video.url);
+_current = widget.video;
+_queue = widget.queue;
+_engine = context.read<MediaEngine>();
+_engine!.addListener(_onEngineChanged);
+_liked = MediaMetadataService().isLiked(_current.url);
 _loadRelated();
 _loadComments();
 _loadMeta();
 // Warm the backend while the user reads: a sleeping server needs ~40s to
 // wake, so pinging now means stream URLs resolve fast when play starts.
 ApiService().checkHealth().then((ok) {
-  debugPrint('[VideoDetail] Backend warmup: $ok');
+debugPrint('[VideoDetail] Backend warmup: $ok');
 });
 WidgetsBinding.instance.addPostFrameCallback((_) {
 if (!mounted) return;
-context.read<MediaEngine>().playExploreVideo(widget.video);
+_play();
 });
 }
+
+  MediaEngine? _engine;
+
+  /// Starts playback for the displayed video: the whole queue when the view
+  /// was opened from a list, a single item otherwise.
+  void _play() {
+    final engine = _engine;
+    if (engine == null) return;
+    final q = _queue;
+    if (q != null && q.isNotEmpty) {
+      final i = q.indexWhere((v) => v.url == _current.url);
+      engine.playExploreQueue(q, startIndex: i < 0 ? 0 : i);
+    } else {
+      engine.playExploreVideo(_current);
+    }
+  }
+
+  /// Resets every piece of per-video state before showing [video].
+  void _showVideo(ExploreVideo video) {
+    setState(() {
+      _current = video;
+      _related = [];
+      _relatedLoading = true;
+      _comments = [];
+      _commentsLoading = true;
+      _commentsToken = null;
+      _commentsExpanded = false;
+      _commentsFailed = false;
+      _descExpanded = false;
+      _showFormats = false;
+      _description = null;
+      _channelAvatar = null;
+      _commentCount = null;
+      _disliked = false;
+      _liked = MediaMetadataService().isLiked(video.url);
+    });
+    if (_scroll.hasClients) {
+      _scroll.animateTo(
+        0,
+        duration: AppDurations.normal,
+        curve: Curves.easeOut,
+      );
+    }
+    _loadRelated();
+    _loadComments();
+    _loadMeta();
+  }
+
+  /// Follows the shared queue: when the engine moves to another item (auto
+  /// next, notification controls, next button) the page shows that video and
+  /// reloads its related/comments/meta without stacking a new route.
+  void _onEngineChanged() {
+    if (!mounted) return;
+    final q = _queue;
+    final id = _engine?.currentMediaId;
+    if (q == null || id == null) return;
+    final idx = q.indexWhere((v) => v.url == id);
+    if (idx < 0 || q[idx].url == _current.url) return;
+    _showVideo(q[idx]);
+  }
+
+  @override
+  void dispose() {
+    _engine?.removeListener(_onEngineChanged);
+    _scroll.dispose();
+    super.dispose();
+  }
 
 Future<void> _toggleLike() async {
   final engine = context.read<MediaEngine>();
   await engine.toggleRemoteLike(
-    url: widget.video.url,
-    title: widget.video.title,
-    artist: widget.video.channel,
-    thumbnail: widget.video.thumbnail,
+    url: _current.url,
+    title: _current.title,
+    artist: _current.channel,
+    thumbnail: _current.thumbnail,
     isVideo: true,
   );
   if (!mounted) return;
   setState(() {
-    _liked = engine.isRemoteLiked(widget.video.url);
+    _liked = engine.isRemoteLiked(_current.url);
     if (_liked) _disliked = false;
   });
 }
 
   String get _videoId {
-    final id = widget.video.id;
+    final id = _current.id;
     if (RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(id)) return id;
     final match = RegExp(r'(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})')
-        .firstMatch(widget.video.url);
+        .firstMatch(_current.url);
     return match?.group(1) ?? '';
   }
 
@@ -177,7 +262,7 @@ Future<void> _toggleLike() async {
   Widget build(BuildContext context) {
     final loc = AppLocalizations.of(context);
     final cs = Theme.of(context).colorScheme;
-    final video = widget.video;
+    final video = _current;
 
     return Scaffold(
       body: Column(
@@ -186,6 +271,7 @@ Future<void> _toggleLike() async {
           _buildErrorBanner(),
           Expanded(
             child: SingleChildScrollView(
+              controller: _scroll,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -213,6 +299,7 @@ Future<void> _toggleLike() async {
                         ],
                         const SizedBox(height: 14),
                         _buildButtonsRow(loc, cs),
+                        _buildQueueNav(loc, cs),
                         if (_showFormats) ...[
                           const SizedBox(height: 14),
                           _buildFormatSection(cs),
@@ -240,7 +327,7 @@ Future<void> _toggleLike() async {
   Widget _buildErrorBanner() {
     return Consumer<MediaEngine>(
       builder: (context, engine, _) {
-        final isThis = engine.currentMediaId == widget.video.url;
+        final isThis = engine.currentMediaId == _current.url;
         if (!isThis || engine.playbackError == null) {
           return const SizedBox.shrink();
         }
@@ -293,7 +380,7 @@ Future<void> _toggleLike() async {
                 ),
               ),
               TextButton(
-                onPressed: () => engine.playExploreVideo(widget.video),
+                onPressed: _play,
                 child: Text(loc.playVideo),
               ),
             ],
@@ -310,7 +397,7 @@ Future<void> _toggleLike() async {
     return Consumer<MediaEngine>(
       builder: (context, engine, _) {
         final cs = Theme.of(context).colorScheme;
-        final isThis = engine.currentMediaId == widget.video.url;
+        final isThis = engine.currentMediaId == _current.url;
         final controller = engine.videoController;
         final showingVideo = isThis &&
             engine.isVideo &&
@@ -381,11 +468,11 @@ Future<void> _toggleLike() async {
                         alignment: Alignment.center,
                         children: [
                           Hero(
-                            tag: 'explore_thumb_${widget.video.url}',
-                            child: widget.video.thumbnail != null &&
-                                    widget.video.thumbnail!.isNotEmpty
+                            tag: 'explore_thumb_${_current.url}',
+                            child: _current.thumbnail != null &&
+                                    _current.thumbnail!.isNotEmpty
                                 ? Image.network(
-                                    widget.video.thumbnail!,
+                                    _current.thumbnail!,
                                     fit: BoxFit.cover,
                                     errorBuilder: (_, __, ___) =>
                                         _buildPlaceholder(cs),
@@ -410,8 +497,7 @@ Future<void> _toggleLike() async {
                             )
                           else
                             GestureDetector(
-                              onTap: () =>
-                                  engine.playExploreVideo(widget.video),
+                              onTap: _play,
                               child: Container(
                                 width: 64,
                                 height: 64,
@@ -552,7 +638,7 @@ Future<void> _toggleLike() async {
   // --- Info ---
 
 Widget _buildMetaLine(ColorScheme cs) {
-final video = widget.video;
+final video = _current;
 final loc = AppLocalizations.of(context);
 final parts = <String>[
 if (video.viewCountLocalized(loc).isNotEmpty) video.viewCountLocalized(loc),
@@ -567,7 +653,7 @@ if (video.viewCountLocalized(loc).isNotEmpty) video.viewCountLocalized(loc),
   }
 
 Widget _buildChannelRow(ColorScheme cs) {
-final video = widget.video;
+final video = _current;
 final loc = AppLocalizations.of(context);
 return Row(
       children: [
@@ -638,7 +724,7 @@ return Row(
   }
 
   void _shareLink() {
-    Clipboard.setData(ClipboardData(text: widget.video.url));
+    Clipboard.setData(ClipboardData(text: _current.url));
     final loc = AppLocalizations.of(context);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(loc.linkCopied),
@@ -688,7 +774,7 @@ return Row(
   Widget _buildButtonsRow(AppLocalizations loc, ColorScheme cs) {
     return Consumer2<MediaEngine, AnalyzeController>(
       builder: (context, engine, analyzeCtrl, _) {
-        final isThis = engine.currentMediaId == widget.video.url;
+        final isThis = engine.currentMediaId == _current.url;
         final playingThis = isThis && engine.isPlaying;
         return Row(
           children: [
@@ -699,7 +785,7 @@ return Row(
                   if (isThis) {
                     engine.togglePlayPause();
                   } else {
-                    engine.playExploreVideo(widget.video);
+                    _play();
                   }
                 },
                 icon: Icon(
@@ -745,9 +831,62 @@ return Row(
     );
   }
 
-  Future<void> _startAnalyze() async {
-    final analyzeCtrl = context.read<AnalyzeController>();
-    await analyzeCtrl.analyze(widget.video.url);
+  /// Previous / next controls for the queue driving this page. The engine
+  /// owns the state; the listener above keeps this page in sync.
+  Widget _buildQueueNav(AppLocalizations loc, ColorScheme cs) {
+    final q = _queue;
+    if (q == null || q.length < 2) return const SizedBox.shrink();
+    final raw = q.indexWhere((v) => v.url == _current.url);
+    final idx = raw < 0 ? 0 : raw;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: idx > 0 ? () => _engine?.skipToPrevious() : null,
+              icon: const Icon(Icons.skip_previous_rounded, size: 18),
+              label: Text(
+                loc.prevVideo,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(0, 40),
+                side: BorderSide(color: cs.outline),
+                foregroundColor: cs.onSurface,
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Text(
+              '${idx + 1} / ${q.length}',
+              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+            ),
+          ),
+          Expanded(
+            child: FilledButton.tonalIcon(
+              onPressed:
+                  idx < q.length - 1 ? () => _engine?.skipToNext() : null,
+              icon: const Icon(Icons.skip_next_rounded, size: 18),
+              label: Text(
+                loc.nextVideo,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(0, 40),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _startAnalyze() async {    final analyzeCtrl = context.read<AnalyzeController>();
+    await analyzeCtrl.analyze(_current.url);
     if (mounted && analyzeCtrl.result != null) {
       setState(() => _showFormats = true);
     }
@@ -785,7 +924,7 @@ return Row(
 
   Future<void> _startDownload(FormatOption format) async {
     final downloadsCtrl = context.read<DownloadsController>();
-    final video = widget.video;
+    final video = _current;
 
     final task = DownloadTask(
       id: 'dl_${DateTime.now().millisecondsSinceEpoch}',
@@ -1253,22 +1392,32 @@ return Row(
     );
   }
 
+  ExploreVideo _relatedToExplore(RelatedVideo item) => ExploreVideo(
+        id: item.id,
+        title: item.title,
+        url: 'https://www.youtube.com/watch?v=${item.id}',
+        thumbnail: item.thumbnail,
+        channel: item.channel,
+        durationString: item.duration,
+        viewsLabel: item.viewsLabel ?? item.views,
+        age: item.age,
+        provider: 'youtube',
+      );
+
   void _openRelated(RelatedVideo item) {
-    final relatedVideo = ExploreVideo(
-      id: item.id,
-      title: item.title,
-      url: 'https://www.youtube.com/watch?v=${item.id}',
-      thumbnail: item.thumbnail,
-      channel: item.channel,
-      durationString: item.duration,
-      viewsLabel: item.viewsLabel ?? item.views,
-      age: item.age,
-    );
-    Navigator.push(
-      context,
-      PageSlideTransition(
-        page: VideoDetailView(video: relatedVideo),
-      ),
-    );
+    final relatedVideo = _relatedToExplore(item);
+    // In place: the related list becomes this page's queue, so the rest of
+    // the recommendations keep playing (next/previous included) instead of
+    // stacking another detail route on top.
+    final queue = <ExploreVideo>[_current];
+    for (final r in _related) {
+      final v = _relatedToExplore(r);
+      if (v.url != _current.url) queue.add(v);
+    }
+    if (!queue.any((v) => v.url == relatedVideo.url)) queue.add(relatedVideo);
+    final idx = queue.indexWhere((v) => v.url == relatedVideo.url);
+    _queue = queue;
+    _engine?.playExploreQueue(queue, startIndex: idx < 0 ? 0 : idx);
+    if (mounted) _showVideo(relatedVideo);
   }
 }

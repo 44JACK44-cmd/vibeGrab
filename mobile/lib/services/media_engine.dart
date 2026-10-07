@@ -229,8 +229,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   Timer? _completionDebounce;
 
   String _formatDuration(Duration d) {
+    if (d.inMilliseconds <= 0) return '--:--';
     final minutes = d.inMinutes;
     final seconds = d.inSeconds % 60;
+    if (minutes == 0 && seconds == 0) return '--:--';
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
@@ -282,24 +284,71 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     return null;
   }
 
+  /// Extracts YouTube video ID from various URL formats.
+  /// Supports: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID,
+  /// youtube.com/embed/ID, youtube.com/v/ID, youtube.com/shorts/ID,
+  /// and URLs with additional parameters.
+  /// Handles URLs with spaces, special characters, and various formats.
   String? _parseVideoIdFromUrl(String url) {
     final sanitized = url.trim();
-    final idMatch = RegExp(r'(?:v=|/vi/|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})').firstMatch(sanitized);
+    if (sanitized.isEmpty) return null;
+    
+    // First try the regex for common patterns
+    final idMatch = RegExp(r'(?:v=|/vi/|youtu\.be/|/shorts/|/embed/|/v/)([A-Za-z0-9_-]{11})').firstMatch(sanitized);
     if (idMatch != null) return idMatch.group(1);
+    
     final uri = Uri.tryParse(sanitized);
     if (uri == null) return null;
-    if (uri.host.contains('youtube.com') || uri.host.contains('youtu.be')) {
-      if (uri.host.contains('youtu.be')) {
-        final id = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
-        if (id != null && id.length == 11) return id;
-      }
-      final vParam = uri.queryParameters['v'];
-      if (vParam != null && vParam.length == 11) return vParam;
-      if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'shorts') {
-        final id = uri.pathSegments.last;
-        if (id.length == 11) return id;
-      }
+    
+    final host = uri.host.toLowerCase();
+    final isYouTube = uri.host.contains('youtube.com') || uri.host.contains('youtu.be');
+    
+    if (!isYouTube) return null;
+    
+    // Handle youtu.be/VIDEO_ID
+    if (uri.host.contains('youtu.be')) {
+      final id = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
+      if (id != null && id.length == 11) return id;
     }
+    
+    // Check for 'v' query parameter
+    final vParam = uri.queryParameters['v'];
+    if (vParam != null && vParam.length == 11) return vParam;
+    
+    // Handle /shorts/VIDEO_ID
+    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'shorts') {
+      final id = uri.pathSegments.last;
+      if (id.length == 11) return id;
+    }
+    
+    // Handle /embed/VIDEO_ID
+    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'embed') {
+      final id = uri.pathSegments.last;
+      if (id.length == 11) return id;
+    }
+    
+    // Handle /v/VIDEO_ID
+    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'v') {
+      final id = uri.pathSegments.last;
+      if (id.length == 11) return id;
+    }
+    
+    // Check for 'vi' path parameter
+    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'vi') {
+      final id = uri.pathSegments.last;
+      if (id.length == 11) return id;
+    }
+    
+    // Check for 'vi' path parameter
+    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'vi') {
+      final id = uri.pathSegments.last;
+      if (id.length == 11) return id;
+    }
+    
+    // Check for 'si' parameter (shared videos)
+    final siParam = uri.queryParameters['si'];
+    if (siParam != null && siParam.length == 11) return siParam;
+    
     return null;
   }
 
@@ -623,6 +672,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       artist: video.channel ?? 'YouTube',
       artUri: artUri,
       duration: secs != null ? Duration(seconds: secs) : null,
+      // isVideo routes the queue item through the video pipeline instead of
+      // the audio-only shortcut (same MediaEngine, same AudioHandler).
+      extras: <String, dynamic>{
+        'isVideo': true,
+        'provider': video.provider,
+        if (video.channelId != null) 'channelId': video.channelId,
+      },
     );
   }
 
@@ -666,6 +722,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   void addToQueue(MediaItem item) {
     _queue.add(item);
+    _syncQueueToHandler();
+    notifyListeners();
+  }
+
+  /// Queues an Explorer result without interrupting what is playing.
+  void addToQueueExplore(ExploreVideo video) {
+    _queue.add(_exploreVideoToMediaItem(video));
     _syncQueueToHandler();
     notifyListeners();
   }
@@ -995,24 +1058,30 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final libFile = _resolveLibraryFileFromExtras(item.extras);
     if (libFile != null) {
       await _playLocalFile(libFile);
+      return;
+    }
+    if (item.extras?['isVideo'] == true) {
+      // Explorer / liked-video item: full video pipeline (audio fallback
+      // included) instead of the audio-only shortcut.
+      await _playQueueItemVideo(item, startAt: Duration.zero);
+      return;
+    }
+    final videoId = _parseVideoIdFromUrl(item.id);
+    if (videoId != null) {
+      await _playYouTubeAudio(item.id, item);
     } else {
-      final videoId = _parseVideoIdFromUrl(item.id);
-      if (videoId != null) {
-        await _playYouTubeAudio(item.id, item);
-      } else {
-        final localFile = StorageService.instance.getFile(item.id);
-        if (localFile != null && localFile.existsSync()) {
-          final isVideo = item.extras?['fileType'] == 'video';
-          if (isVideo) {
-            await _playVideoFile(localFile, item);
-          } else {
-            await _playAudioFile(localFile, item);
-          }
+      final localFile = StorageService.instance.getFile(item.id);
+      if (localFile != null && localFile.existsSync()) {
+        final isVideo = item.extras?['fileType'] == 'video';
+        if (isVideo) {
+          await _playVideoFile(localFile, item);
         } else {
-          _state = _state.copyWith(status: MediaStatus.idle);
-          _syncPlaybackStateToHandler();
-          notifyListeners();
+          await _playAudioFile(localFile, item);
         }
+      } else {
+        _state = _state.copyWith(status: MediaStatus.idle);
+        _syncPlaybackStateToHandler();
+        notifyListeners();
       }
     }
   }
@@ -1028,6 +1097,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       title: title ?? 'Unknown',
       artist: artist ?? 'YouTube',
       artUri: artUri,
+      extras: <String, dynamic>{'isVideo': isVideo},
     );
 
     _queue.add(item);
@@ -1046,7 +1116,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _syncQueueToHandler();
     notifyListeners();
 
-    await _playYouTubeAudio(url, item);
+    if (isVideo) {
+      await _playQueueItemVideo(item,
+          startAt: await _resumePositionFor(url));
+    } else {
+      await _playYouTubeAudio(url, item);
+    }
   }
 
   Future<void> playFile(LibraryFile file) async {
@@ -1097,22 +1172,60 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     },
   );
 
-  Future<void> playExploreVideo(ExploreVideo video) async {
-    _playToken++;
-    await _stopCurrent();
-    final item = _exploreVideoToMediaItem(video);
-    _queue.add(item);
-    _currentIndex = _queue.length - 1;
+  /// Plays a single Explorer result, replacing the queue (Explorer owns its
+  /// queue, same as every other screen).
+  Future<void> playExploreVideo(ExploreVideo video) {
+    return playExploreQueue([video]);
+  }
+
+  /// Plays [videos] as a real queue: next/previous, auto-advance at the end
+  /// and the notification/lockscreen controls all ride on the shared
+  /// MediaEngine queue. [startAt] overrides the saved resume position of the
+  /// tapped item (used by the "continue watching" rail).
+  Future<void> playExploreQueue(
+    List<ExploreVideo> videos, {
+    int startIndex = 0,
+    Duration? startAt,
+  }) async {
+    if (videos.isEmpty) return;
+    final items = videos.map(_exploreVideoToMediaItem).toList();
+    final index = startIndex.clamp(0, items.length - 1);
+    final resume = startAt ?? await _resumePositionFor(items[index].id,
+        duration: items[index].duration);
+
+    _queue
+      ..clear()
+      ..addAll(items);
+    _currentIndex = index;
     _completionHandled = false;
     playbackError = null;
+    _syncQueueToHandler();
+    notifyListeners();
+
+    await _playQueueItemVideo(items[index], startAt: resume);
+  }
+
+  /// Shared video path for Explorer queue items: state, stall watchdog and
+  /// the single MediaSourceResolver chain. Queue auto-advance passes
+  /// [startAt] = zero so a fresh item never starts mid-video.
+  Future<void> _playQueueItemVideo(MediaItem item,
+      {Duration startAt = Duration.zero}) async {
+    // Invalidate any resolution chain still running for the previous item,
+    // otherwise a slow resolve could hijack this play.
+    _playToken++;
+    await _stopCurrent();
+    _completionHandled = false;
+    playbackError = null;
+    _videoQuality = 0;
 
     _state = _state.copyWith(
-      mediaId: video.url,
-      title: video.title,
-      artist: video.channel,
-      thumbnail: video.thumbnail,
+      mediaId: item.id,
+      title: item.title,
+      artist: item.artist,
+      thumbnail: item.artUri?.toString(),
       mediaType: MediaType.video,
       status: MediaStatus.loading,
+      position: Duration.zero,
     );
     _syncToAudioHandler(item);
     _syncQueueToHandler();
@@ -1121,9 +1234,25 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     // Stall watchdog: fails the play if nothing moves for 45s. It re-arms
     // itself on every resolution stage (see _setStage), so a progressing
     // chain is never killed.
-    _armWatchdog(video.url);
+    _armWatchdog(item.id);
 
-    await _playYouTubeVideo(video.url, item);
+    await _playYouTubeVideo(item.id, item, startAt: startAt);
+  }
+
+  /// Saved resume position for a remote URL. Mirrors MediaMetadata.hasResume:
+  /// only after 10s watched and only before the last 5% of the video.
+  Future<Duration> _resumePositionFor(String mediaId,
+      {Duration? duration}) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final ms = prefs.getInt('${_prefix}${mediaId}_pos') ?? 0;
+      if (ms < 10000) return Duration.zero;
+      final durMs = duration?.inMilliseconds ?? 0;
+      if (durMs > 0 && ms / durMs >= 0.95) return Duration.zero;
+      return Duration(milliseconds: ms);
+    } catch (_) {
+      return Duration.zero;
+    }
   }
 
   // --- YouTube Video Playback ---
@@ -1136,8 +1265,6 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   /// Holds an ARB key (see playStage*), null when not resolving.
   String? loadingStageKey;
 
-  /// Expected total length from metadata, used when the stream itself
-  /// declares no duration (server merge). Cleared on every stop.
   Duration? _expectedDuration;
 
   /// Adaptive shortcut: carriers that block googlevideo fail the direct
@@ -1199,7 +1326,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   /// resolution chain instead of letting it hijack the new playback.
   int _playToken = 0;
 
-  Future<void> _playYouTubeVideo(String youtubeUrl, MediaItem mediaItem) async {
+  Future<void> _playYouTubeVideo(String youtubeUrl, MediaItem mediaItem,
+      {Duration startAt = Duration.zero}) async {
     final videoId = _parseVideoIdFromUrl(youtubeUrl);
     if (videoId == null) {
       debugPrint('[MediaEngine] Invalid YouTube URL: $youtubeUrl');
@@ -1227,9 +1355,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
     for (final c in res.video) {
       if (stale()) return;
+      // Resume only on sources with a declared length: the relay merge
+      // stream has no seekable timeline, so a seek there would be lost.
+      final resume = c.kind == MediaSourceKind.relayMerge ? Duration.zero : startAt;
       final started = await _tryStartNetworkVideo(
           c.uri, youtubeUrl, mediaItem,
-          initTimeout: c.initTimeout, playToken: token);
+          initTimeout: c.initTimeout, playToken: token, startAt: resume);
       if (stale()) return;
       if (started) {
         _clearStage();
@@ -1323,7 +1454,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   Future<bool> _tryStartNetworkVideo(
       Uri streamUrl, String youtubeUrl, MediaItem mediaItem,
       {Duration initTimeout = const Duration(seconds: 15),
-      int? playToken}) async {
+      int? playToken,
+      Duration startAt = Duration.zero}) async {
     await _stopCurrentSilent();
     // The relay merge streams without a declared length (unknown duration).
     // Keep the metadata duration as the expected one so progress, total
@@ -1341,7 +1473,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     notifyListeners();
 
     final started = await _startNetworkVideo(streamUrl, youtubeUrl,
-        initTimeout: initTimeout, playToken: playToken);
+        startAt: startAt, initTimeout: initTimeout, playToken: playToken);
     if (!started) return false;
     playbackError = null;
 
