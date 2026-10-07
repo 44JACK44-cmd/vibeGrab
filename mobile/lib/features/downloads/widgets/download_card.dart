@@ -11,6 +11,7 @@ class DownloadCard extends StatefulWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onOpen;
   final VoidCallback? onShare;
+  final VoidCallback? onPlay;
 
   const DownloadCard(
       {super.key,
@@ -19,7 +20,8 @@ class DownloadCard extends StatefulWidget {
       this.onRetry,
       this.onDelete,
       this.onOpen,
-      this.onShare});
+      this.onShare,
+      this.onPlay});
 
   @override
   State<DownloadCard> createState() => _DownloadCardState();
@@ -304,9 +306,21 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
 if (widget.task.status == DownloadStatus.completed ||
     widget.task.status == DownloadStatus.cancelled) {
   final completed = widget.task.status == DownloadStatus.completed;
+  final playable = completed &&
+      (widget.task.hasVideo || widget.task.hasAudio) &&
+      widget.onPlay != null;
   return Row(
     mainAxisSize: MainAxisSize.min,
     children: [
+      if (playable)
+        IconButton(
+          icon: const Icon(Icons.play_arrow, size: 22),
+          onPressed: widget.onPlay,
+          color: cs.primary,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+        ),
+      if (playable) const SizedBox(width: 8),
       if (completed && widget.onOpen != null)
         IconButton(
           icon: const Icon(Icons.open_in_new, size: 20),

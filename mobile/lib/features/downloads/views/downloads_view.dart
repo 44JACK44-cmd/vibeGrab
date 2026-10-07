@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -5,6 +6,8 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_animations.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../data/models/download_task.dart';
+import '../../../data/models/library_file.dart';
+import '../../../services/media_engine.dart';
 import '../controllers/downloads_controller.dart';
 import '../widgets/download_card.dart';
 
@@ -58,6 +61,27 @@ class DownloadsView extends StatelessWidget {
     } catch (_) {}
   }
 
+  /// Plays a finished download inside VibeGrab (same engine as everything).
+  Future<void> _playInApp(BuildContext context, DownloadTask task) async {
+    final path = task.filePath;
+    if (path == null || path.isEmpty) return;
+    final name = path.split(Platform.pathSeparator).last;
+    final file = LibraryFile(
+      filename: name,
+      title: task.title.isNotEmpty ? task.title : name,
+      filePath: path,
+      fileSize: task.totalBytes ?? 0,
+      fileSizeFormatted: task.sizeFormatted,
+      fileType: task.hasVideo ? 'video' : 'audio',
+      extension: task.fileExt ?? '',
+      createdAt: task.createdAt,
+      source: task.source,
+      sourceType: 'downloaded',
+    );
+    if (!context.mounted) return;
+    await context.read<MediaEngine>().playFile(file);
+  }
+
   @override
   Widget build(BuildContext context) {
     final loc = AppLocalizations.of(context);
@@ -104,6 +128,9 @@ class DownloadsView extends StatelessWidget {
                 onDelete: () => _confirmDelete(context, controller, task),
                 onOpen: () => _openFile(context, task),
                 onShare: () => _shareFile(context, task),
+                onPlay: (task.hasVideo || task.hasAudio)
+                    ? () => _playInApp(context, task)
+                    : null,
               );
             },
           );

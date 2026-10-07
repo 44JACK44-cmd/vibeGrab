@@ -2,4 +2,11 @@
 <paths>
     <files-path name="internal_files" path="." />
     <cache-path name="internal_cache" path="." />
+    <!-- External storage: downloads, Movies/Music VibeGrab folders,
+         WhatsApp statuses and any shared/opened file. Without these,
+         FileProvider.getUriForFile throws for every real file and
+         share/open silently fail. -->
+    <external-path name="external" path="." />
+    <external-files-path name="external_files" path="." />
+    <external-cache-path name="external_cache" path="." />
 </paths>

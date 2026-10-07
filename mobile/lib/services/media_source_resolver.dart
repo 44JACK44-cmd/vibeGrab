@@ -83,28 +83,17 @@ class MediaSourceResolver {
     String videoId, {
     required void Function(String stageKey) onStage,
   }) async {
-    // 1) Server payload (cached, then exact-expiry checked).
+    // Server payload AND device manifest concurrently: on slow networks
+    // each leg can take 10-25s, and running them back-to-back doubles the
+    // wait. Attempts stay sequential (ranked), resolution goes parallel.
     onStage('playStageServer');
-    StreamUrlsPayload? payload;
-    String? fetchError;
-    final hit = _urlCache[videoId];
-    if (hit != null &&
-        DateTime.now().difference(hit.at) < _urlCacheTtl &&
-        (hit.payload.video == null || !isExpired(hit.payload.video!))) {
-      payload = hit.payload;
-    } else {
-      try {
-        payload = await fetchUrls(videoId);
-      } catch (e) {
-        debugPrint('[Resolver] fetchUrls failed: $e');
-        payload = null;
-      }
-      if (payload != null) {
-        _urlCache[videoId] = _CachedPayload(payload, DateTime.now());
-      } else {
-        fetchError = 'sin url';
-      }
-    }
+    onStage('playStageDirect');
+    final payloadFuture = _payloadFor(videoId);
+    final manifestFuture = _manifestFor(videoId);
+    final results = await Future.wait([payloadFuture, manifestFuture]);
+    final payload = results[0] as StreamUrlsPayload?;
+    final manifest = results[1] as StreamManifest?;
+    final fetchError = payload == null ? 'sin url' : null;
 
     final candidates = <MediaSource>[];
     Uri? audioUri;
@@ -129,7 +118,7 @@ class MediaSourceResolver {
       }
     }
 
-    // 2) Relay merge: independent from the URL fetch (it resolves its own
+    // Relay merge: independent from the URL fetch (it resolves its own
     // sources server-side). The only path for adaptive-only videos.
     candidates.add(MediaSource(
       kind: MediaSourceKind.relayMerge,
@@ -138,34 +127,24 @@ class MediaSourceResolver {
       errTag: 'unión',
     ));
 
-    // 3) Device manifest (last resort + real qualities + audio fallback).
-    onStage('playStageDirect');
-    StreamManifest? manifest;
     List<MediaQuality> qualities = const [];
-    try {
-      manifest = _manifestCache[videoId] ?? await fetchManifest(videoId);
-      if (manifest != null) {
-        _manifestCache[videoId] = manifest;
-        final heights = manifest.muxed
-            .map((s) => s.videoResolution.height)
-            .where((h) => h > 0)
-            .toSet()
-            .toList()
-          ..sort();
-        qualities =
-            heights.map((h) => MediaQuality(h)).toList();
-        final best = _bestMuxed(manifest);
-        if (best != null) {
-          candidates.add(MediaSource(
-            kind: MediaSourceKind.deviceMuxed,
-            uri: best.url,
-            initTimeout: const Duration(seconds: 12),
-            errTag: 'directo',
-          ));
-        }
+    if (manifest != null) {
+      final heights = manifest.muxed
+          .map((s) => s.videoResolution.height)
+          .where((h) => h > 0)
+          .toSet()
+          .toList()
+        ..sort();
+      qualities = heights.map((h) => MediaQuality(h)).toList();
+      final best = _bestMuxed(manifest);
+      if (best != null) {
+        candidates.add(MediaSource(
+          kind: MediaSourceKind.deviceMuxed,
+          uri: best.url,
+          initTimeout: const Duration(seconds: 12),
+          errTag: 'directo',
+        ));
       }
-    } catch (e) {
-      debugPrint('[Resolver] manifest failed: $e');
     }
 
     return MediaResolution(
@@ -175,6 +154,39 @@ class MediaSourceResolver {
       fetchError: fetchError,
       qualities: qualities,
     );
+  }
+
+  Future<StreamUrlsPayload?> _payloadFor(String videoId) async {
+    final hit = _urlCache[videoId];
+    if (hit != null &&
+        DateTime.now().difference(hit.at) < _urlCacheTtl &&
+        (hit.payload.video == null || !isExpired(hit.payload.video!))) {
+      return hit.payload;
+    }
+    StreamUrlsPayload? payload;
+    try {
+      payload = await fetchUrls(videoId);
+    } catch (e) {
+      debugPrint('[Resolver] fetchUrls failed: $e');
+      payload = null;
+    }
+    if (payload != null) {
+      _urlCache[videoId] = _CachedPayload(payload, DateTime.now());
+    }
+    return payload;
+  }
+
+  Future<StreamManifest?> _manifestFor(String videoId) async {
+    final hit = _manifestCache[videoId];
+    if (hit != null) return hit;
+    try {
+      final manifest = await fetchManifest(videoId);
+      if (manifest != null) _manifestCache[videoId] = manifest;
+      return manifest;
+    } catch (e) {
+      debugPrint('[Resolver] manifest failed: $e');
+      return null;
+    }
   }
 
   /// Muxed URL for an exact height (quality switch), closest-lower fallback.

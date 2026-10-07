@@ -88,7 +88,7 @@ class SharedDownloadController extends ChangeNotifier {
     try {
       if (LocalExtractionService.supportsPlatform(sanitized)) {
         _result = await _firstSuccess<AnalyzeResponse>([
-          _extraction.extractMedia(sanitized),
+          _extraction.extractMedia(sanitized).timeout(const Duration(seconds: 25)),
           _api.analyze(sanitized),
         ]);
         if (_result!.media.source.isNotEmpty) {

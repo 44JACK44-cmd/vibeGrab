@@ -68,11 +68,12 @@ class AnalyzeController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      if (LocalExtractionService.supportsPlatform(url)) {
-        _result = await _extraction.extractMedia(url);
-      } else {
-        _result = await _api.analyze(url);
-      }
+      // Race device vs backend: whichever answers first wins. The device
+      // side is capped so a hanging phone network can't stall analysis.
+      _result = await _firstSuccess<AnalyzeResponse>([
+        _extraction.extractMedia(url).timeout(const Duration(seconds: 25)),
+        _api.analyze(url),
+      ]);
     } on NetworkException catch (e) {
       _error = (e.type == 'connection' || e.type == 'timeout')
           ? 'serverUnreachable'
@@ -92,5 +93,27 @@ class AnalyzeController extends ChangeNotifier {
     _isLoading = false;
     _pendingSharedUrl = null;
     notifyListeners();
+  }
+
+  /// Completes with the first SUCCESSFUL future; slow losers are ignored.
+  /// (Same race the share sheet uses: device vs backend.)
+  Future<T> _firstSuccess<T>(List<Future<T>> futures) {
+    final completer = Completer<T>();
+    var remaining = futures.length;
+    Object? firstError;
+    StackTrace? firstStack;
+    for (final future in futures) {
+      future.then((value) {
+        if (!completer.isCompleted) completer.complete(value);
+      }, onError: (Object e, StackTrace st) {
+        firstError ??= e;
+        firstStack ??= st;
+        remaining--;
+        if (remaining == 0 && !completer.isCompleted) {
+          completer.completeError(firstError!, firstStack);
+        }
+      });
+    }
+    return completer.future;
   }
 }
