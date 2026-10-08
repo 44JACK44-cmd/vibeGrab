@@ -326,9 +326,9 @@ context.read<MediaEngine>().initAudioService().then((_) {
             child: IndexedStack(
               index: _currentIndex,
               children: [
-                AnalyzerView(),
-                DownloadsView(onNavigateToAnalyze: () => _navigateToTab(0)),
                 const ExploreView(),
+                AnalyzerView(),
+                DownloadsView(onNavigateToAnalyze: () => _navigateToTab(1)),
                 const LibraryView(),
                 const SettingsView(),
               ],
@@ -342,6 +342,11 @@ context.read<MediaEngine>().initAudioService().then((_) {
         onDestinationSelected: (index) => setState(() => _currentIndex = index),
         destinations: [
           NavigationDestination(
+            icon: const Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home, color: colorScheme.primary),
+            label: loc.navHome,
+          ),
+          NavigationDestination(
             icon: const Icon(Icons.link),
             selectedIcon: Icon(Icons.link, color: colorScheme.primary),
             label: loc.navAnalyze,
@@ -350,11 +355,6 @@ context.read<MediaEngine>().initAudioService().then((_) {
             icon: const Icon(Icons.download_outlined),
             selectedIcon: Icon(Icons.download, color: colorScheme.primary),
             label: loc.navDownloads,
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.explore_outlined),
-            selectedIcon: Icon(Icons.explore, color: colorScheme.primary),
-            label: loc.navExplore,
           ),
           NavigationDestination(
             icon: const Icon(Icons.library_music_outlined),

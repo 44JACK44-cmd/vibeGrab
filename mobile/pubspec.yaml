@@ -1,7 +1,7 @@
 name: vibegrab
 description: Mobile media downloader
 publish_to: 'none'
-version: 1.1.29+34
+version: 1.1.30+35
 
 environment:
   sdk: '>=3.2.0 <4.0.0'

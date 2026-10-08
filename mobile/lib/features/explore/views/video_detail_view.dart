@@ -18,6 +18,7 @@ import '../../../features/analyzer/controllers/analyze_controller.dart';
 import '../../../features/downloads/controllers/downloads_controller.dart';
 import '../../analyzer/widgets/format_selector.dart';
 import '../../media_player/views/video_fullscreen_view.dart';
+import '../../media_player/widgets/video_controls_overlay.dart';
 
 class VideoDetailView extends StatefulWidget {
   final ExploreVideo video;
@@ -49,6 +50,10 @@ class _VideoDetailViewState extends State<VideoDetailView> {
 
   List<RelatedVideo> _related = [];
   bool _relatedLoading = true;
+
+  /// Mini history of videos the user swiped away from on the player, so
+  /// swiping down restores the previous video of this session.
+  final List<ExploreVideo> _swipeBack = [];
 
   List<CommentItem> _comments = [];
   String? _commentsToken;
@@ -426,7 +431,12 @@ Future<void> _toggleLike() async {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Stack(
+              // Vertical swipe over the player: up = next recommendation,
+              // down = previous video of this swipe session.
+              GestureDetector(
+                onVerticalDragEnd: (details) =>
+                    _onPlayerSwipe(details.primaryVelocity ?? 0),
+                child: Stack(
                 alignment: Alignment.center,
                 children: [
                   if (showingVideo)
@@ -536,6 +546,7 @@ Future<void> _toggleLike() async {
                       ),
                     ),
                 ],
+                ),
               ),
               if (showingVideo)
                 _buildInlineControls(engine, cs, loc),
@@ -585,6 +596,21 @@ Future<void> _toggleLike() async {
           Text(
             engine.durationFormatted,
             style: const TextStyle(color: Colors.white70, fontSize: 12),
+          ),
+          // Quality + speed in portrait, so fullscreen is never required
+          // to change them (Fase 2C).
+          if (engine.videoQualities.isNotEmpty)
+            QualityButton(
+              qualities: engine.videoQualities,
+              current: engine.videoQuality,
+              onSelect: (h) => engine.switchVideoQuality(h),
+            ),
+          SpeedButton(
+            speed: engine.speed,
+            onTap: () {
+              final i = speedSteps.indexOf(engine.speed);
+              engine.setSpeed(speedSteps[(i + 1) % speedSteps.length]);
+            },
           ),
           IconButton(
             icon: const Icon(Icons.picture_in_picture_alt,
@@ -1404,20 +1430,39 @@ return Row(
         provider: 'youtube',
       );
 
-  void _openRelated(RelatedVideo item) {
-    final relatedVideo = _relatedToExplore(item);
-    // In place: the related list becomes this page's queue, so the rest of
-    // the recommendations keep playing (next/previous included) instead of
-    // stacking another detail route on top.
+  void _openRelated(RelatedVideo item) => _playRelated(_relatedToExplore(item));
+
+  /// Shows [video] in place: the related list becomes this page's queue, so
+  /// the rest of the recommendations keep playing (next/previous included)
+  /// instead of stacking another detail route on top.
+  void _playRelated(ExploreVideo video) {
     final queue = <ExploreVideo>[_current];
     for (final r in _related) {
       final v = _relatedToExplore(r);
       if (v.url != _current.url) queue.add(v);
     }
-    if (!queue.any((v) => v.url == relatedVideo.url)) queue.add(relatedVideo);
-    final idx = queue.indexWhere((v) => v.url == relatedVideo.url);
+    if (!queue.any((v) => v.url == video.url)) queue.add(video);
+    final idx = queue.indexWhere((v) => v.url == video.url);
     _queue = queue;
     _engine?.playExploreQueue(queue, startIndex: idx < 0 ? 0 : idx);
-    if (mounted) _showVideo(relatedVideo);
+    if (mounted) _showVideo(video);
+  }
+
+  /// Vertical swipe on the player: up plays the next recommendation,
+  /// down returns to the previous video of this swipe session.
+  void _onPlayerSwipe(double velocity) {
+    if (velocity.abs() < 350) return;
+    if (velocity < 0) {
+      if (_related.isEmpty) return;
+      final next = _relatedToExplore(_related.first);
+      if (next.url == _current.url) return;
+      _swipeBack.add(_current);
+      if (_swipeBack.length > 20) _swipeBack.removeAt(0);
+      _playRelated(next);
+    } else {
+      if (_swipeBack.isEmpty) return;
+      final prev = _swipeBack.removeLast();
+      _playRelated(prev);
+    }
   }
 }

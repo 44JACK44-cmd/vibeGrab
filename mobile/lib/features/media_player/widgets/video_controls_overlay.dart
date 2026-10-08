@@ -7,7 +7,7 @@ import '../widgets/play_mode_button.dart';
 import '../widgets/equalizer_sheet.dart';
 import 'video_controls_controller.dart';
 
-const _speedSteps = [1.0, 1.25, 1.5, 2.0, 0.5, 0.75];
+const speedSteps = [1.0, 1.25, 1.5, 2.0, 0.5, 0.75];
 
 /// Professional video controls overlay shared by local and Explorer playback:
 /// top bar (back, title, favorite, EQ, PiP), center transport, bottom bar
@@ -314,7 +314,7 @@ class ProVideoOverlay extends StatelessWidget {
                   ),
                   const Spacer(),
                   if (engine.videoQualities.isNotEmpty)
-                    _QualityButton(
+                    QualityButton(
                       qualities: engine.videoQualities,
                       current: engine.videoQuality,
                       onSelect: (h) {
@@ -322,13 +322,13 @@ class ProVideoOverlay extends StatelessWidget {
                         engine.switchVideoQuality(h);
                       },
                     ),
-                  _SpeedButton(
+                  SpeedButton(
                       speed: engine.speed,
                       onTap: () {
                         controls.poke();
-                        final i = _speedSteps.indexOf(engine.speed);
-                        engine.setSpeed(_speedSteps[
-                            (i + 1) % _speedSteps.length]);
+                        final i = speedSteps.indexOf(engine.speed);
+                        engine.setSpeed(speedSteps[
+                            (i + 1) % speedSteps.length]);
                       }),
                   const PlayModeButton(
                     size: 22,
@@ -360,12 +360,13 @@ class ProVideoOverlay extends StatelessWidget {
 /// Real quality selector: only lists qualities the resolver actually
 /// knows for this video (Auto + manifest heights). Switching preserves
 /// the current position.
-class _QualityButton extends StatelessWidget {
+class QualityButton extends StatelessWidget {
   final List<MediaQuality> qualities;
   final int current;
   final ValueChanged<int> onSelect;
 
-  const _QualityButton({
+  const QualityButton({
+    super.key,
     required this.qualities,
     required this.current,
     required this.onSelect,
@@ -425,10 +426,10 @@ class _QualityButton extends StatelessWidget {
   }
 }
 
-class _SpeedButton extends StatelessWidget {  final double speed;
+class SpeedButton extends StatelessWidget {  final double speed;
   final VoidCallback onTap;
 
-  const _SpeedButton({required this.speed, required this.onTap});
+  const SpeedButton({super.key, required this.speed, required this.onTap});
 
   @override
   Widget build(BuildContext context) {

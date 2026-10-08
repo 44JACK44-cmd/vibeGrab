@@ -25,8 +25,9 @@ class ExploreView extends StatefulWidget {
 class _ExploreViewState extends State<ExploreView> {
 final _searchController = TextEditingController();
 final _focusNode = FocusNode();
-bool _forYouAsked = false;
-bool _railsAsked = false;
+  bool _forYouAsked = false;
+  bool _railsAsked = false;
+  bool _shortsAsked = false;
 
   @override
   void initState() {
@@ -218,6 +219,13 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
         if (mounted) context.read<ExploreController>().loadRails(count: 4);
       });
     }
+    // Shorts shelf loads lazily too so it never delays the main feed.
+    if (!_shortsAsked && controller.shorts.isEmpty && !controller.shortsLoading) {
+      _shortsAsked = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.read<ExploreController>().loadShorts();
+      });
+    }
     if (controller.trendingLoading && controller.trending.isEmpty) {
       return _buildSkeleton(cs);
     }
@@ -359,6 +367,13 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
             const SizedBox(height: 8),
             _buildHorizontalRow(controller.trending.skip(1).take(8).toList(),
                 cs),
+            const SizedBox(height: 16),
+          ],
+          if (controller.shorts.isNotEmpty) ...[
+            _sectionHeader(loc.shortsSection, cs,
+                icon: Icons.slow_motion_video),
+            const SizedBox(height: 8),
+            _buildShortsShelf(controller, cs),
             const SizedBox(height: 16),
           ],
           for (final key in controller.railKeys)
@@ -601,6 +616,96 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                           ),
                         ],
                       ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Horizontal shelf of vertical (9:16) Shorts cards; tapping one opens
+  /// the full-screen Shorts player (same destination as the Explore tab).
+  Widget _buildShortsShelf(ExploreController controller, ColorScheme cs) {
+    return SizedBox(
+      height: 230,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: controller.shorts.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          final video = controller.shorts[index];
+          return GestureDetector(
+            key: ValueKey(
+                'shorts-${video.id.isNotEmpty ? video.id : video.url}'),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ShortsView()),
+            ),
+            child: Container(
+              width: 128,
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (video.thumbnail != null && video.thumbnail!.isNotEmpty)
+                    Image.network(
+                      video.thumbnail!,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                      errorBuilder: (_, __, ___) => Center(
+                        child: Icon(Icons.slow_motion_video,
+                            color: cs.onSurfaceVariant, size: 32),
+                      ),
+                    )
+                  else
+                    Center(
+                      child: Icon(Icons.slow_motion_video,
+                          color: cs.onSurfaceVariant, size: 32),
+                    ),
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.transparent,
+                            Colors.black.withValues(alpha: 0.7),
+                          ],
+                          stops: const [0.5, 1],
+                        ),
+                      ),
+                    ),
+                  ),
+                  Center(
+                    child: Icon(
+                      Icons.play_circle_fill,
+                      color: Colors.white.withValues(alpha: 0.85),
+                      size: 34,
+                    ),
+                  ),
+                  Positioned(
+                    left: 8,
+                    right: 8,
+                    bottom: 8,
+                    child: Text(
+                      video.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        height: 1.25,
+                      ),
                     ),
                   ),
                 ],
