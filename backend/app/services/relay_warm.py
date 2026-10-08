@@ -32,8 +32,15 @@ _cids = itertools.count(1)
 _last_err: dict[str, str] = {}
 
 
-def build_proc(sources: dict) -> subprocess.Popen:
-    """ffmpeg merging video+audio into a progressive mp4 on stdout."""
+def build_proc(
+    sources: dict, seek_to: float | None = None
+) -> subprocess.Popen:
+    """ffmpeg merging video+audio into a progressive mp4 on stdout.
+
+    seek_to (seconds) cuts BOTH inputs at that offset (`-ss` before `-i`
+    = fast input seek). The merge stream has no index, so this is how
+    resuming mid-video and seeking work at all.
+    """
     video = sources.get("video") or ""
     ck = None
     if ".f5.si" in video:
@@ -46,6 +53,9 @@ def build_proc(sources: dict) -> subprocess.Popen:
         hdr = f"Cookie: {ck}\r\nReferer: https://invidious.f5.si/\r\n"
         hdr_args = ["-headers", hdr]
     ua = ANTUBIS_UA
+    ss_args: list[str] = []
+    if seek_to and seek_to > 0:
+        ss_args = ["-ss", f"{seek_to:.3f}"]
     return subprocess.Popen(
         [
             settings.FFMPEG_PATH,
@@ -53,9 +63,11 @@ def build_proc(sources: dict) -> subprocess.Popen:
             "-loglevel", "error",
             "-probesize", "1048576",
             "-analyzeduration", "1000000",
+            *ss_args,
             "-user_agent", ua,
             *hdr_args,
             "-i", video,
+            *ss_args,
             "-user_agent", ua,
             *hdr_args,
             "-i", sources["audio"],

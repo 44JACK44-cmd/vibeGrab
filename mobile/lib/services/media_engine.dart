@@ -71,8 +71,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   SessionSnapshot get currentSessionSnapshot => SessionSnapshot(
         position: _state.position,
         duration: _state.duration,
-        bufferedPosition:
-            _videoController != null ? Duration.zero : _player.bufferedPosition,
+        bufferedPosition: _videoController != null
+            ? _videoController!.value.buffered.fold<Duration>(
+                Duration.zero, (m, r) => r.end > m ? r.end : m)
+            : _player.bufferedPosition,
         speed: _speed,
       );
 
@@ -244,7 +246,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     } catch (_) {}
   }
 
-  Future<void> _savePosition(String mediaId, Duration position) async {
+  Future<void> _savePosition(String mediaId, Duration position,
+      {bool force = false}) async {
+    // A player stop/reconnect emits a ~0 blip; persisting it would
+    // clobber a valid resume point. Explicit seeks bypass this.
+    if (!force && position < const Duration(milliseconds: 500)) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt('${_prefix}${mediaId}_pos', position.inMilliseconds);
@@ -1070,12 +1076,16 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (item.extras?['isVideo'] == true) {
       // Explorer / liked-video item: full video pipeline (audio fallback
       // included) instead of the audio-only shortcut.
-      await _playQueueItemVideo(item, startAt: Duration.zero);
+      await _playQueueItemVideo(item,
+          startAt: await _resumePositionFor(item.id));
       return;
     }
     final videoId = _parseVideoIdFromUrl(item.id);
     if (videoId != null) {
+      final startAt = await _resumePositionFor(item.id);
       await _playYouTubeAudio(item.id, item);
+      // Match the video path: restart audio where it stopped instead of 0.
+      if (startAt > Duration.zero) await _player.seek(startAt);
     } else {
       final localFile = StorageService.instance.getFile(item.id);
       if (localFile != null && localFile.existsSync()) {
@@ -1274,6 +1284,19 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Duration? _expectedDuration;
 
+  /// Last resolved stream URL for the active video: lets the background
+  /// handoff (onScreenOff) keep ANY source playing as audio, and lets the
+  /// relay seek reconnect from the same endpoint.
+  String? _lastDirectUrl;
+
+  /// Kind of the active stream (relay merge needs `?t=` reconnects to seek).
+  MediaSourceKind? _activeKind;
+
+  /// True when the controller reports no usable timeline: 0, the ~1ms
+  /// wrap of ExoPlayer's C.TIME_UNSET, or absurd values (>24h).
+  static bool _durationLooksUnknown(Duration d) =>
+      d < const Duration(seconds: 1) || d > const Duration(hours: 24);
+
   /// Adaptive shortcut: carriers that block googlevideo fail the direct
   /// attempt every time. After 2 consecutive direct failures we skip it
   /// for 10 minutes and go straight to the server paths.
@@ -1329,6 +1352,24 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     });
   }
 
+  /// Re-arms the stall watchdog with the CURRENT stage. The candidate chain
+  /// (relay → direct → …) walks through several sources, each with its own
+  /// stage: without this re-arm the original 45s timer would kill a healthy
+  /// chain while it was still working on the next candidate.
+  void _rearmWatchdog() {
+    final id = _watchdogMedia ?? _state.mediaId;
+    if (id != null && id.isNotEmpty) _armWatchdog(id);
+  }
+
+  /// Rewrites a stream URL to start at [at] seconds. The relay merge has no
+  /// index, so seeking / resuming / backgrounding it means reconnecting the
+  /// server-side ffmpeg with `-ss at` (via the `t` query parameter).
+  static Uri _relayUriWithStart(Uri uri, Duration at) {
+    final params = Map<String, String>.from(uri.queryParameters);
+    params['t'] = at.inSeconds.toString();
+    return uri.replace(queryParameters: params);
+  }
+
   /// Monotonic play generation: rapid taps (A then B) abandon the stale
   /// resolution chain instead of letting it hijack the new playback.
   int _playToken = 0;
@@ -1370,12 +1411,21 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
     for (final c in res.video) {
       if (stale()) return;
-      // Resume only on sources with a declared length: the relay merge
-      // stream has no seekable timeline, so a seek there would be lost.
-      final resume = c.kind == MediaSourceKind.relayMerge ? Duration.zero : startAt;
+      // Each candidate gets a fresh 45s budget: the whole chain (resolve +
+      // direct + proxy + relay) can legitimately take longer than a single
+      // watchdog window, and a re-armed timer never kills a live attempt.
+      _rearmWatchdog();
+      // The relay merge has no in-stream index, so starting mid-video must
+      // go through `?t=` (ffmpeg -ss on the server) instead of seekTo.
+      final needsT =
+          c.kind == MediaSourceKind.relayMerge && startAt > Duration.zero;
+      final uri = needsT ? _relayUriWithStart(c.uri, startAt) : c.uri;
       final started = await _tryStartNetworkVideo(
-          c.uri, youtubeUrl, mediaItem,
-          initTimeout: c.initTimeout, playToken: token, startAt: resume);
+          uri, youtubeUrl, mediaItem,
+          initTimeout: c.initTimeout,
+          playToken: token,
+          startAt: startAt,
+          kind: c.kind);
       if (stale()) return;
       if (started) {
         _clearStage();
@@ -1426,18 +1476,28 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     bool stale() => token != _playToken;
     _setStage('playStageServer');
     try {
+      // 40s < the 45s stall watchdog armed by _setStage above, so a hung
+      // server surfaces as an error instead of a watchdog kill race.
       final response = await http
           .post(
             Uri.parse(ApiConfig.analyzeUrl),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'url': url}),
           )
-          .timeout(const Duration(seconds: 50));
+          .timeout(const Duration(seconds: 40));
       if (stale()) return;
 
       String? direct;
+      Duration? extDuration;
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
+        // Real duration from the extractor: without it external videos
+        // would run with an unknown timeline (00:00, no seeks).
+        final media = body['media'];
+        if (media is Map && media['duration'] is num) {
+          final secs = (media['duration'] as num).toInt();
+          if (secs > 0) extDuration = Duration(seconds: secs);
+        }
         String? progressive720;
         String? progressiveAny;
         String? videoOnly;
@@ -1482,6 +1542,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         initTimeout: const Duration(seconds: 20),
         playToken: token,
         startAt: startAt,
+        expectedDuration: extDuration,
       );
       if (stale()) return;
       _clearStage();
@@ -1549,12 +1610,17 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       Uri streamUrl, String youtubeUrl, MediaItem mediaItem,
       {Duration initTimeout = const Duration(seconds: 15),
       int? playToken,
-      Duration startAt = Duration.zero}) async {
+      Duration startAt = Duration.zero,
+      Duration? expectedDuration,
+      MediaSourceKind? kind}) async {
     await _stopCurrentSilent();
     // The relay merge streams without a declared length (unknown duration).
-    // Keep the metadata duration as the expected one so progress, total
-    // time and end-of-track detection keep working.
-    _expectedDuration = mediaItem.duration;
+    // Keep the metadata (or analyze-provided) duration as the expected one
+    // so progress, total time, seeks and end-of-track detection keep working.
+    _expectedDuration = expectedDuration ?? mediaItem.duration;
+    // Remember what is playing: background fallback + relay-seek reconnect.
+    _lastDirectUrl = streamUrl.toString();
+    _activeKind = kind;
     _state = _state.copyWith(
       mediaId: youtubeUrl,
       title: mediaItem.title,
@@ -1562,6 +1628,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       thumbnail: mediaItem.artUri?.toString(),
       mediaType: MediaType.video,
       status: MediaStatus.buffering,
+      duration: _expectedDuration ?? Duration.zero,
     );
     _syncToAudioHandler(mediaItem);
     notifyListeners();
@@ -1678,7 +1745,25 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         return false;
       }
 
-      if (startAt > Duration.zero) {
+      // Merge/proxy streams without a declared length make ExoPlayer report
+      // C.TIME_UNSET (wraps to ~1ms). The plugin then clamps position AND
+      // every seekTo against that ~0 duration: bar frozen at 00:00 and all
+      // forward seeks collapsing to 0. Inject the expected duration so the
+      // clamps, the UI and seeks all work.
+      if (_durationLooksUnknown(controller.value.duration) &&
+          _expectedDuration != null) {
+        controller.value = controller.value.copyWith(duration: _expectedDuration);
+      }
+
+      // Streams started from a `?t=` relay URL already begin at startAt —
+      // seeking again on an index-less merge jumps back to 0. ExoPlayer's
+      // own clock restarts at 0 there, so track the offset to keep the
+      // displayed/saved position aligned with the real video time.
+      final tParam = int.tryParse(streamUrl.queryParameters['t'] ?? '');
+      final posOffset = (tParam != null && tParam > 0)
+          ? Duration(seconds: tParam)
+          : Duration.zero;
+      if (startAt > Duration.zero && posOffset == Duration.zero) {
         await controller.seekTo(startAt);
       }
 
@@ -1686,13 +1771,23 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         if (!identical(_videoController, controller)) return;
         if (!controller.value.isInitialized) return;
         if (controller.value.hasError) return;
-        final pos = controller.value.position;
+        final pos = controller.value.position + posOffset;
         final rawDur = controller.value.duration;
-        // Relay/merge streams report zero duration: fall back to the
+        // A `-ss` reconnect makes the player report the REMAINING duration
+        // (its timeline restarts at 0): add the offset back so the UI and
+        // the completion check always see the REAL total.
+        final shifted = (posOffset > Duration.zero &&
+                !_durationLooksUnknown(rawDur))
+            ? rawDur + posOffset
+            : rawDur;
+        // Relay/merge streams report zero/1ms duration: fall back to the
         // expected one from metadata so progress + total time render.
-        final dur = (rawDur > Duration.zero && rawDur.inHours < 24)
-            ? rawDur
-            : (_expectedDuration ?? Duration.zero);
+        final durUnknown = _durationLooksUnknown(shifted);
+        if (durUnknown && _expectedDuration != null) {
+          // Re-inject: the plugin's seek/position clamps read value.duration.
+          controller.value = controller.value.copyWith(duration: _expectedDuration);
+        }
+        final dur = durUnknown ? (_expectedDuration ?? Duration.zero) : shifted;
         _state = _state.copyWith(position: pos, duration: dur);
         _savePosition(mediaId, pos);
         _syncPlaybackStateToHandler();
@@ -1707,7 +1802,20 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         notifyListeners();
       });
 
-      _state = _state.copyWith(status: MediaStatus.playing, position: startAt);
+      final rawInit = controller.value.duration;
+      final initDur = (posOffset > Duration.zero &&
+              !_durationLooksUnknown(rawInit))
+          ? rawInit + posOffset
+          : rawInit;
+      _state = _state.copyWith(
+        status: MediaStatus.playing,
+        position: posOffset > Duration.zero ? posOffset : startAt,
+        // Never inherit the previous item's duration: it would show a
+        // wrong total until the first listener tick.
+        duration: _durationLooksUnknown(initDur)
+            ? (_expectedDuration ?? Duration.zero)
+            : initDur,
+      );
       _syncPlaybackStateToHandler();
       notifyListeners();
       // A newer play started while we initialized: abandon instead of
@@ -1718,6 +1826,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         return false;
       }
       await controller.play();
+      // Keep the freshest stream URL for the background handoff and relay
+      // seeks (a reconnect writes its own `?t=` variant here).
+      _lastDirectUrl = streamUrl.toString();
       return true;
     } catch (e) {
       debugPrint('[MediaEngine] Network video start error: $e');
@@ -1807,6 +1918,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   // --- Local File Playback ---
 
   Future<void> _playLocalFile(LibraryFile file) async {
+    // Local playback: forget the previous network stream, otherwise a later
+    // seek would try to reconnect the old relay instead of seeking the file.
+    _activeKind = null;
+    _lastDirectUrl = null;
     debugPrint('[MediaEngine] _playLocalFile: ${file.title}, type=${file.fileType}, hasContentUri=${file.hasContentUri}');
     final mediaId = file.hasContentUri ? file.contentUri! : file.filename;
     final video = file.isVideo;
@@ -1904,6 +2019,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   Future<void> _playVideoFile(File file, MediaItem item) async {
+    // Local playback: forget the previous network stream (stale relay seek).
+    _activeKind = null;
+    _lastDirectUrl = null;
     await _videoController?.dispose();
     _videoController = VideoPlayerController.file(file);
 
@@ -1955,6 +2073,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   Future<void> _playVideoLocal(LibraryFile file, String mediaId) async {
+    // Local playback: forget the previous network stream (stale relay seek).
+    _activeKind = null;
+    _lastDirectUrl = null;
     final uri = _resolvePlaybackUri(file);
     if (uri == null) {
       _state = _state.copyWith(status: MediaStatus.idle);
@@ -2029,89 +2150,217 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (!isVideo || _videoController == null) return;
     if (!_state.isPlaying) return;
 
-    final savedPosition = _videoController!.value.position;
-    final savedDuration = _videoController!.value.duration;
+    final mediaId = _state.mediaId;
+    if (mediaId == null) return;
+
+    // Logical position/duration: the video controller's clock restarts at 0
+    // on relay `?t=` streams, so the offset-aware state is the truth here.
+    final savedPosition = _state.position;
+    final savedDuration = _state.duration;
 
     await _videoController?.dispose();
     _videoController = null;
+    _bgAudioOffset = Duration.zero;
 
-    final uri = _resolvePlaybackUriById(_state.mediaId!);
-    if (uri == null) {
-      await _startBackgroundAudioForYouTube(savedPosition);
+    // 1) Local or content:// source: plain file streaming, no URL expiry.
+    final uri = _resolvePlaybackUriById(mediaId);
+    if (uri != null) {
+      final item = _createMediaItemFromState();
+      try {
+        await _player.setAudioSource(AudioSource.uri(uri, tag: item));
+        await _player.seek(savedPosition);
+        await _player.play();
+        _wireAudioSubscriptions(mediaId);
+        _state = _state.copyWith(
+          status: MediaStatus.playing,
+          position: savedPosition,
+          duration: savedDuration,
+        );
+        _isAudioBackgroundActive = true;
+        _syncPlaybackStateToHandler();
+        notifyListeners();
+        return;
+      } catch (e) {
+        debugPrint('[MediaEngine] Screen off local audio error: $e');
+      }
+    }
+
+    // 2) YouTube: audio-only variant (saves data on long videos).
+    if (_parseVideoIdFromUrl(mediaId) != null &&
+        await _startBackgroundAudioForYouTube(savedPosition)) {
       return;
     }
 
-    final item = _createMediaItemFromState();
-    try {
-      await _player.setAudioSource(AudioSource.uri(uri, tag: item));
-      await _player.seek(savedPosition);
-      await _player.play();
-    } catch (e) {
-      debugPrint('[MediaEngine] Screen off audio fallback error: $e');
-      return;
+    // 3) Any direct stream (external mp4, proxy, relay merge): the last live
+    // URL. Merge streams have no index, so reconnect from `?t=` instead of
+    // seeking — and tell the position listener about the offset.
+    final last = _lastDirectUrl;
+    if (last != null && last.startsWith('http')) {
+      var streamUri = Uri.parse(last);
+      if (_activeKind == MediaSourceKind.relayMerge &&
+          savedPosition > Duration.zero) {
+        streamUri = _relayUriWithStart(streamUri, savedPosition);
+        _bgAudioOffset = savedPosition;
+      }
+      final item = _createMediaItemFromState();
+      try {
+        await _player.setAudioSource(AudioSource.uri(streamUri, tag: item));
+        await _player.seek(_bgAudioOffset > Duration.zero
+            ? Duration.zero
+            : savedPosition);
+        await _player.play();
+        _wireAudioSubscriptions(mediaId);
+        _state = _state.copyWith(
+          status: MediaStatus.playing,
+          position: savedPosition,
+          duration: savedDuration,
+        );
+        _isAudioBackgroundActive = true;
+        _syncPlaybackStateToHandler();
+        notifyListeners();
+        return;
+      } catch (e) {
+        debugPrint('[MediaEngine] Screen off stream audio error: $e');
+        _bgAudioOffset = Duration.zero;
+      }
     }
 
-    _wireAudioSubscriptions(_state.mediaId!);
-
-    _state = _state.copyWith(
-      status: MediaStatus.playing,
-      position: savedPosition,
-      duration: savedDuration,
-    );
-    _isAudioBackgroundActive = true;
-    _syncPlaybackStateToHandler();
-    notifyListeners();
+    // Nothing left to stream: playback ends here with the screen off.
+    debugPrint('[MediaEngine] No background audio source for $mediaId');
   }
 
   Future<void> onScreenOn() async {
     if (!_isAudioBackgroundActive) return;
 
-    final savedPosition = _player.position;
+    // Logical position: the audio clock excludes the relay `t` offset.
+    final savedPosition = _state.position;
+    final mediaId = _state.mediaId;
 
-    try {
-      await _player.stop();
-    } catch (_) {}
-    _isAudioBackgroundActive = false;
+    // Detach the listeners BEFORE tearing the audio down: a last event must
+    // not persist an offset-less position over the real one.
+    _posSub?.cancel();
+    _durSub?.cancel();
+    _stateSub?.cancel();
 
-    if (_state.mediaId != null) {
-      final localFile = StorageService.instance.getFile(_state.mediaId!);
-      if (localFile != null && localFile.existsSync()) {
-        _videoController = VideoPlayerController.file(localFile);
-        try {
-          await _videoController!.initialize();
-          await _videoController!.seekTo(savedPosition);
-          _videoController!.addListener(() {
-            if (_videoController == null || !_videoController!.value.isInitialized) return;
-            if (_videoController!.value.hasError) return;
-            final pos = _videoController!.value.position;
-            final dur = _videoController!.value.duration;
-            _state = _state.copyWith(position: pos, duration: dur);
-            _savePosition(_state.mediaId!, pos);
-            _syncPlaybackStateToHandler();
-            if (!_completionHandled && pos >= dur && dur > Duration.zero) {
-              _completionHandled = true;
-              _handlePlaybackComplete();
-            }
-            notifyListeners();
-          });
-          _state = _state.copyWith(status: MediaStatus.playing, position: savedPosition);
+    if (mediaId == null) {
+      try {
+        await _player.stop();
+      } catch (_) {}
+      _bgAudioOffset = Duration.zero;
+      _isAudioBackgroundActive = false;
+      return;
+    }
+
+    final localFile = StorageService.instance.getFile(mediaId);
+    if (localFile != null && localFile.existsSync()) {
+      try {
+        await _player.stop();
+      } catch (_) {}
+      _bgAudioOffset = Duration.zero;
+      _isAudioBackgroundActive = false;
+      _videoController = VideoPlayerController.file(localFile);
+      try {
+        await _videoController!.initialize();
+        await _videoController!.seekTo(savedPosition);
+        _videoController!.addListener(() {
+          if (_videoController == null ||
+              !_videoController!.value.isInitialized) {
+            return;
+          }
+          if (_videoController!.value.hasError) {
+            return;
+          }
+          final pos = _videoController!.value.position;
+          final dur = _videoController!.value.duration;
+          _state = _state.copyWith(position: pos, duration: dur);
+          _savePosition(_state.mediaId!, pos);
           _syncPlaybackStateToHandler();
+          if (!_completionHandled && pos >= dur && dur > Duration.zero) {
+            _completionHandled = true;
+            _handlePlaybackComplete();
+          }
           notifyListeners();
-          await _videoController!.play();
-        } catch (e) {
-          debugPrint('[MediaEngine] Screen on video restore error: $e');
-        }
-      } else {
-        await _restoreNetworkVideoFromYouTube(savedPosition);
+        });
+        _state =
+            _state.copyWith(status: MediaStatus.playing, position: savedPosition);
+        _syncPlaybackStateToHandler();
+        notifyListeners();
+        await _videoController!.play();
+      } catch (e) {
+        debugPrint('[MediaEngine] Screen on video restore error: $e');
       }
+      return;
+    }
+
+    // Network video: PAUSE (not stop) the background audio first. If the
+    // video restore fails we resume it again — never leave silence behind.
+    try {
+      await _player.pause();
+    } catch (_) {}
+
+    final restored = await _restoreNetworkVideo(savedPosition);
+    if (restored) {
+      try {
+        await _player.stop();
+      } catch (_) {}
+      _bgAudioOffset = Duration.zero;
+      _isAudioBackgroundActive = false;
+    } else {
+      debugPrint(
+          '[MediaEngine] Screen on: video restore failed, audio keeps going');
+      try {
+        await _player.play();
+      } catch (_) {}
+      _wireAudioSubscriptions(mediaId);
     }
   }
 
-  Future<void> _startBackgroundAudioForYouTube(Duration savedPosition) async {
+  /// Restores video playback after the screen came back on.
+  /// Returns true when the video controller is live again.
+  Future<bool> _restoreNetworkVideo(Duration savedPosition) async {
     final mediaId = _state.mediaId;
-    if (mediaId == null) return;
+    if (mediaId == null) return false;
+
+    final last = _lastDirectUrl;
+    if (last != null && last.startsWith('http')) {
+      var uri = Uri.parse(last);
+      if (_activeKind == MediaSourceKind.relayMerge &&
+          savedPosition > Duration.zero) {
+        // Merge streams restart at 0 — reconnect from the saved point.
+        uri = _relayUriWithStart(uri, savedPosition);
+      }
+      try {
+        final ok = await _startNetworkVideo(
+          uri,
+          mediaId,
+          startAt: savedPosition,
+          initTimeout: const Duration(seconds: 25),
+          playToken: _playToken,
+        );
+        if (ok) playbackError = null;
+        return ok;
+      } catch (e) {
+        debugPrint('[MediaEngine] Network restore error: $e');
+        return false;
+      }
+    }
+
+    try {
+      await _restoreNetworkVideoFromYouTube(savedPosition);
+      return _videoController != null && _videoController!.value.isInitialized;
+    } catch (e) {
+      debugPrint('[MediaEngine] YouTube restore error: $e');
+      return false;
+    }
+  }
+
+  /// Backgrounds the YouTube video as an audio-only stream (data saving).
+  /// Returns true when the background player is live.
+  Future<bool> _startBackgroundAudioForYouTube(Duration savedPosition) async {
+    final mediaId = _state.mediaId;
+    if (mediaId == null) return false;
     final videoId = _parseVideoIdFromUrl(mediaId);
-    if (videoId == null) return;
+    if (videoId == null) return false;
     try {
       final manifest = await _ytc.videos.streamsClient
           .getManifest(videoId)
@@ -2119,7 +2368,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       final audioStreams = manifest.audioOnly.toList()
         ..sort((a, b) =>
             b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
-      if (audioStreams.isEmpty) return;
+      if (audioStreams.isEmpty) return false;
 
       final item = _createMediaItemFromState();
       await _player.setAudioSource(
@@ -2130,8 +2379,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _isAudioBackgroundActive = true;
       _syncPlaybackStateToHandler();
       notifyListeners();
+      return true;
     } catch (e) {
       debugPrint('[MediaEngine] YouTube background audio error: $e');
+      return false;
     }
   }
 
@@ -2215,14 +2466,20 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     }
   }
 
+  /// Offset added to the audio-player clock while background audio runs on
+  /// a relay `?t=` stream (its clock restarts at 0 at that point). Zero for
+  /// every other source. See `onScreenOff`.
+  Duration _bgAudioOffset = Duration.zero;
+
   void _wireAudioSubscriptions(String mediaId) {
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();
 
     _posSub = _player.positionStream.listen((pos) {
-      _state = _state.copyWith(position: pos);
-      _savePosition(mediaId, pos);
+      final logical = pos + _bgAudioOffset;
+      _state = _state.copyWith(position: logical);
+      _savePosition(mediaId, logical);
       _syncPlaybackStateToHandler();
       notifyListeners();
     });
@@ -2299,20 +2556,58 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   Future<void> seek(Duration position) async {
-    if (_videoController != null) {
-      await _videoController!.seekTo(position);
+    if (position < Duration.zero) position = Duration.zero;
+    final mid = _state.mediaId;
+    final c = _videoController;
+    if (c != null) {
+      if (_activeKind == MediaSourceKind.relayMerge &&
+          _lastDirectUrl != null) {
+        // Index-less merge stream: an in-player seek does nothing. Reconnect
+        // the relay from that point (ffmpeg -ss server-side) instead.
+        final reconnected = await _seekRelayMerge(position);
+        if (reconnected) {
+          _state = _state.copyWith(position: position);
+          if (mid != null) _savePosition(mid, position, force: true);
+          _syncPlaybackStateToHandler();
+          notifyListeners();
+          return;
+        }
+        // Reconnect failed: fall through to the in-player seek attempt.
+      }
+      await c.seekTo(position);
     } else {
       await _player.seek(position);
     }
     _state = _state.copyWith(position: position);
+    if (mid != null) _savePosition(mid, position, force: true);
     _syncPlaybackStateToHandler();
     notifyListeners();
+  }
+
+  /// Reconnects the relay merge endpoint starting at [position].
+  /// Returns true when the new stream initialized successfully.
+  Future<bool> _seekRelayMerge(Duration position) async {
+    final base = Uri.tryParse(_lastDirectUrl!);
+    if (base == null) return false;
+    final uri = _relayUriWithStart(base, position);
+    final mediaId = _state.mediaId;
+    if (mediaId == null) return false;
+    final started = await _startNetworkVideo(
+      uri,
+      mediaId,
+      startAt: position,
+      initTimeout: const Duration(seconds: 25),
+      playToken: _playToken,
+    );
+    if (started) playbackError = null;
+    return started;
   }
 
   double _speed = 1.0;
   double get speed => _speed;
 
   /// Playback speed shared by audio and video (shown in player + session).
+  @override
   Future<void> setSpeed(double speed) async {
     _speed = speed.clamp(0.25, 3.0);
     try {
@@ -2382,8 +2677,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         final videoId = _parseVideoIdFromUrl(item.id);
         if (videoId != null && _state.mediaType == MediaType.video) {
           // A failed Explorer video retries the FULL pipeline first
-          // (video, then the audio fallbacks inside).
-          await _playYouTubeVideo(item.id, item);
+          // (video, then the audio fallbacks inside) — from the saved
+          // position, so the notification play never restarts at 0:00.
+          await _playYouTubeVideo(item.id, item,
+              startAt: await _resumePositionFor(item.id));
         } else {
           await _playCurrentQueueItem();
         }

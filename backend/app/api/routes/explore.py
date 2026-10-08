@@ -95,18 +95,19 @@ def proxy(u: str, range_header: str | None = Header(None, alias="Range")):
 
 
 @router.get("/relay")
-def relay(v: str):
+def relay(v: str, t: float = 0):
     """Merge adaptive video+audio with ffmpeg and stream progressive mp4.
 
     Covers videos that have no muxed format. The phone only talks to us.
+    `t` (seconds) cuts the merge at that point: the fragment stream has no
+    index, so resume/seek are done by reconnecting from `t` (ffmpeg -ss).
     """
     invalid = _validate_video_id(v)
     if invalid:
         return invalid
 
-    # Warmed at stream-url time (user still on the video card): first bytes
-    # are already buffered, so ExoPlayer never hits its 8s first-byte limit.
-    if relay_warm.wait_first(v, timeout=8.0):
+    # Warm entry only matches t=0: it is a live stream already at 0.
+    if t <= 0 and relay_warm.wait_first(v, timeout=8.0):
         gen = relay_warm.stream(v)
         if gen is not None:
             return StreamingResponse(gen, media_type="video/mp4")
@@ -126,7 +127,7 @@ def relay(v: str):
         )
 
     try:
-        proc = relay_warm.build_proc(sources)
+        proc = relay_warm.build_proc(sources, seek_to=t if t > 0 else None)
     except Exception as e:  # noqa: BLE001
         logger.error(f"Relay ffmpeg spawn failed for {v}: {e}")
         return JSONResponse(

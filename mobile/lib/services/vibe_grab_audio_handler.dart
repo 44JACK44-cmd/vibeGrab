@@ -20,6 +20,7 @@ abstract class MediaEngineDelegate {
   void cyclePlayMode();
   void setPlayMode(PlayerRepeatMode mode, bool shuffle);
   Future<void> toggleFavoriteCurrent();
+  Future<void> setSpeed(double speed);
 }
 
 /// System media session adapter (Android MediaSession / notification /
@@ -84,10 +85,10 @@ void updatePlaybackState({
         // System media card design (lock screen / quick settings /
         // notification): mode, previous, play/pause, next, favorite.
         //
-        // EVERY button is a custom action on purpose: the local audio_service
-        // fork turns them into real broadcast PendingIntents that land in
-        // [onCustomAction], so each button works deterministically instead of
-        // depending on the platform media-button keycode mapping.
+        // Mode / prev / next / favorite are custom actions on purpose: the
+        // local audio_service fork turns them into real broadcast
+        // PendingIntents that land in [onCustomAction]. Play/pause stays
+        // NATIVE (see below) so every Android skin can render and route it.
         MediaControl.custom(
           androidIcon: _modeIcon(repeatMode, shuffle),
           label: 'Modo',
@@ -98,13 +99,22 @@ void updatePlaybackState({
           label: 'Anterior',
           name: 'prev',
         ),
-        MediaControl.custom(
-          androidIcon: playing
-              ? 'drawable/audio_service_pause'
-              : 'drawable/audio_service_play_arrow',
-          label: playing ? 'Pausa' : 'Reproducir',
-          name: 'playpause',
-        ),
+        // NATIVE play/pause (MediaAction, not a custom action): every OEM
+        // renders these and routes them through
+        // MediaSessionCallback.onPlay/onPause to handler.play()/pause() —
+        // custom buttons are ignored by some Android skins, which made the
+        // notification play button dead.
+        playing
+            ? const MediaControl(
+                androidIcon: 'drawable/audio_service_pause',
+                label: 'Pausa',
+                action: MediaAction.pause,
+              )
+            : const MediaControl(
+                androidIcon: 'drawable/audio_service_play_arrow',
+                label: 'Reproducir',
+                action: MediaAction.play,
+              ),
         MediaControl.custom(
           androidIcon: 'drawable/audio_service_skip_next',
           label: 'Siguiente',
@@ -119,6 +129,9 @@ void updatePlaybackState({
         ),
       ],
       systemActions: const {
+        MediaAction.play,
+        MediaAction.pause,
+        MediaAction.stop,
         MediaAction.seek,
         MediaAction.seekForward,
         MediaAction.seekBackward,
@@ -280,11 +293,19 @@ void updatePlaybackState({
   }
 
   @override
-  Future<void> setSpeed(double speed) => _engine.audioPlayer.setSpeed(speed);
+  Future<void> setSpeed(double speed) => _engine.setSpeed(speed);
 
   @override
   Future<void> onTaskRemoved() async {
     await stop();
+  }
+
+  /// Swiping the notification away only pauses: the session stays resumable
+  /// (BaseAudioHandler's default would STOP and kill the playback).
+  @override
+  Future<void> onNotificationDeleted() async {
+    debugPrint('[MEDIA_SESSION] Notification dismissed -> pause');
+    await _engine.pause();
   }
 
   void dispose() {
