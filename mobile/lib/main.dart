@@ -40,6 +40,10 @@ import 'features/share/widgets/shared_download_sheet.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Explorer is thumbnail-heavy (feed, rails, cards): the default 100MB
+  // image cache thrashes on long scrolls, making old thumbnails blink.
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 160 << 20;
+
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
   ));

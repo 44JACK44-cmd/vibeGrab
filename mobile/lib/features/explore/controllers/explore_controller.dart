@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -211,8 +212,67 @@ class ExploreController extends ChangeNotifier {
 
   Future<void> init() async {
     await _loadRecentSearches();
-    await loadContinueWatching();
-    await loadTrending();
+    // Instant feed: show the last session's feed immediately (if any) and
+    // refresh trending + continue-watching in parallel, never serially.
+    final cached = await _loadFeedCache();
+    if (cached) notifyListeners();
+    await Future.wait([
+      loadContinueWatching(),
+      loadTrending(),
+    ]);
+  }
+
+  // --- Feed cache: the home screen renders from disk while the network
+  // refreshes in the background (Render cold starts can take ~40s).
+
+  static const _feedCacheKey = 'explore_feed_cache_v1';
+
+  Future<void> _saveFeedCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final data = <String, dynamic>{
+        'trending': _trending.map((v) => v.toJson()).toList(),
+        'forYou': _forYou.map((v) => v.toJson()).toList(),
+        'rails': {
+          for (final e in _rails.entries)
+            e.key: e.value.map((v) => v.toJson()).toList(),
+        },
+      };
+      await prefs.setString(_feedCacheKey, jsonEncode(data));
+    } catch (_) {}
+  }
+
+  Future<bool> _loadFeedCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_feedCacheKey);
+      if (raw == null || raw.isEmpty) return false;
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      List<ExploreVideo> decode(Object? raw) => ((raw ?? const []) as List)
+          .whereType<Map<String, dynamic>>()
+          .map(ExploreVideo.fromJson)
+          .toList();
+
+      final trending = _dedupe(decode(data['trending']));
+      final forYou = _dedupe(decode(data['forYou']));
+      final railsRaw =
+          ((data['rails'] ?? const {}) as Map<String, dynamic>);
+      final rails = <String, List<ExploreVideo>>{};
+      railsRaw.forEach((key, value) {
+        final list = _dedupe(decode(value));
+        if (list.isNotEmpty) rails[key] = list;
+      });
+
+      if (trending.isEmpty && forYou.isEmpty && rails.isEmpty) return false;
+      if (trending.isNotEmpty) _trending = trending;
+      _forYou = forYou;
+      _rails
+        ..clear()
+        ..addAll(rails);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Videos with a saved position: the "continue watching" rail.
@@ -333,21 +393,23 @@ class ExploreController extends ChangeNotifier {
     } finally {
       _trendingLoading = false;
       notifyListeners();
+      _saveFeedCache();
     }
   }
 
   /// Home rails (one per category), loaded progressively so the first row
-  /// appears without waiting for the rest.
+  /// appears without waiting for the rest. All missing rails are requested
+  /// CONCURRENTLY — serial requests made the feed feel frozen.
   Future<void> loadRails({int count = 4}) async {
     if (_railsLoading) return;
     _railsLoading = true;
     notifyListeners();
     try {
-      for (final label in LocalExtractionService.categories) {
-        if (_rails.length >= count) break;
-        if (_rails.containsKey(label)) continue;
-        await _loadRail(label);
-      }
+      final wanted = LocalExtractionService.categories
+          .where((c) => !_rails.containsKey(c))
+          .take((count - _rails.length).clamp(0, count))
+          .toList();
+      await Future.wait(wanted.map(_loadRail));
     } finally {
       _railsLoading = false;
       notifyListeners();
@@ -397,6 +459,7 @@ class ExploreController extends ChangeNotifier {
     _rails[label] =
         _dedupe(items.where((v) => !excluded.contains(_keyOf(v)))).take(8).toList();
     notifyListeners();
+    _saveFeedCache();
   }
 
   /// Appends the next page of the current search (infinite scroll).
@@ -538,6 +601,7 @@ class ExploreController extends ChangeNotifier {
     } finally {
       _forYouLoading = false;
       notifyListeners();
+      _saveFeedCache();
     }
   }
 

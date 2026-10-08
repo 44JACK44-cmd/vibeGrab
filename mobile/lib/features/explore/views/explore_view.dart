@@ -10,6 +10,8 @@ import '../../../services/media_provider_resolver.dart';
 import '../controllers/explore_controller.dart';
 import '../widgets/search_result_card.dart';
 import '../widgets/recent_searches.dart';
+import '../../share/controllers/shared_download_controller.dart';
+import '../../share/widgets/shared_download_sheet.dart';
 import 'video_detail_view.dart';
 import 'shorts_view.dart';
 
@@ -208,8 +210,9 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
       });
     }
     // Category rails are requested lazily too: the first row lands fast and
-    // the rest keep appending as the user scrolls.
-    if (!_railsAsked && controller.railKeys.isEmpty && !controller.railsLoading) {
+    // the rest keep appending as the user scrolls. With a warm feed cache
+    // there may already be some rails on screen — top up until 4.
+    if (!_railsAsked && controller.railKeys.length < 4 && !controller.railsLoading) {
       _railsAsked = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) context.read<ExploreController>().loadRails(count: 4);
@@ -392,7 +395,7 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                 video: video,
                 onTap: () => _openDetail(video, queue: controller.trending),
                 onPlay: () => _playList(controller.trending, video),
-                onDownload: () => _openDetail(video, queue: controller.trending),
+                onQuickDownload: () => _quickDownload(video),
               ),
             )),
           ],
@@ -766,7 +769,7 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                       video: video,
                       onTap: () => _openDetail(video, queue: queue),
                       onPlay: () => _playList(queue, video),
-                      onDownload: () => _openDetail(video, queue: queue),
+                      onQuickDownload: () => _quickDownload(video),
                     );
                   },
                 ),
@@ -861,7 +864,7 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                     video: video,
                     onTap: () => _openDetail(video, queue: queue),
                     onPlay: () => _playList(queue, video),
-                    onDownload: () => _openDetail(video, queue: queue),
+                    onQuickDownload: () => _quickDownload(video),
                   ),
                 );
               },
@@ -1070,6 +1073,15 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
         ),
       ),
     );
+  }
+
+  /// One-tap download from the card: resolves formats in the background
+  /// and opens the format/download sheet instantly (same flow the share
+  /// intent uses, through the app-level controller).
+  void _quickDownload(ExploreVideo video) {
+    final controller = context.read<SharedDownloadController>();
+    controller.analyzeUrl(video.url);
+    SharedDownloadSheet.show(context, controller);
   }
 
   /// Reads the clipboard and resolves the link through the provider

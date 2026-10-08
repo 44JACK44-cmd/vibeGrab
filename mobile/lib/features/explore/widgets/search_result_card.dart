@@ -13,12 +13,16 @@ class SearchResultCard extends StatelessWidget {
   /// Opens the download/analyzer flow for this video (optional).
   final VoidCallback? onDownload;
 
+  /// One-tap download: opens the format sheet immediately (optional).
+  final VoidCallback? onQuickDownload;
+
   const SearchResultCard({
     super.key,
     required this.video,
     this.onTap,
     this.onPlay,
     this.onDownload,
+    this.onQuickDownload,
   });
 
   @override
@@ -109,6 +113,23 @@ class SearchResultCard extends StatelessWidget {
                       constraints:
                           const BoxConstraints(minWidth: 36, minHeight: 36),
                     ),
+                  if (onQuickDownload != null)
+                    IconButton(
+                      tooltip: loc.downloadVideo,
+                      icon: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: cs.secondaryContainer,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(Icons.download_rounded,
+                            size: 20, color: cs.onSecondaryContainer),
+                      ),
+                      onPressed: onQuickDownload,
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 36, minHeight: 36),
+                    ),
                   _menu(context, loc, cs),
                 ],
               ),
@@ -140,7 +161,7 @@ class SearchResultCard extends StatelessWidget {
             _snack(context, loc.linkCopied);
             break;
           case 'download':
-            if (onDownload != null) onDownload!();
+            (onQuickDownload ?? onDownload)?.call();
             break;
         }
       },
@@ -165,7 +186,7 @@ class SearchResultCard extends StatelessWidget {
             ],
           ),
         ),
-        if (onDownload != null)
+        if (onDownload != null || onQuickDownload != null)
           PopupMenuItem(
             value: 'download',
             child: Row(

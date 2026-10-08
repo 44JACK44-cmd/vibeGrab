@@ -448,11 +448,31 @@ def get_trending(limit: int = 20) -> tuple[list[ExploreVideo], str]:
     return out[:limit], "search"
 
 
+def _is_playable_format(fmt) -> bool:
+    """True when extractor._normalize_format would keep this format.
+
+    Direct http(s) media URL (HLS/DASH excluded — analyze rejects them)
+    with at least one real stream. Same rule the download path uses.
+    """
+    if not isinstance(fmt, dict):
+        return False
+    url = str(fmt.get("url") or "")
+    if not url.startswith(("http://", "https://")):
+        return False
+    protocol = str(fmt.get("protocol") or "")
+    if "m3u8" in protocol or "m3u8" in url or "dash" in protocol:
+        return False
+    return (fmt.get("vcodec") or "none") != "none" or (
+        fmt.get("acodec") or "none"
+    ) != "none"
+
+
 def get_link_metadata(url: str) -> dict:
     """Resolves a pasted link to metadata for any yt-dlp supported provider.
 
-    Returns provider, playability and an ExploreVideo. Playback inside the
-    app is only offered for sources the MediaSourceResolver can resolve.
+    Returns provider, playability and an ExploreVideo. Playback is offered
+    for YouTube plus any provider whose formats expose a direct media URL —
+    the app plays those through /api/analyze in its own player.
     """
     url = (url or "").strip()
     if not url:
@@ -489,7 +509,14 @@ def get_link_metadata(url: str) -> dict:
     if video is None:
         raise Exception("metadata failed: no id")
 
-    playable = provider == "youtube"
+    # Playable whenever we can hand the app a direct media URL: the
+    # MediaEngine resolves it through /api/analyze and plays it in-app,
+    # so TikTok/Instagram/Facebook links play in our own player too.
+    # Criteria mirror extractor._normalize_format (no HLS/DASH-only
+    # providers — analyze would reject those and playback would fail).
+    formats = data.get("formats") or []
+    has_direct_url = any(_is_playable_format(f) for f in formats)
+    playable = provider == "youtube" or has_direct_url
     reason = None
     if not playable:
         reason = "provider_not_playable"

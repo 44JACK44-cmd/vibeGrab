@@ -292,16 +292,23 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   String? _parseVideoIdFromUrl(String url) {
     final sanitized = url.trim();
     if (sanitized.isEmpty) return null;
-    
+
+    final uri = Uri.tryParse(sanitized);
+    final host = uri?.host.toLowerCase() ?? '';
+    // Only real YouTube hosts may yield an id: a regex hit inside a
+    // TikTok/Instagram link (e.g. a `v=` query) would drag foreign links
+    // into the YouTube pipeline instead of the external one.
+    final isYouTubeHost =
+        host.contains('youtube.com') || host.contains('youtu.be');
+    if (uri != null && host.isNotEmpty && !isYouTubeHost) return null;
+
     // First try the regex for common patterns
     final idMatch = RegExp(r'(?:v=|/vi/|youtu\.be/|/shorts/|/embed/|/v/)([A-Za-z0-9_-]{11})').firstMatch(sanitized);
     if (idMatch != null) return idMatch.group(1);
     
-    final uri = Uri.tryParse(sanitized);
     if (uri == null) return null;
     
-    final host = uri.host.toLowerCase();
-    final isYouTube = uri.host.contains('youtube.com') || uri.host.contains('youtu.be');
+    final isYouTube = isYouTubeHost;
     
     if (!isYouTube) return null;
     
@@ -1330,7 +1337,15 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       {Duration startAt = Duration.zero}) async {
     final videoId = _parseVideoIdFromUrl(youtubeUrl);
     if (videoId == null) {
-      debugPrint('[MediaEngine] Invalid YouTube URL: $youtubeUrl');
+      final uri = Uri.tryParse(youtubeUrl);
+      if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+        // Any other site (TikTok, Instagram, Facebook...): resolve a fresh
+        // direct media URL through the backend and play it in this same
+        // pipeline instead of failing with "invalid URL".
+        await _playExternalVideo(youtubeUrl, mediaItem, startAt: startAt);
+        return;
+      }
+      debugPrint('[MediaEngine] Invalid URL: $youtubeUrl');
       _clearStage();
       _failPlayback('URL inválida');
       return;
@@ -1399,6 +1414,85 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _failPlayback(detail.isEmpty
         ? 'no reproducible'
         : '${detail.length > 280 ? '${detail.substring(0, 280)}…' : detail}');
+  }
+
+  /// Non-YouTube links (TikTok, Instagram, Facebook, ...): ask the backend
+  /// analyze endpoint for a fresh direct media URL and play it through the
+  /// same video pipeline (_tryStartNetworkVideo) as YouTube, so every link
+  /// pasted/shared into VibeGrab plays in OUR player.
+  Future<void> _playExternalVideo(String url, MediaItem mediaItem,
+      {Duration startAt = Duration.zero}) async {
+    final token = _playToken;
+    bool stale() => token != _playToken;
+    _setStage('playStageServer');
+    try {
+      final response = await http
+          .post(
+            Uri.parse(ApiConfig.analyzeUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'url': url}),
+          )
+          .timeout(const Duration(seconds: 50));
+      if (stale()) return;
+
+      String? direct;
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        String? progressive720;
+        String? progressiveAny;
+        String? videoOnly;
+        String? audio;
+        for (final f in (body['formats'] as List? ?? const [])) {
+          if (f is! Map<String, dynamic>) continue;
+          final u = f['direct_url'] as String?;
+          if (u == null || u.isEmpty) continue;
+          final isVideo = f['type'] == 'video';
+          final hasAudio = f['has_audio'] == true;
+          if (isVideo && hasAudio) {
+            // Backend lists combined videos best-height first: keep the
+            // first ≤720p (data-friendly) and the overall best as backup.
+            progressiveAny ??= u;
+            final h = int.tryParse(
+                    (f['quality'] as String? ?? '').replaceAll('p', '')) ??
+                0;
+            if (h == 0 || h <= 720) progressive720 ??= u;
+          } else if (isVideo) {
+            videoOnly ??= u;
+          } else {
+            audio ??= u;
+          }
+        }
+        direct = progressive720 ?? progressiveAny ?? videoOnly ?? audio;
+      }
+
+      if (direct == null) {
+        debugPrint(
+            '[MediaEngine] external resolve failed: http ${response.statusCode}');
+        _clearStage();
+        _failPlayback(response.statusCode == 200
+            ? 'no reproducible'
+            : 'servidor: http ${response.statusCode}');
+        return;
+      }
+
+      final started = await _tryStartNetworkVideo(
+        Uri.parse(direct),
+        url,
+        mediaItem,
+        initTimeout: const Duration(seconds: 20),
+        playToken: token,
+        startAt: startAt,
+      );
+      if (stale()) return;
+      _clearStage();
+      if (started) return;
+      _failPlayback(_lastVideoError ?? 'no reproducible');
+    } catch (e) {
+      if (stale()) return;
+      debugPrint('[MediaEngine] external play failed: $e');
+      _clearStage();
+      _failPlayback(_short(e.toString()));
+    }
   }
 
   /// Current video quality height, 0 = Auto.
