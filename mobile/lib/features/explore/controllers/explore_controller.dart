@@ -167,6 +167,48 @@ class ExploreController extends ChangeNotifier {
     }
   }
 
+  String _keyOf(ExploreVideo v) => v.id.isNotEmpty ? v.id : v.url;
+
+  /// Removes repeats inside [items] by id (or url when the id is empty) AND
+  /// by url, so list keys stay unique and no card is shown twice.
+  List<ExploreVideo> _dedupe(Iterable<ExploreVideo> items) {
+    final ids = <String>{};
+    final urls = <String>{};
+    final out = <ExploreVideo>[];
+    for (final v in items) {
+      final idOk = v.id.isEmpty || ids.add(v.id);
+      final urlOk = v.url.isEmpty || urls.add(v.url);
+      if (idOk && urlOk) out.add(v);
+    }
+    return out;
+  }
+
+  /// Keys already displayed in other home sections. Used so every new
+  /// section (for-you, rails, "all results") only adds videos not yet seen.
+  Set<String> _homeIds({
+    bool continueWatching = false,
+    bool trending = false,
+    bool forYou = false,
+    bool rails = false,
+  }) {
+    final s = <String>{};
+    if (continueWatching) {
+      for (final v in _continueWatching) s.add(_keyOf(v));
+    }
+    if (trending) {
+      for (final v in _trending) s.add(_keyOf(v));
+    }
+    if (forYou) {
+      for (final v in _forYou) s.add(_keyOf(v));
+    }
+    if (rails) {
+      for (final list in _rails.values) {
+        for (final v in list) s.add(_keyOf(v));
+      }
+    }
+    return s;
+  }
+
   Future<void> init() async {
     await _loadRecentSearches();
     await loadContinueWatching();
@@ -222,7 +264,11 @@ class ExploreController extends ChangeNotifier {
       try {
         final live = await _api.fetchTrending(limit: 20);
         if (live.isNotEmpty) {
-          _trending = _preferUnseen(live).take(14).toList();
+          final excluded = _homeIds(continueWatching: true);
+          _trending = _dedupe(_preferUnseen(live)
+                  .where((v) => !excluded.contains(_keyOf(v))))
+              .take(14)
+              .toList();
           _rememberShown(_trending);
           _trendingLoading = false;
           notifyListeners();
@@ -238,6 +284,7 @@ class ExploreController extends ChangeNotifier {
         ..shuffle();
       final merged = <ExploreVideo>[];
       final seenIds = <String>{};
+      final excluded = _homeIds(continueWatching: true);
       var first = true;
       for (final q in queries.take(3)) {
         List<ExploreVideo> batch = const [];
@@ -253,28 +300,35 @@ class ExploreController extends ChangeNotifier {
         }
         if (first) {
           first = false;
-          _trending = _preferUnseen(merged).take(12).toList();
+          _trending = _dedupe(_preferUnseen(merged)
+                  .where((v) => !excluded.contains(_keyOf(v))))
+              .take(12)
+              .toList();
           _rememberShown(_trending);
           _trendingLoading = false;
           notifyListeners();
         }
       }
-      _trending = _preferUnseen(merged).take(12).toList();
+      _trending = _dedupe(_preferUnseen(merged)
+              .where((v) => !excluded.contains(_keyOf(v))))
+          .take(12)
+          .toList();
       _rememberShown(_trending);
       if (_trending.isEmpty) {
         try {
-          _trending = await _extraction.search('popular music', limit: 12);
+          _trending =
+              _dedupe(await _extraction.search('popular music', limit: 12));
         } catch (_) {}
       }
       if (_trending.isEmpty) {
         try {
-          _trending = await _extraction.search('music', limit: 12);
+          _trending = _dedupe(await _extraction.search('music', limit: 12));
         } catch (_) {}
       }
     } catch (e) {
       debugPrint('Trending load error: $e');
       try {
-        _trending = await _extraction.search('music', limit: 12);
+        _trending = _dedupe(await _extraction.search('music', limit: 12));
       } catch (_) {}
     } finally {
       _trendingLoading = false;
@@ -331,9 +385,17 @@ class ExploreController extends ChangeNotifier {
       }
     }
     if (items.isEmpty) return;
-    final used = _rails.values.expand((v) => v.map((e) => e.id)).toSet();
-    final fresh = items.where((v) => !used.contains(v.id)).toList();
-    _rails[label] = (fresh.isNotEmpty ? fresh : items).take(8).toList();
+    // A rail only shows videos that are NOT already on screen elsewhere
+    // (continue-watching, for-you, trending, other rails). If nothing fresh
+    // is left the rail stays empty instead of repeating items.
+    final excluded = _homeIds(
+      continueWatching: true,
+      trending: true,
+      forYou: true,
+      rails: true,
+    );
+    _rails[label] =
+        _dedupe(items.where((v) => !excluded.contains(_keyOf(v)))).take(8).toList();
     notifyListeners();
   }
 
@@ -427,6 +489,11 @@ class ExploreController extends ChangeNotifier {
         return;
       }
       final interests = _interestKeywords();
+      final excluded = _homeIds(
+        continueWatching: true,
+        trending: true,
+        rails: true,
+      );
       final fresh = <ExploreVideo>[];
       final seen = <String>{};
       void absorb(List<ExploreVideo> batch) {
@@ -463,7 +530,10 @@ class ExploreController extends ChangeNotifier {
           absorb(await _extraction.searchCategory(cats.first, limit: 4));
         }
       } catch (_) {}
-      _forYou = _preferUnseen(fresh).take(12).toList();
+      _forYou = _dedupe(_preferUnseen(fresh)
+              .where((v) => !excluded.contains(_keyOf(v))))
+          .take(12)
+          .toList();
       _rememberShown(_forYou);
     } finally {
       _forYouLoading = false;
@@ -561,10 +631,11 @@ class ExploreController extends ChangeNotifier {
       }
       final page = await _serverSearch(category, limit: 12, page: 1);
       if (page != null && page.results.isNotEmpty) {
-        _categoryResults = page.results;
+        _categoryResults = _dedupe(page.results);
         _categoryExhausted = !page.hasMore;
       } else {
-        _categoryResults = await _extraction.searchCategory(category, limit: 8);
+        _categoryResults =
+            _dedupe(await _extraction.searchCategory(category, limit: 8));
         _categoryExhausted = true;
       }
     } catch (_) {
@@ -647,13 +718,13 @@ class ExploreController extends ChangeNotifier {
       if (seq != _searchSeq) return;
 
       if (page != null && page.results.isNotEmpty) {
-        _videos = page.results;
+        _videos = _dedupe(page.results);
         _searchExhausted = !page.hasMore;
       } else {
         if (page == null) _serverSearchFailed = true;
         final local = await _extraction.search(_query);
         if (seq != _searchSeq) return;
-        _videos = local;
+        _videos = _dedupe(local);
         _searchExhausted = local.length < 10;
       }
       _addRecentSearch(_query);

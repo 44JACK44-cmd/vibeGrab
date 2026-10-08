@@ -58,15 +58,17 @@ class LocalDownloadService {
     required Function(double progress, int bytesDownloaded) onProgress,
     required Function(DownloadStep step) onStep,
     required Stopwatch sw,
+    String? formatIdOverride,
   }) async {
     final ext = _directExtension(task);
     final safeTitle = _sanitizeFilename(task.title);
     final filePath = '$dir/$safeTitle.$ext';
+    final formatId = (formatIdOverride ?? task.formatId).trim();
 
     final fetchUri = Uri.tryParse(
       '${ApiConfig.baseUrl}/api/fetch'
       '?url=${Uri.encodeQueryComponent(task.url)}'
-      '&format_id=${Uri.encodeQueryComponent(task.formatId)}'
+      '&format_id=${Uri.encodeQueryComponent(formatId)}'
       '&ext=${Uri.encodeQueryComponent(ext)}',
     );
     if (fetchUri == null) {
@@ -119,13 +121,16 @@ class LocalDownloadService {
   String _directExtension(DownloadTask task) {
     final fromTask = task.fileExt?.trim();
     if (fromTask != null && fromTask.isNotEmpty && fromTask != 'none') return fromTask;
-    final path = Uri.tryParse(task.directUrl!)?.path ?? '';
-    final dot = path.lastIndexOf('.');
-    if (dot > -1 && dot < path.length - 1) {
-      final ext = path.substring(dot + 1).toLowerCase();
-      if (ext.length <= 5 && RegExp(r'^[a-z0-9]+$').hasMatch(ext)) return ext;
+    final directUrl = task.directUrl;
+    if (directUrl != null && directUrl.isNotEmpty) {
+      final path = Uri.tryParse(directUrl)?.path ?? '';
+      final dot = path.lastIndexOf('.');
+      if (dot > -1 && dot < path.length - 1) {
+        final ext = path.substring(dot + 1).toLowerCase();
+        if (ext.length <= 5 && RegExp(r'^[a-z0-9]+$').hasMatch(ext)) return ext;
+      }
     }
-    return 'mp4';
+    return task.mediaType == DownloadMediaType.audio ? 'm4a' : 'mp4';
   }
 
   String _getExtension(StreamInfo stream) {
@@ -206,15 +211,28 @@ class LocalDownloadService {
       }
       _log('STEP 0 OK: directory writable = true (${sw.elapsedMilliseconds}ms)');
 
+      DownloadTask? directResult;
       if (task.directUrl != null && task.directUrl!.isNotEmpty) {
         _log('DIRECT branch: using backend-provided direct URL');
-        return await _downloadDirect(
+        directResult = await _downloadDirect(
           task: task,
           dir: dir,
           onProgress: onProgress,
           onStep: onStep,
           sw: sw,
         );
+        // Recoverable backend failures (403, 5xx, network) fall through to
+        // the device stream path instead of failing the whole download.
+        const retriable = {
+          DownloadErrorType.http403,
+          DownloadErrorType.httpError,
+          DownloadErrorType.connectionTimeout,
+          DownloadErrorType.serverTimeout,
+          DownloadErrorType.connectionFailed,
+        };
+        if (!retriable.contains(directResult.errorCode)) return directResult;
+        _log('DIRECT failed (${directResult.errorCode}); '
+            'falling back to device stream manifest');
       }
 
       onStep(const DownloadStep('resolving', 'Parsing video ID...'));
@@ -224,6 +242,9 @@ class LocalDownloadService {
       final videoId = _parseVideoId(sanitizedUrl);
       if (videoId == null) {
         _log('STEP 1 FAILED: Could not parse video ID from: $sanitizedUrl');
+        // Not a YouTube URL (device streams are YouTube-only): surface the
+        // real backend error instead of a misleading "invalid url".
+        if (directResult != null) return directResult;
         return task.copyWith(
           status: 'failed',
           error: 'Invalid YouTube URL',
@@ -247,6 +268,22 @@ class LocalDownloadService {
       } catch (e) {
         _log('STEP 2 FAILED: $e');
         final isTimeout = e is TimeoutException;
+        // The device could not even fetch the manifest — the backend relay
+        // may still succeed (it re-extracts fresh URLs server-side).
+        if (task.formatId.trim().isNotEmpty) {
+          _log('FALLBACK: manifest unavailable, retrying via backend relay');
+          try {
+            return await _downloadDirect(
+              task: task,
+              dir: dir,
+              onProgress: onProgress,
+              onStep: onStep,
+              sw: sw,
+            );
+          } catch (re) {
+            _log('RELAY exception: $re');
+          }
+        }
         return task.copyWith(
           status: 'failed',
           error: isTimeout ? 'Streams fetch timed out' : 'Failed to fetch streams',
@@ -377,8 +414,34 @@ class LocalDownloadService {
         return result;
       }
 
+      _log('===== ALL CANDIDATES EXHAUSTED id=${task.id} =====');
+      // Last line of defence: relay the requested format through the
+      // backend /api/fetch (yt-dlp re-extracts fresh, working URLs
+      // server-side) instead of forcing a generic 403 failure.
+      final relayFormat = task.formatId.trim().isNotEmpty
+          ? task.formatId.trim()
+          : (candidates.isNotEmpty
+              ? candidates.first.stream.tag.toString()
+              : '');
+      if (relayFormat.isNotEmpty) {
+        _log('FALLBACK: retrying via backend relay format=$relayFormat');
+        try {
+          final relay = await _downloadDirect(
+            task: task,
+            dir: dir,
+            onProgress: onProgress,
+            onStep: onStep,
+            sw: sw,
+            formatIdOverride: relayFormat,
+          );
+          sw.stop();
+          return relay;
+        } catch (re) {
+          _log('RELAY exception: $re');
+        }
+      }
       sw.stop();
-      _log('===== FAILED id=${task.id} all candidates exhausted =====');
+      _log('===== FAILED id=${task.id} =====');
       return task.copyWith(status: 'failed', error: 'All streams returned errors', errorCode: 'http403');
     } catch (e, st) {
       _log('[ERROR] EXCEPTION: $e');

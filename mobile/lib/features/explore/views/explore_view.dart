@@ -274,6 +274,27 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
       );
     }
 
+    // Videos of trending NOT already visible above (hero card shows
+    // trending[0], the row shows [1..8]) and not repeated in the other
+    // sections — this kills the "same video 3 times on one screen" bug.
+    String keyOf(ExploreVideo v) => v.id.isNotEmpty ? v.id : v.url;
+    final shownIds = <String>{};
+    for (final v in controller.continueWatching) {
+      shownIds.add(keyOf(v));
+    }
+    for (final v in controller.forYou) {
+      shownIds.add(keyOf(v));
+    }
+    for (final rail in controller.railKeys) {
+      for (final v in controller.rail(rail)) {
+        shownIds.add(keyOf(v));
+      }
+    }
+    final trendingRest = controller.trending
+        .skip(9)
+        .where((v) => !shownIds.contains(keyOf(v)))
+        .toList();
+
     return RefreshIndicator(
       onRefresh: () async {
         controller.clearLink();
@@ -356,23 +377,25 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
               ),
             ),
           ],
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(loc.allResults, style: TextStyle(
-              color: cs.onSurface, fontSize: 18, fontWeight: FontWeight.bold,
-            )),
-          ),
-          const SizedBox(height: 8),
-          ...controller.trending.map((video) => FadeSlideIn(
-            key: ValueKey(video.id),
-            duration: AppDurations.normal,
-            child: SearchResultCard(
-              video: video,
-              onTap: () => _openDetail(video, queue: controller.trending),
-              onPlay: () => _playList(controller.trending, video),
-              onDownload: () => _openDetail(video, queue: controller.trending),
+          if (trendingRest.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(loc.allResults, style: TextStyle(
+                color: cs.onSurface, fontSize: 18, fontWeight: FontWeight.bold,
+              )),
             ),
-          )),
+            const SizedBox(height: 8),
+            ...trendingRest.map((video) => FadeSlideIn(
+              key: ValueKey(video.id.isNotEmpty ? video.id : video.url),
+              duration: AppDurations.normal,
+              child: SearchResultCard(
+                video: video,
+                onTap: () => _openDetail(video, queue: controller.trending),
+                onPlay: () => _playList(controller.trending, video),
+                onDownload: () => _openDetail(video, queue: controller.trending),
+              ),
+            )),
+          ],
         ],
         ),
       ),
@@ -458,6 +481,7 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
           children: [
             if (video.thumbnail != null && video.thumbnail!.isNotEmpty)
               Image.network(video.thumbnail!, fit: BoxFit.cover,
+                gaplessPlayback: true,
                 errorBuilder: (_, __, ___) => Container(color: cs.surfaceContainerHighest)),
             Container(
               decoration: BoxDecoration(
@@ -520,6 +544,7 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
         itemBuilder: (context, index) {
           final video = videos[index];
           return GestureDetector(
+            key: ValueKey(video.id.isNotEmpty ? video.id : video.url),
             onTap: () => _openDetail(video, queue: videos),
             child: Container(
               width: 160,
@@ -534,6 +559,7 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                   Expanded(
                     child: video.thumbnail != null && video.thumbnail!.isNotEmpty
                         ? Image.network(video.thumbnail!, width: 160, fit: BoxFit.cover,
+                            gaplessPlayback: true,
                             errorBuilder: (_, __, ___) => Container(
                               color: cs.surfaceContainerHighest,
                               child: Icon(Icons.music_note, color: cs.onSurfaceVariant),
@@ -735,6 +761,8 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                     final video = controller.categoryResults[index];
                     final queue = controller.categoryResults;
                     return SearchResultCard(
+                      key: ValueKey(
+                          video.id.isNotEmpty ? video.id : video.url),
                       video: video,
                       onTap: () => _openDetail(video, queue: queue),
                       onPlay: () => _playList(queue, video),

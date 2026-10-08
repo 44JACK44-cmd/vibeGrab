@@ -25,7 +25,6 @@ class SearchResultCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final loc = AppLocalizations.of(context);
-    final engine = context.watch<MediaEngine>();
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -93,7 +92,7 @@ class SearchResultCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  _likeButton(context, engine, loc, cs),
+                  _LikeButton(video),
                   if (onPlay != null)
                     IconButton(
                       icon: Container(
@@ -110,7 +109,7 @@ class SearchResultCard extends StatelessWidget {
                       constraints:
                           const BoxConstraints(minWidth: 36, minHeight: 36),
                     ),
-                  _menu(context, engine, loc, cs),
+                  _menu(context, loc, cs),
                 ],
               ),
             ),
@@ -126,37 +125,14 @@ class SearchResultCard extends StatelessWidget {
             style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
       );
 
-  Widget _likeButton(
-      BuildContext context, MediaEngine engine, AppLocalizations loc, ColorScheme cs) {
-    final liked = engine.isRemoteLiked(video.url);
-    return IconButton(
-      icon: Icon(
-        liked ? Icons.favorite : Icons.favorite_border,
-        size: 20,
-        color: liked ? Colors.redAccent : cs.onSurfaceVariant,
-      ),
-      tooltip: loc.likedVideosTitle,
-      onPressed: () => engine.toggleRemoteLike(
-        url: video.url,
-        title: video.title,
-        artist: video.channel,
-        thumbnail: video.thumbnail,
-        isVideo: true,
-      ),
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-    );
-  }
-
-  Widget _menu(BuildContext context, MediaEngine engine, AppLocalizations loc,
-      ColorScheme cs) {
+  Widget _menu(BuildContext context, AppLocalizations loc, ColorScheme cs) {
     return PopupMenuButton<String>(
       icon: Icon(Icons.more_vert, size: 20, color: cs.onSurfaceVariant),
       padding: EdgeInsets.zero,
       onSelected: (value) async {
         switch (value) {
           case 'queue':
-            engine.addToQueueExplore(video);
+            context.read<MediaEngine>().addToQueueExplore(video);
             _snack(context, loc.addedToQueue);
             break;
           case 'copy':
@@ -225,6 +201,7 @@ class SearchResultCard extends StatelessWidget {
                 ? Image.network(
                     video.thumbnail!,
                     fit: BoxFit.cover,
+                    gaplessPlayback: true,
                     errorBuilder: (_, __, ___) => _buildPlaceholder(cs),
                   )
                 : _buildPlaceholder(cs),
@@ -319,6 +296,41 @@ class SearchResultCard extends StatelessWidget {
       child: Center(
         child: Icon(Icons.videocam, color: cs.onSurfaceVariant, size: 48),
       ),
+    );
+  }
+}
+
+/// Heart icon that subscribes ONLY to its own like state, so a like tap
+/// (or any MediaEngine position tick) rebuilds this icon and never the
+/// whole card — this was the source of the thumbnail flicker.
+class _LikeButton extends StatelessWidget {
+  const _LikeButton(this.video);
+
+  final ExploreVideo video;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final loc = AppLocalizations.of(context);
+    final liked = context.select<MediaEngine, bool>(
+      (engine) => engine.isRemoteLiked(video.url),
+    );
+    return IconButton(
+      icon: Icon(
+        liked ? Icons.favorite : Icons.favorite_border,
+        size: 20,
+        color: liked ? Colors.redAccent : cs.onSurfaceVariant,
+      ),
+      tooltip: loc.likedVideosTitle,
+      onPressed: () => context.read<MediaEngine>().toggleRemoteLike(
+            url: video.url,
+            title: video.title,
+            artist: video.channel,
+            thumbnail: video.thumbnail,
+            isVideo: true,
+          ),
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
     );
   }
 }
