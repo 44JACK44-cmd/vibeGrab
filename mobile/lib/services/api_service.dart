@@ -276,7 +276,8 @@ class ApiService {
       '?q=${Uri.encodeComponent(query)}'
       '&limit=$limit&page=$page'
       '&sort=${Uri.encodeComponent(sort)}'
-      '&when=${Uri.encodeComponent(when)}',
+      '&when=${Uri.encodeComponent(when)}'
+      '&${ApiConfig.feedLocaleQuery}',
     );
     final response = await _client.get(uri).timeout(_mediumTimeout);
     if (response.statusCode != 200) {
@@ -300,8 +301,8 @@ class ApiService {
 
   /// Trending/"most viewed" feed (live content, never hardcoded).
   Future<List<ExploreVideo>> fetchTrending({int limit = 20}) async {
-    final response = await _client
-        .get(Uri.parse('${ApiConfig.exploreTrendingUrl}?limit=$limit'))
+    final response = await _client.get(
+        Uri.parse('${ApiConfig.exploreTrendingUrl}?limit=$limit&${ApiConfig.feedLocaleQuery}'))
         .timeout(_mediumTimeout);
     if (response.statusCode != 200) {
       throw NetworkException('Trending failed',

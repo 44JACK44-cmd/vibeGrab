@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../../core/constants/api_constants.dart';
 import '../../../data/models/explore_search_page.dart';
 import '../../../data/models/explore_video.dart';
 import '../../../services/api_service.dart';
@@ -340,8 +341,9 @@ class ExploreController extends ChangeNotifier {
 
       // 2) Fallback: rotate real search queries, show the first batch as
       // soon as it lands instead of blocking the whole UI on every query.
-      final queries = List<String>.from(LocalExtractionService.trendingQueries)
-        ..shuffle();
+      final queries =
+          List<String>.from(LocalExtractionService.feedTrendingQueries)
+            ..shuffle();
       final merged = <ExploreVideo>[];
       final seenIds = <String>{};
       final excluded = _homeIds(continueWatching: true);
@@ -376,19 +378,24 @@ class ExploreController extends ChangeNotifier {
       _rememberShown(_trending);
       if (_trending.isEmpty) {
         try {
-          _trending =
-              _dedupe(await _extraction.search('popular music', limit: 12));
+          _trending = _dedupe(await _extraction.search(
+              ApiConfig.isSpanishLocale ? 'música popular' : 'popular music',
+              limit: 12));
         } catch (_) {}
       }
       if (_trending.isEmpty) {
         try {
-          _trending = _dedupe(await _extraction.search('music', limit: 12));
+          _trending = _dedupe(await _extraction.search(
+              ApiConfig.isSpanishLocale ? 'música' : 'music',
+              limit: 12));
         } catch (_) {}
       }
     } catch (e) {
       debugPrint('Trending load error: $e');
       try {
-        _trending = _dedupe(await _extraction.search('music', limit: 12));
+        _trending = _dedupe(await _extraction.search(
+            ApiConfig.isSpanishLocale ? 'música' : 'music',
+            limit: 12));
       } catch (_) {}
     } finally {
       _trendingLoading = false;
@@ -578,10 +585,11 @@ class ExploreController extends ChangeNotifier {
 
       for (final kw in interests.take(3)) {
         if (fresh.length >= 10) break;
-        await searchAny('$kw music');
+        await searchAny(kw);
       }
       final rotating =
-          List<String>.from(LocalExtractionService.trendingQueries)..shuffle();
+          List<String>.from(LocalExtractionService.feedTrendingQueries)
+            ..shuffle();
       for (final q in rotating.take(2)) {
         if (fresh.length >= 14) break;
         await searchAny(q);
@@ -658,6 +666,14 @@ class ExploreController extends ChangeNotifier {
     try {
       for (final h in MediaMetadataService().history.take(30)) {
         addText(h.title);
+      }
+    } catch (_) {}
+    // Liked videos carry the strongest signal of what the user wants to
+    // see again, so they feed "For you" alongside searches and history.
+    try {
+      for (final l in MediaMetadataService().likedVideoItems.take(20)) {
+        addText(l.title);
+        addText(l.artist);
       }
     } catch (_) {}
     final sorted = counts.entries.toList()

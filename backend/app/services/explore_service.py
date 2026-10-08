@@ -11,15 +11,25 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.explore import ExploreVideo
 
-# Curated seeds used only when the real trending feed is unreachable.
-# Every entry is executed as a real yt-dlp search, never as fixed data.
-_FALLBACK_TRENDING_QUERIES = [
-    "trending videos today",
-    "popular music this week",
-    "viral videos",
-    "new music releases",
-    "trending news",
-]
+# Curated seeds per UI language, used only when the real trending feed is
+# unreachable. Every entry is executed as a real search, never fixed data.
+_TRENDING_QUERIES: dict[str, list[str]] = {
+    "en": [
+        "trending videos today",
+        "popular music this week",
+        "viral videos",
+        "new music releases",
+        "trending news",
+    ],
+    "es": [
+        "videos en tendencia hoy",
+        "éxitos musicales de la semana",
+        "videos virales",
+        "nuevos estrenos de música",
+        "noticias de tendencia",
+    ],
+}
+_FALLBACK_TRENDING_QUERIES = _TRENDING_QUERIES["en"]
 
 _HOST_PROVIDERS = {
     "youtube.com": "youtube",
@@ -45,12 +55,25 @@ _HOST_PROVIDERS = {
 }
 
 
+def _norm_locale(lang: str | None, gl: str | None) -> tuple[str, str]:
+    """Sanitize the feed locale pair (innertube hl/gl) to safe values."""
+    lang = (lang or "en").strip().lower()
+    if not re.fullmatch(r"[a-z]{2,3}", lang):
+        lang = "en"
+    gl = (gl or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{2}", gl):
+        gl = "ES" if lang == "es" else "US"
+    return lang, gl
+
+
 def search_videos(
     query: str,
     limit: int = 10,
     page: int = 1,
     sort: str = "relevance",
     when: str = "any",
+    lang: str = "en",
+    gl: str = "US",
 ) -> list[ExploreVideo]:
     """Real YouTube search with true pagination.
 
@@ -58,12 +81,18 @@ def search_videos(
     channel, views, publish date and a continuation token for the next
     page). When YouTube blocks the datacenter IP, falls back to a yt-dlp
     search which paginates by slicing the first N*limit results.
+    [lang]/[gl] drive the innertube client locale (hl/gl) so results match
+    the user's region; the yt-dlp fallback just uses the (already
+    localized) query text.
     """
     limit = max(1, min(int(limit), 20))
     page = max(1, int(page))
+    lang, gl = _norm_locale(lang, gl)
 
     try:
-        items = _innertube_search(query, limit=limit, page=page, sort=sort, when=when)
+        items = _innertube_search(
+            query, limit=limit, page=page, sort=sort, when=when, lang=lang, gl=gl
+        )
         if items or page > 1:
             return items
         logger.info("innertube search empty, falling back to yt-dlp")
@@ -160,7 +189,7 @@ _search_state: dict[str, dict] = {}
 _search_lock = threading.Lock()
 
 
-def _post_search(payload: dict) -> dict:
+def _post_search(payload: dict, lang: str = "en", gl: str = "US") -> dict:
     from curl_cffi import requests as cffi_requests
 
     from app.services.youtube_watch_service import _STATIC_CONFIG, _UA_COOKIES
@@ -173,6 +202,8 @@ def _post_search(payload: dict) -> dict:
         "X-Youtube-Client-Name": "1",
         "X-Youtube-Client-Version": client_version,
         **_UA_COOKIES,
+        # Locale-specific negotiation so the feed matches hl/gl of the user.
+        "Accept-Language": f"{lang}-{gl},{lang};q=0.8,en;q=0.5",
     }
     visitor = _STATIC_CONFIG.get("visitor") or ""
     if visitor:
@@ -334,10 +365,16 @@ def _parse_count(text: str | None) -> int | None:
 
 
 def _innertube_search(
-    query: str, limit: int, page: int, sort: str, when: str
+    query: str,
+    limit: int,
+    page: int,
+    sort: str,
+    when: str,
+    lang: str = "en",
+    gl: str = "US",
 ) -> list[ExploreVideo]:
     params = _WHEN_PARAMS.get(when) or _SORT_PARAMS.get(sort)
-    key = f"{query.strip().lower()}|{params or '-'}"
+    key = f"{query.strip().lower()}|{params or '-'}|{lang}|{gl}"
 
     with _search_lock:
         state = _search_state.get(key)
@@ -366,19 +403,22 @@ def _innertube_search(
             state["exhausted"] = True
             break
         if is_first:
-            payload = {"context": _search_context(), "query": state["query"]}
+            payload = {
+                "context": _search_context(lang, gl),
+                "query": state["query"],
+            }
             if params:
                 payload["params"] = params
         else:
             payload = {
-                "context": _search_context(),
+                "context": _search_context(lang, gl),
                 "continuation": state["next_token"],
             }
         try:
-            data = _post_search(payload)
+            data = _post_search(payload, lang, gl)
         except Exception:
             try:
-                data = _post_search(payload)  # one retry: transient resets happen
+                data = _post_search(payload, lang, gl)  # one retry: transient resets happen
             except Exception:
                 if state["items"]:
                     # Return the pages we already have instead of mixing a
@@ -401,30 +441,39 @@ def _innertube_search(
     return list(state["items"][start : start + limit])
 
 
-def _search_context() -> dict:
+def _search_context(lang: str = "en", gl: str = "US") -> dict:
     from app.services.youtube_watch_service import _STATIC_CONFIG
 
-    return _STATIC_CONFIG["context"]
+    ctx = json.loads(json.dumps(_STATIC_CONFIG["context"]))
+    client = ctx.setdefault("client", {})
+    client["hl"] = lang
+    client["gl"] = gl
+    return ctx
 
 
-_trending_cache: tuple[float, list[ExploreVideo]] | None = None
+_trending_cache: dict[tuple[str, str], tuple[float, list[ExploreVideo]]] = {}
 _TRENDING_TTL = 600
 
 
-def get_trending(limit: int = 20) -> tuple[list[ExploreVideo], str]:
+def get_trending(
+    limit: int = 20, lang: str = "en", gl: str = "US"
+) -> tuple[list[ExploreVideo], str]:
     """Real "most viewed" content built from live searches.
 
     YouTube removed the /feed/trending tab (it redirects to the home page),
     so we rank real search results by view count across rotating seed
     queries: same idea as trending, always current, never hardcoded.
+    The cache is keyed per locale so es/es users get a Spanish feed and
+    en/us users get an English one.
     """
-    global _trending_cache
     limit = max(1, min(int(limit), 30))
+    lang, gl = _norm_locale(lang, gl)
 
-    if _trending_cache and time.time() - _trending_cache[0] < _TRENDING_TTL:
-        return list(_trending_cache[1][:limit]), "search"
+    cached = _trending_cache.get((lang, gl))
+    if cached and time.time() - cached[0] < _TRENDING_TTL:
+        return list(cached[1][:limit]), "search"
 
-    queries = list(_FALLBACK_TRENDING_QUERIES)
+    queries = list(_TRENDING_QUERIES.get(lang[:2], _TRENDING_QUERIES["en"]))
     random.shuffle(queries)
 
     out: list[ExploreVideo] = []
@@ -433,7 +482,9 @@ def get_trending(limit: int = 20) -> tuple[list[ExploreVideo], str]:
         if len(out) >= limit:
             break
         try:
-            for video in search_videos(query, limit=10, page=1, sort="views"):
+            for video in search_videos(
+                query, limit=10, page=1, sort="views", lang=lang, gl=gl
+            ):
                 if video.id in seen:
                     continue
                 seen.add(video.id)
@@ -444,7 +495,12 @@ def get_trending(limit: int = 20) -> tuple[list[ExploreVideo], str]:
             logger.warning(f"Trending seed '{query}' failed: {e}")
 
     if out:
-        _trending_cache = (time.time(), list(out))
+        _trending_cache[(lang, gl)] = (time.time(), list(out))
+        if len(_trending_cache) > 8:
+            for old in sorted(_trending_cache, key=lambda k: _trending_cache[k][0])[
+                : len(_trending_cache) - 8
+            ]:
+                _trending_cache.pop(old, None)
     return out[:limit], "search"
 
 

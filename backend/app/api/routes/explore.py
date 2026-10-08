@@ -210,7 +210,15 @@ def relay_debug(v: str):
 
 
 @router.get("/search")
-def search(q: str, limit: int = 10, page: int = 1, sort: str = "relevance", when: str = "any"):
+def search(
+    q: str,
+    limit: int = 10,
+    page: int = 1,
+    sort: str = "relevance",
+    when: str = "any",
+    lang: str = "en",
+    gl: str = "US",
+):
     if not q or not q.strip():
         return JSONResponse(
             status_code=400,
@@ -226,7 +234,7 @@ def search(q: str, limit: int = 10, page: int = 1, sort: str = "relevance", when
 
     try:
         results = search_videos(
-            q.strip(), limit=limit, page=page, sort=sort, when=when
+            q.strip(), limit=limit, page=page, sort=sort, when=when, lang=lang, gl=gl
         )
         return ExploreSearchResponse(
             query=q.strip(),
@@ -243,9 +251,9 @@ def search(q: str, limit: int = 10, page: int = 1, sort: str = "relevance", when
 
 
 @router.get("/trending")
-def trending(limit: int = 20):
+def trending(limit: int = 20, lang: str = "en", gl: str = "US"):
     try:
-        results, source = get_trending(limit=limit)
+        results, source = get_trending(limit=limit, lang=lang, gl=gl)
         return TrendingResponse(source=source, results=results)
     except Exception as e:
         logger.error(f"Trending failed: {e}")

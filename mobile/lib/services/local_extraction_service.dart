@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import '../core/constants/api_constants.dart';
 import '../data/models/analyze_response.dart';
 import '../data/models/format_option.dart';
 import '../data/models/media_info.dart';
@@ -41,6 +42,19 @@ class LocalExtractionService {
     'viral videos today',
     'best music videos',
   ];
+
+  /// Same rotating seeds in Spanish for es-locale devices (Fase 2B).
+  static const trendingQueriesEs = [
+    'música popular 2026',
+    'videos en tendencia',
+    'los éxitos de la semana',
+    'videos virales hoy',
+    'mejores videoclips',
+  ];
+
+  /// Locale-aware rotating seed queries for feed fallbacks.
+  static List<String> get feedTrendingQueries =>
+      ApiConfig.isSpanishLocale ? trendingQueriesEs : trendingQueries;
 
   static const categories = [
     'Music', 'Gaming', 'News', 'Sports', 'Entertainment',

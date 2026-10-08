@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiConfig {
@@ -30,6 +32,33 @@ class ApiConfig {
   static bool get isCustomBackend => _customBaseUrl != null && _customBaseUrl!.isNotEmpty;
 
   static String get displayUrl => baseUrl;
+
+  /// Feed locale for the backend (YouTube innertube hl/gl): `lang=es&gl=ES`.
+  /// Derived from the device locale so trending/search match the region.
+  static String get feedLocaleQuery {
+    try {
+      final parts = Platform.localeName.split(RegExp(r'[_\-.]'));
+      var lang = parts.isNotEmpty ? parts.first.toLowerCase() : 'en';
+      if (lang.length > 3) lang = lang.substring(0, 2);
+      if (!RegExp(r'^[a-z]{2,3}$').hasMatch(lang)) lang = 'en';
+      var gl = parts.length > 1 ? parts[1].toUpperCase() : '';
+      if (!RegExp(r'^[A-Z]{2}$').hasMatch(gl)) {
+        gl = lang == 'es' ? 'ES' : 'US';
+      }
+      return 'lang=$lang&gl=$gl';
+    } catch (_) {
+      return 'lang=en&gl=US';
+    }
+  }
+
+  /// True when the device speaks Spanish (picks localized feed seed queries).
+  static bool get isSpanishLocale {
+    try {
+      return Platform.localeName.toLowerCase().startsWith('es');
+    } catch (_) {
+      return false;
+    }
+  }
 
   static const String analyzeEndpoint = '/api/analyze';
   static const String downloadsEndpoint = '/api/downloads';
