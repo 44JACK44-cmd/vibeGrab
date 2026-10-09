@@ -65,6 +65,36 @@ class LocalDownloadService {
     final filePath = '$dir/$safeTitle.$ext';
     final formatId = (formatIdOverride ?? task.formatId).trim();
 
+    // Plain file (e.g. a video cover image): direct HTTP GET without the
+    // yt-dlp relay, which only understands provider URLs.
+    if (formatId.isEmpty) {
+      final direct = task.directUrl;
+      final uri = direct == null ? null : Uri.tryParse(direct);
+      if (uri == null || uri.host.isEmpty) {
+        _log('DIRECT FAILED: no direct URL for file download');
+        return task.copyWith(
+          status: 'failed',
+          error: 'Invalid download URL',
+          errorCode: 'invalidUrl',
+        );
+      }
+      _log('DIRECT FILE: filePath=$filePath url=${uri.host}${uri.path}');
+      if (!_activeDownloads.containsKey(task.id)) {
+        return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
+      }
+      onStep(const DownloadStep('connecting', 'Connecting to server...'));
+      onStep(const DownloadStep('downloading', 'Downloading...'));
+      return _downloadViaHttpClient(
+        url: uri,
+        filePath: filePath,
+        totalBytes: task.totalBytes ?? 0,
+        onProgress: onProgress,
+        task: task,
+        headers: _directHeaders,
+        responseTimeout: const Duration(seconds: 60),
+      );
+    }
+
     final fetchUri = Uri.tryParse(
       '${ApiConfig.baseUrl}/api/fetch'
       '?url=${Uri.encodeQueryComponent(task.url)}'

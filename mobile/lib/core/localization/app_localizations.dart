@@ -349,6 +349,9 @@ class AppLocalizations {
   String get shareAnalyzing => _get('shareAnalyzing');
   String get shareVideo => _get('shareVideo');
   String get shareAudio => _get('shareAudio');
+  String get shareImage => _get('shareImage');
+  String get imageCover => _get('imageCover');
+  String get downloadFormats => _get('downloadFormats');
   String get shareDownload => _get('shareDownload');
   String get shareCancel => _get('shareCancel');
   String get shareRetry => _get('shareRetry');

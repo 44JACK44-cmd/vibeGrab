@@ -201,6 +201,22 @@ class MiniPlayer extends StatelessWidget {
         // YouTube-like: tapping opens the video page (with retry + error
         // state), not a bare fullscreen that gets stuck loading.
         final videoId = _videoIdFromUrl(mediaId);
+        // Carry the engine's queue over so next/previous keep working after
+        // reopening the page (every explore item is stored as its URL id).
+        final items = engine.queue;
+        final remoteQueue = items.isNotEmpty &&
+                items.every((it) => it.id.startsWith('http'))
+            ? items
+                .map((it) => ExploreVideo(
+                      id: _videoIdFromUrl(it.id),
+                      title: it.title,
+                      url: it.id,
+                      thumbnail: it.artUri?.toString(),
+                      channel: it.artist,
+                      duration: it.duration?.inSeconds,
+                    ))
+                .toList()
+            : null;
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -215,6 +231,7 @@ class MiniPlayer extends StatelessWidget {
                     ? engine.state.duration.inSeconds
                     : null,
               ),
+              queue: remoteQueue,
             ),
           ),
         );

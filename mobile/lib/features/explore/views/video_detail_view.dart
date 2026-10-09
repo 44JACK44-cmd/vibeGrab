@@ -98,6 +98,17 @@ _play();
   void _play() {
     final engine = _engine;
     if (engine == null) return;
+    // The engine may already be playing this exact video (the page was
+    // reopened from the mini player or a notification): adopt that running
+    // session instead of restarting it from 00:00.
+    if (engine.currentMediaId == _current.url &&
+        engine.playbackError == null &&
+        (engine.state.status == MediaStatus.loading ||
+            engine.state.status == MediaStatus.buffering ||
+            engine.state.status == MediaStatus.playing ||
+            engine.state.status == MediaStatus.paused)) {
+      return;
+    }
     final q = _queue;
     if (q != null && q.isNotEmpty) {
       final i = q.indexWhere((v) => v.url == _current.url);
@@ -927,7 +938,7 @@ return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              AppLocalizations.of(context).formatAudio,
+              AppLocalizations.of(context).downloadFormats,
               style: TextStyle(
                 color: cs.onSurface,
                 fontSize: 16,
@@ -942,6 +953,61 @@ return Row(
                 _startDownload(format);
               },
             ),
+            if (_current.thumbnail != null &&
+                _current.thumbnail!.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Material(
+                color: cs.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: _startImageDownload,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 12),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: cs.tertiary.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Icon(Icons.image_rounded,
+                              color: cs.tertiary, size: 18),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'JPG',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13,
+                                  color: cs.onSurface,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                AppLocalizations.of(context).imageCover,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: cs.onSurfaceVariant
+                                      .withValues(alpha: 0.7),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ],
         );
       },
@@ -966,6 +1032,7 @@ return Row(
 
     downloadsCtrl.addTask(task);
     if (mounted) {
+      setState(() => _showFormats = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(AppLocalizations.of(context).downloadAdded(video.title)),
         backgroundColor: AppColors.success,
@@ -973,6 +1040,23 @@ return Row(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ));
     }
+  }
+
+  /// Saves the video cover as a JPG in the gallery and closes the panel.
+  Future<void> _startImageDownload() async {
+    final thumb = _current.thumbnail;
+    if (thumb == null || thumb.isEmpty || !mounted) return;
+    context
+        .read<DownloadsController>()
+        .addImageDownload(imageUrl: thumb, title: _current.title);
+    if (!mounted) return;
+    setState(() => _showFormats = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(AppLocalizations.of(context).downloadAdded(_current.title)),
+      backgroundColor: AppColors.success,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ));
   }
 
   // --- Comments ---

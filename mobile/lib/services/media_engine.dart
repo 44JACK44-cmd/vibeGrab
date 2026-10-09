@@ -1243,6 +1243,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       mediaType: MediaType.video,
       status: MediaStatus.loading,
       position: Duration.zero,
+      duration: Duration.zero,
     );
     _syncToAudioHandler(item);
     _syncQueueToHandler();

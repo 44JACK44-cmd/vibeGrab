@@ -108,6 +108,13 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
                             if (controller.audioFormats.isNotEmpty) const SizedBox(height: 16),
                             _buildFormatSection(loc, cs, controller, isAudio: false),
                           ],
+                          if (controller.media?.thumbnail != null &&
+                              controller.media!.thumbnail!.isNotEmpty) ...[
+                            if (controller.audioFormats.isNotEmpty ||
+                                controller.videoFormats.isNotEmpty)
+                              const SizedBox(height: 16),
+                            _buildImageSection(loc, cs, controller),
+                          ],
                           if (controller.allFormats.isEmpty)
                             _buildNoFormats(loc, cs),
                         ],
@@ -452,7 +459,11 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
           ),
         ),
         child: InkWell(
-          onTap: () => controller.selectFormat(format),
+          onTap: () {
+            if (controller.isDownloading) return;
+            controller.selectFormat(format);
+            _startDownload(controller, loc);
+          },
           borderRadius: BorderRadius.circular(12),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -674,6 +685,141 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
         ),
       ),
     );
+  }
+
+  Widget _buildImageSection(
+      AppLocalizations loc, ColorScheme cs, SharedDownloadController controller) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+                width: 3,
+                height: 14,
+                decoration: BoxDecoration(
+                    color: cs.tertiary,
+                    borderRadius: BorderRadius.circular(2))),
+            const SizedBox(width: 8),
+            Text(
+              loc.shareImage,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: cs.tertiary,
+                letterSpacing: 1.2,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _buildImageTile(controller, cs, loc),
+      ],
+    );
+  }
+
+  Widget _buildImageTile(SharedDownloadController controller, ColorScheme cs,
+      AppLocalizations loc) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: cs.surfaceContainerHighest,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: InkWell(
+          onTap: controller.isDownloading
+              ? null
+              : () => _startImageDownload(controller, loc),
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Container(
+                  width: 22,
+                  height: 22,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: cs.onSurfaceVariant.withValues(alpha: 0.4),
+                      width: 2,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: cs.tertiary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(Icons.image_rounded, color: cs.tertiary, size: 18),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'JPG',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                          color: cs.onSurface,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        loc.imageCover,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: cs.onSurfaceVariant.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _startImageDownload(
+      SharedDownloadController controller, AppLocalizations loc) async {
+    if (controller.isDownloading) return;
+    final media = controller.media;
+    final thumb = media?.thumbnail;
+    if (thumb == null || thumb.isEmpty) return;
+
+    final downloadsController = context.read<DownloadsController>();
+    controller.setDownloading();
+    final task = downloadsController.addImageDownload(
+      imageUrl: thumb,
+      title: media?.title ?? loc.untitled,
+    );
+
+    if (widget.overlay) {
+      if (mounted) {
+        setState(() {
+          _savingTaskId = task.id;
+          _closeScheduled = false;
+        });
+      }
+      return;
+    }
+
+    controller.setCompleted();
+
+    Future.delayed(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      controller.reset();
+    });
   }
 
   Widget _buildDownloadButton(AppLocalizations loc, ColorScheme cs, SharedDownloadController controller) {

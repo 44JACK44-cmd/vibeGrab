@@ -127,10 +127,18 @@ class DownloadsController extends ChangeNotifier {
         if (ext == 'jpg' || ext == 'json') continue;
         mediaBaseNames.add(name.substring(0, dot));
       }
+      // Files owned by a queue task (e.g. a downloaded cover image) must
+      // stay where the task expects them, otherwise its filePath dangles.
+      final taskPaths = _tasks
+          .map((t) => t.filePath)
+          .whereType<String>()
+          .where((p) => p.isNotEmpty)
+          .toSet();
       int moved = 0;
       for (final f in entries) {
         final name = f.path.split(Platform.pathSeparator).last;
         if (!name.toLowerCase().endsWith('.jpg')) continue;
+        if (taskPaths.contains(f.path)) continue;
         final baseName = name.substring(0, name.length - 4);
         if (!mediaBaseNames.contains(baseName)) continue;
         final dest =
@@ -237,6 +245,26 @@ class DownloadsController extends ChangeNotifier {
     _persistence.saveTask(task);
     notifyListeners();
     _enqueueDownload(task);
+  }
+
+  /// Enqueues a plain image download (e.g. the video cover) saved as a JPG
+  /// and published to the device gallery on completion.
+  DownloadTask addImageDownload(
+      {required String imageUrl, required String title}) {
+    final task = DownloadTask(
+      id: 'dl_${DateTime.now().millisecondsSinceEpoch}',
+      url: imageUrl,
+      title: title,
+      formatId: '',
+      thumbnail: imageUrl,
+      hasVideo: false,
+      hasAudio: false,
+      directUrl: imageUrl,
+      fileExt: 'jpg',
+      createdAt: DateTime.now().toIso8601String(),
+    );
+    addTask(task);
+    return task;
   }
 
   void _enqueueDownload(DownloadTask task) {
@@ -453,6 +481,13 @@ class DownloadsController extends ChangeNotifier {
         return 'audio/flac';
       case 'aac':
         return 'audio/aac';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
       default:
         return 'video/mp4';
     }
