@@ -54,6 +54,10 @@ class AppLocalizations {
   String get navSettings => _get('navSettings');
   String get navExplore => _get('navExplore');
   String get navHome => _get('navHome');
+  String get navBrowser => _get('navBrowser');
+  String get browserUrlHint => _get('browserUrlHint');
+  String get browserOpenExternal => _get('browserOpenExternal');
+  String get back => _get('back');
 
   String get urlHint => _get('urlHint');
   String get analyzeButton => _get('analyzeButton');

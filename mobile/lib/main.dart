@@ -27,6 +27,7 @@ import 'features/explore/controllers/explore_controller.dart';
 import 'features/library/controllers/library_controller.dart';
 import 'features/settings/controllers/settings_controller.dart';
 import 'features/analyzer/views/analyzer_view.dart';
+import 'features/browser/views/browser_view.dart';
 import 'features/downloads/views/downloads_view.dart';
 import 'features/explore/views/explore_view.dart';
 import 'features/library/views/library_view.dart';
@@ -226,7 +227,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
           if (action.taskId != null) dl.retryTask(action.taskId!);
           break;
         case NotificationActionType.openLibrary:
-          setState(() => _currentIndex = 3);
+          setState(() => _currentIndex = 4);
           break;
       }
     });
@@ -327,8 +328,9 @@ context.read<MediaEngine>().initAudioService().then((_) {
               index: _currentIndex,
               children: [
                 const ExploreView(),
+                const BrowserView(),
                 AnalyzerView(),
-                DownloadsView(onNavigateToAnalyze: () => _navigateToTab(1)),
+                DownloadsView(onNavigateToAnalyze: () => _navigateToTab(2)),
                 const LibraryView(),
                 const SettingsView(),
               ],
@@ -345,6 +347,11 @@ context.read<MediaEngine>().initAudioService().then((_) {
             icon: const Icon(Icons.home_outlined),
             selectedIcon: Icon(Icons.home, color: colorScheme.primary),
             label: loc.navHome,
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.public_outlined),
+            selectedIcon: Icon(Icons.public, color: colorScheme.primary),
+            label: loc.navBrowser,
           ),
           NavigationDestination(
             icon: const Icon(Icons.link),
