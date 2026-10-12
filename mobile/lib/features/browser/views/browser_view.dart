@@ -9,7 +9,8 @@ import '../../share/controllers/shared_download_controller.dart';
 import '../../share/widgets/shared_download_sheet.dart';
 import '../url_detector/browser_url_detector.dart';
 
-/// Built-in browser tab: browse YouTube / TikTok / Instagram... and download
+/// Built-in general-purpose browser. Opens on a start page of brand shortcuts
+/// (no site is auto-loaded), accepts any URL or free-text search, and downloads
 /// any detected media page through the shared format sheet.
 class BrowserView extends StatefulWidget {
   const BrowserView({super.key});
@@ -18,24 +19,100 @@ class BrowserView extends StatefulWidget {
   State<BrowserView> createState() => _BrowserViewState();
 }
 
+/// A brand shortcut card on the browser start page.
+class _BrowserSite {
+  final String label;
+  final String url;
+  final List<Color> colors;
+  final IconData icon;
+  final String? glyph;
+
+  const _BrowserSite(
+    this.label,
+    this.url,
+    this.colors, {
+    this.icon = Icons.language_rounded,
+    this.glyph,
+  });
+}
+
 class _BrowserViewState extends State<BrowserView> {
   late final WebViewController _web;
   final TextEditingController _urlBar = TextEditingController();
+  final TextEditingController _homeSearch = TextEditingController();
   final FocusNode _urlFocus = FocusNode();
+  final FocusNode _homeFocus = FocusNode();
 
-  bool _loading = true;
+  bool _showHome = true;
+  bool _loading = false;
   double _progress = 0;
   bool _canGoBack = false;
   bool _canGoForward = false;
   String? _currentUrl;
-
-  static const _homeUrl = 'https://www.youtube.com';
 
   // Desktop UA: mobile YouTube pushes the native app overlay and hides the
   // normal watch page inside WebViews; the desktop site behaves like PC.
   static const _desktopUa =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+  // Host-like token ending in a real TLD, so "1.5" or "version 2" fall through
+  // to a web search instead of being forced into a URL.
+  static final _hostLike = RegExp(
+    r'^(?:[\w-]+\.)+[a-zA-Z]{2,}(?::\d+)?(?:[/?#]\S*)?$',
+  );
+
+  // Brand colors kept realistic so the tiles read as the real services.
+  static const _sites = <_BrowserSite>[
+    _BrowserSite(
+      'YouTube',
+      'https://www.youtube.com',
+      [Color(0xFFFF0033), Color(0xFFB30000)],
+      icon: Icons.play_circle_fill_rounded,
+    ),
+    _BrowserSite(
+      'TikTok',
+      'https://www.tiktok.com',
+      [Color(0xFF141414), Color(0xFF2E2E2E)],
+      icon: Icons.music_note_rounded,
+    ),
+    _BrowserSite(
+      'Instagram',
+      'https://www.instagram.com',
+      [Color(0xFF833AB4), Color(0xFFE1306C)],
+      icon: Icons.camera_alt_rounded,
+    ),
+    _BrowserSite(
+      'Facebook',
+      'https://m.facebook.com',
+      [Color(0xFF1877F2), Color(0xFF0B5ED7)],
+      icon: Icons.facebook,
+    ),
+    _BrowserSite(
+      'X',
+      'https://x.com',
+      [Color(0xFF000000), Color(0xFF16181C)],
+      glyph: 'X',
+    ),
+    _BrowserSite(
+      'SoundCloud',
+      'https://soundcloud.com',
+      [Color(0xFFFF5500), Color(0xFFFF8A00)],
+      icon: Icons.graphic_eq_rounded,
+    ),
+    _BrowserSite(
+      'Vimeo',
+      'https://vimeo.com',
+      [Color(0xFF1AB7EA), Color(0xFF0F80B5)],
+      icon: Icons.videocam_rounded,
+    ),
+    _BrowserSite(
+      'Dailymotion',
+      'https://www.dailymotion.com',
+      [Color(0xFF0066DC), Color(0xFF0044A0)],
+      icon: Icons.movie_rounded,
+    ),
+  ];
 
   @override
   void initState() {
@@ -55,7 +132,6 @@ class _BrowserViewState extends State<BrowserView> {
         },
         onPageFinished: _onPageFinished,
       ));
-    _web.loadRequest(Uri.parse(_homeUrl));
   }
 
   Future<void> _onPageFinished(String url) async {
@@ -75,13 +151,42 @@ class _BrowserViewState extends State<BrowserView> {
     _urlBar.text = url;
   }
 
-  void _submitUrl(String value) {
-    _urlFocus.unfocus();
-    final text = value.trim();
+  bool _looksLikeUrl(String text) =>
+      text.contains('://') ||
+      (!text.contains(' ') && _hostLike.hasMatch(text));
+
+  Uri? _resolveUri(String text) {
+    if (_looksLikeUrl(text)) {
+      return Uri.tryParse(text.contains('://') ? text : 'https://$text');
+    }
+    return Uri.parse(
+      'https://www.google.com/search?q=${Uri.encodeQueryComponent(text)}',
+    );
+  }
+
+  /// Accepts a URL or free text: a URL opens the site, anything else becomes a
+  /// web search. This is what makes the tab a real browser, not a YouTube app.
+  void _navigate(String input) {
+    final text = input.trim();
     if (text.isEmpty) return;
-    final uri = Uri.tryParse(text.contains('://') ? text : 'https://$text');
-    if (uri == null || uri.host.isEmpty) return;
+    _urlFocus.unfocus();
+    _homeFocus.unfocus();
+    final uri = _resolveUri(text);
+    if (uri == null) return;
+    _homeSearch.clear();
+    setState(() => _showHome = false);
     _web.loadRequest(uri);
+  }
+
+  void _goHome() {
+    _urlFocus.unfocus();
+    _homeFocus.unfocus();
+    setState(() => _showHome = true);
+  }
+
+  void _goBack() {
+    if (_showHome) setState(() => _showHome = false);
+    _web.goBack();
   }
 
   /// Non-null when the current page is a downloadable media page.
@@ -99,7 +204,9 @@ class _BrowserViewState extends State<BrowserView> {
   @override
   void dispose() {
     _urlBar.dispose();
+    _homeSearch.dispose();
     _urlFocus.dispose();
+    _homeFocus.dispose();
     super.dispose();
   }
 
@@ -107,19 +214,28 @@ class _BrowserViewState extends State<BrowserView> {
   Widget build(BuildContext context) {
     final loc = AppLocalizations.of(context);
     final cs = Theme.of(context).colorScheme;
-    final downloadable = _downloadable;
+    final downloadable = _showHome ? null : _downloadable;
 
     return Stack(
       children: [
         Column(
           children: [
             _buildToolbar(cs, loc),
-            if (_loading)
+            if (_loading && !_showHome)
               LinearProgressIndicator(
                 value: _progress > 0 ? _progress : null,
                 minHeight: 2,
               ),
-            Expanded(child: WebViewWidget(controller: _web)),
+            Expanded(
+              child: Stack(
+                children: [
+                  // Keep the WebView mounted behind the start page so the open
+                  // tab is preserved when returning from a shortcut.
+                  Positioned.fill(child: WebViewWidget(controller: _web)),
+                  if (_showHome) _buildHome(context, loc, cs),
+                ],
+              ),
+            ),
           ],
         ),
         Positioned(
@@ -144,29 +260,50 @@ class _BrowserViewState extends State<BrowserView> {
     );
   }
 
+  Widget _iconBtn(
+    IconData icon, {
+    VoidCallback? onPressed,
+    String? tooltip,
+  }) {
+    return IconButton(
+      icon: Icon(icon, size: 20),
+      onPressed: onPressed,
+      tooltip: tooltip,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+      visualDensity: VisualDensity.compact,
+    );
+  }
+
   Widget _buildToolbar(ColorScheme cs, AppLocalizations loc) {
     return Material(
       color: cs.surfaceContainerHighest.withValues(alpha: 0.45),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
         child: Row(
           children: [
-            IconButton(
-              icon: const Icon(Icons.arrow_back_rounded, size: 20),
-              onPressed: _canGoBack ? () => _web.goBack() : null,
+            _iconBtn(
+              Icons.arrow_back_rounded,
               tooltip: loc.back,
+              onPressed: _canGoBack ? _goBack : null,
             ),
-            IconButton(
-              icon: const Icon(Icons.arrow_forward_rounded, size: 20),
+            _iconBtn(
+              Icons.arrow_forward_rounded,
               onPressed: _canGoForward ? () => _web.goForward() : null,
             ),
+            _iconBtn(
+              Icons.home_rounded,
+              tooltip: loc.navHome,
+              onPressed: _showHome ? null : _goHome,
+            ),
+            const SizedBox(width: 2),
             Expanded(
               child: TextField(
                 controller: _urlBar,
                 focusNode: _urlFocus,
                 keyboardType: TextInputType.url,
                 textInputAction: TextInputAction.go,
-                onSubmitted: _submitUrl,
+                onSubmitted: _navigate,
                 style: const TextStyle(fontSize: 13),
                 decoration: InputDecoration(
                   hintText: loc.browserUrlHint,
@@ -198,18 +335,20 @@ class _BrowserViewState extends State<BrowserView> {
                 ),
               ),
             ),
-            IconButton(
-              icon: const Icon(Icons.refresh_rounded, size: 20),
-              onPressed: () => _web.reload(),
+            const SizedBox(width: 2),
+            _iconBtn(
+              Icons.refresh_rounded,
               tooltip: loc.retry,
+              onPressed: _showHome ? null : () => _web.reload(),
             ),
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert_rounded, size: 20),
               padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
               onSelected: (action) async {
                 switch (action) {
                   case 'home':
-                    _web.loadRequest(Uri.parse(_homeUrl));
+                    _goHome();
                     break;
                   case 'external':
                     final url = _currentUrl;
@@ -240,6 +379,176 @@ class _BrowserViewState extends State<BrowserView> {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHome(BuildContext context, AppLocalizations loc, ColorScheme cs) {
+    final tt = Theme.of(context).textTheme;
+    return Material(
+      color: cs.surface,
+      child: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF7C4DFF), Color(0xFF448AFF)],
+                    ),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: const Icon(Icons.explore_rounded,
+                      color: Colors.white, size: 25),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        loc.navBrowser,
+                        style: tt.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.3,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        loc.browserTagline,
+                        style: tt.bodySmall
+                            ?.copyWith(color: cs.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            _buildSearchField(cs, loc),
+            const SizedBox(height: 24),
+            Text(
+              loc.browserPopularSites.toUpperCase(),
+              style: tt.labelSmall?.copyWith(
+                color: cs.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.1,
+              ),
+            ),
+            const SizedBox(height: 12),
+            GridView.count(
+              crossAxisCount: 4,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              childAspectRatio: 0.82,
+              children: [
+                for (final site in _sites) _buildSiteCard(context, site),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchField(ColorScheme cs, AppLocalizations loc) {
+    return TextField(
+      controller: _homeSearch,
+      focusNode: _homeFocus,
+      keyboardType: TextInputType.webSearch,
+      textInputAction: TextInputAction.search,
+      onSubmitted: _navigate,
+      style: const TextStyle(fontSize: 14.5),
+      decoration: InputDecoration(
+        hintText: loc.browserUrlHint,
+        hintStyle: TextStyle(
+          color: cs.onSurfaceVariant.withValues(alpha: 0.6),
+        ),
+        prefixIcon: Icon(Icons.search_rounded,
+            size: 20, color: cs.onSurfaceVariant),
+        suffixIcon: IconButton(
+          icon: Icon(Icons.arrow_forward_rounded, size: 18, color: cs.primary),
+          onPressed: () => _navigate(_homeSearch.text),
+        ),
+        filled: true,
+        fillColor: cs.surfaceContainerHighest,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide.none,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSiteCard(BuildContext context, _BrowserSite site) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => _navigate(site.url),
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: site.colors,
+            ),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: site.colors.first.withValues(alpha: 0.32),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.18),
+                  shape: BoxShape.circle,
+                ),
+                child: site.glyph != null
+                    ? Text(
+                        site.glyph!,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          height: 1,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      )
+                    : Icon(site.icon, color: Colors.white, size: 20),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                site.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

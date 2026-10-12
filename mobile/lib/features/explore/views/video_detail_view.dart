@@ -154,12 +154,35 @@ _play();
   /// reloads its related/comments/meta without stacking a new route.
   void _onEngineChanged() {
     if (!mounted) return;
+    final engine = _engine;
+    final id = engine?.currentMediaId;
+    if (engine == null || id == null) return;
+    if (id == _current.url) return;
+    // Prefer this page's own queue; if it is stale or was opened without one,
+    // fall back to whatever the engine is actually playing so the detail never
+    // stays stuck on the previous video after a switch.
     final q = _queue;
-    final id = _engine?.currentMediaId;
-    if (q == null || id == null) return;
-    final idx = q.indexWhere((v) => v.url == id);
-    if (idx < 0 || q[idx].url == _current.url) return;
-    _showVideo(q[idx]);
+    ExploreVideo? next;
+    final idx = q?.indexWhere((v) => v.url == id) ?? -1;
+    if (q != null && idx >= 0) {
+      next = q[idx];
+    } else {
+      final eIdx = engine.queue.indexWhere((m) => m.id == id);
+      if (eIdx >= 0) {
+        final item = engine.queue[eIdx];
+        next = ExploreVideo(
+          id: item.id,
+          title: item.title,
+          url: item.id,
+          channel: item.artist,
+          duration: item.duration?.inSeconds,
+          thumbnail: item.artUri?.toString(),
+          provider: 'youtube',
+        );
+      }
+    }
+    if (next == null || next.url == _current.url) return;
+    _showVideo(next);
   }
 
   @override

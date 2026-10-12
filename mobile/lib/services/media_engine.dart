@@ -1285,6 +1285,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Duration? _expectedDuration;
 
+  /// Effective position offset for the active network controller. A `?t=`
+  /// relay stream may REWRITE timestamps (player clock restarts at 0 → offset
+  /// must be added to every read) or PRESERVE them (clock already in real
+  /// time → offset must NOT be added). Detected once at start so position,
+  /// duration and end-detection stay correct either way.
+  Duration _relayClockOffset = Duration.zero;
+
   /// Last resolved stream URL for the active video: lets the background
   /// handoff (onScreenOff) keep ANY source playing as audio, and lets the
   /// relay seek reconnect from the same endpoint.
@@ -1757,13 +1764,31 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       }
 
       // Streams started from a `?t=` relay URL already begin at startAt —
-      // seeking again on an index-less merge jumps back to 0. ExoPlayer's
-      // own clock restarts at 0 there, so track the offset to keep the
-      // displayed/saved position aligned with the real video time.
+      // seeking again on an index-less merge jumps back to 0. But the relay
+      // may either REWRITE timestamps (player clock restarts at 0 and reports
+      // the REMAINING length) or PRESERVE them (clock and length stay in real
+      // time). Blindly adding `t` on every read doubles the offset against a
+      // preserving stream — the exact "wrong time" glitch. Detect the mode by
+      // comparing the reported length with the known metadata length.
       final tParam = int.tryParse(streamUrl.queryParameters['t'] ?? '');
-      final posOffset = (tParam != null && tParam > 0)
+      var posOffset = (tParam != null && tParam > 0)
           ? Duration(seconds: tParam)
           : Duration.zero;
+      if (posOffset > Duration.zero &&
+          !_durationLooksUnknown(controller.value.duration)) {
+        final meta0 = _expectedDuration;
+        if (meta0 != null && meta0 > Duration.zero) {
+          final raw0 = controller.value.duration;
+          final looksRemaining =
+              (raw0 + posOffset - meta0).abs() <= const Duration(seconds: 3);
+          final looksPreserved =
+              (raw0 - meta0).abs() <= const Duration(seconds: 3);
+          if (looksPreserved && !looksRemaining) {
+            posOffset = Duration.zero;
+          }
+        }
+      }
+      _relayClockOffset = posOffset;
       if (startAt > Duration.zero && posOffset == Duration.zero) {
         await controller.seekTo(startAt);
       }
@@ -1772,30 +1797,34 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         if (!identical(_videoController, controller)) return;
         if (!controller.value.isInitialized) return;
         if (controller.value.hasError) return;
-        final pos = controller.value.position + posOffset;
+        final meta = _expectedDuration;
+        final pos = controller.value.position + _relayClockOffset;
         final rawDur = controller.value.duration;
-        // A `-ss` reconnect makes the player report the REMAINING duration
-        // (its timeline restarts at 0): add the offset back so the UI and
-        // the completion check always see the REAL total.
-        final shifted = (posOffset > Duration.zero &&
-                !_durationLooksUnknown(rawDur))
-            ? rawDur + posOffset
-            : rawDur;
-        // Relay/merge streams report zero/1ms duration: fall back to the
-        // expected one from metadata so progress + total time render.
-        final durUnknown = _durationLooksUnknown(shifted);
-        if (durUnknown && _expectedDuration != null) {
-          // Re-inject: the plugin's seek/position clamps read value.duration.
-          controller.value = controller.value.copyWith(duration: _expectedDuration);
+        // The metadata length is authoritative when we have it: the relay's
+        // own timeline (remaining- or total-based) is only a fallback, and a
+        // wrong total skews the bar, every seek target and end detection.
+        Duration dur;
+        if (meta != null && meta > Duration.zero) {
+          dur = meta;
+          if (_durationLooksUnknown(rawDur)) {
+            // Re-inject: the plugin's seek/position clamps read value.duration.
+            controller.value = controller.value.copyWith(duration: meta);
+          }
+        } else if (_durationLooksUnknown(rawDur)) {
+          dur = Duration.zero;
+        } else if (_relayClockOffset > Duration.zero) {
+          dur = rawDur + _relayClockOffset;
+        } else {
+          dur = rawDur;
         }
-        final dur = durUnknown ? (_expectedDuration ?? Duration.zero) : shifted;
-        _state = _state.copyWith(position: pos, duration: dur);
-        _savePosition(mediaId, pos);
+        final clampedPos = (dur > Duration.zero && pos > dur) ? dur : pos;
+        _state = _state.copyWith(position: clampedPos, duration: dur);
+        _savePosition(mediaId, clampedPos);
         _syncPlaybackStateToHandler();
 
         if (!_completionHandled &&
-            pos >= dur &&
             dur > Duration.zero &&
+            clampedPos >= dur &&
             !controller.value.isPlaying) {
           _completionHandled = true;
           _handlePlaybackComplete();
@@ -1804,17 +1833,19 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       });
 
       final rawInit = controller.value.duration;
-      final initDur = (posOffset > Duration.zero &&
-              !_durationLooksUnknown(rawInit))
-          ? rawInit + posOffset
-          : rawInit;
+      final expDur = _expectedDuration;
+      final initDur = (expDur != null && expDur > Duration.zero)
+          ? expDur
+          : (posOffset > Duration.zero && !_durationLooksUnknown(rawInit)
+              ? rawInit + posOffset
+              : rawInit);
       _state = _state.copyWith(
         status: MediaStatus.playing,
         position: posOffset > Duration.zero ? posOffset : startAt,
         // Never inherit the previous item's duration: it would show a
         // wrong total until the first listener tick.
         duration: _durationLooksUnknown(initDur)
-            ? (_expectedDuration ?? Duration.zero)
+            ? (expDur ?? Duration.zero)
             : initDur,
       );
       _syncPlaybackStateToHandler();
