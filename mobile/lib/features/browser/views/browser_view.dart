@@ -218,7 +218,10 @@ class _BrowserViewState extends State<BrowserView> {
 
     return Stack(
       children: [
-        Column(
+        SafeArea(
+          top: true,
+          bottom: false,
+          child: Column(
           children: [
             _buildToolbar(cs, loc),
             if (_loading && !_showHome)
@@ -237,6 +240,7 @@ class _BrowserViewState extends State<BrowserView> {
               ),
             ),
           ],
+          ),
         ),
         Positioned(
           right: 16,

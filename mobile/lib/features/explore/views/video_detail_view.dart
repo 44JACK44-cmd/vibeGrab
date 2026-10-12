@@ -462,7 +462,10 @@ Future<void> _toggleLike() async {
 
         return Container(
           color: Colors.black,
-          child: Column(
+          child: SafeArea(
+            top: true,
+            bottom: false,
+            child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // Vertical swipe over the player: up = next recommendation,
@@ -585,6 +588,7 @@ Future<void> _toggleLike() async {
               if (showingVideo)
                 _buildInlineControls(engine, cs, loc),
             ],
+            ),
           ),
         );
       },
