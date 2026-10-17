@@ -1,20 +1,25 @@
 import logging
 import sys
 
+from app.core.config import settings
+
 
 def setup_logging() -> logging.Logger:
     logger = logging.getLogger("vibegrab")
-    logger.setLevel(logging.DEBUG)
+    level = logging.DEBUG if settings.DEBUG else logging.INFO
+    logger.setLevel(level)
 
     handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.DEBUG)
+    handler.setLevel(level)
 
     formatter = logging.Formatter(
         "[%(asctime)s] %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    if not logger.handlers:
+        logger.addHandler(handler)
+    logger.propagate = False
 
     return logger
 

@@ -28,6 +28,7 @@ from app.services.youtube_watch_service import (
     get_stream_urls,
 )
 from app.core.logging import logger
+from app.core.config import settings
 
 router = APIRouter(prefix="/api/explore")
 
@@ -44,8 +45,10 @@ def proxy(u: str, range_header: str | None = Header(None, alias="Range")):
     target = urllib.parse.unquote(u)
     parts = urllib.parse.urlsplit(target)
     host = (parts.hostname or "").lower()
-    allowed = host == "googlevideo.com" or host.endswith(".googlevideo.com")
-    allowed = allowed or host.endswith(".f5.si")
+    allowed = any(
+        host == suffix or host.endswith("." + suffix)
+        for suffix in settings.relay_allowed_hosts_list
+    )
     if parts.scheme != "https" or not allowed:
         return JSONResponse(
             status_code=400,
@@ -187,7 +190,12 @@ def relay(v: str, t: float = 0):
 
 @router.get("/_relay_debug")
 def relay_debug(v: str):
-    """Internal diagnostics for the warm relay state."""
+    """Internal diagnostics for the warm relay state (debug builds only)."""
+    if not settings.DEBUG:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "detail": "Not found"},
+        )
     e = relay_warm._entries.get(v)
     out = {
         "entries": list(relay_warm._entries.keys()),

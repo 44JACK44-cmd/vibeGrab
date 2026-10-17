@@ -5,6 +5,12 @@ backend/.venv/
 backend/downloads/
 backend/temp/
 
+# Env / secrets (never commit real values)
+.env
+.env.local
+backend/.env
+!*.env.example
+
 # Flutter/Dart
 mobile/.dart_tool/
 mobile/build/
