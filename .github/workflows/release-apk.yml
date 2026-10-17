@@ -1,8 +1,9 @@
 name: Compilar y publicar APK
 
-# Escalabilidad: publicar una version NO depende de este portatil.
-# Empuja un tag con el formato vX.Y.Z-B y GitHub compila, firma y publica
-# el APK automaticamente. Ver RELEASE.md.
+# Escalabilidad: publicar una version NO depende de ningun portatil.
+# Empuja un tag con el formato vX.Y.Z-B y GitHub compila, firma y publica el APK.
+# La clave de firma vive en los SECRETOS del repositorio (nunca en el codigo).
+# Ver RELEASE.md.
 
 on:
   push:
@@ -33,6 +34,33 @@ jobs:
           channel: stable
           cache: true
 
+      # La clave de firma se inyecta aqui, en memoria del runner, y no queda
+      # en el repositorio. Si algun secreto falta, el build falla antes de
+      # publicar nada (asi los usuarios nunca ven una actualizacion rota).
+      - name: Configurar firma desde secretos
+        working-directory: mobile/android
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          for v in KEYSTORE_B64 STORE_PASSWORD KEY_PASSWORD KEY_ALIAS; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Falta el secreto $v en el repositorio"; exit 1
+            fi
+          done
+          mkdir -p keystore
+          echo "$KEYSTORE_B64" | base64 -d > keystore/release.jks
+          {
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyPassword=$KEY_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "storeFile=../keystore/release.jks"
+          } > key.properties
+          echo "Firma configurada (alias: $KEY_ALIAS)."
+
       - name: Dependencias
         working-directory: mobile
         run: flutter pub get
@@ -48,15 +76,35 @@ jobs:
       - name: Preparar artefacto
         run: cp mobile/build/app/outputs/flutter-apk/app-release.apk VibeGrab.apk
 
+      # Verificacion estricta: si el APK no esta firmado con la clave de release
+      # (o no coincide con la huella configurada), el workflow se detiene.
       - name: Verificar firma
+        env:
+          EXPECTED_SHA256: ${{ secrets.ANDROID_CERT_SHA256 }}
         run: |
-          BT=$(ls "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" | sort -V | tail -1)
-          "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools/${BT}/apksigner" verify --print-certs VibeGrab.apk || true
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          BT=$(ls "$SDK/build-tools" | sort -V | tail -1)
+          OUT=$("$SDK/build-tools/$BT/apksigner" verify --print-certs VibeGrab.apk)
+          echo "$OUT"
+          if ! echo "$OUT" | grep -qi 'CN=VibeGrab'; then
+            echo "::error::El APK NO esta firmado con la clave de release de VibeGrab"; exit 1
+          fi
+          SHA=$(echo "$OUT" | grep -i 'SHA-256 digest' | head -1 | awk '{print $NF}' | tr -d ':' | tr 'A-F' 'a-f')
+          echo "SHA-256 del APK: $SHA"
+          if [ -n "${EXPECTED_SHA256:-}" ]; then
+            EXPECTED=$(echo "$EXPECTED_SHA256" | tr -d ':' | tr 'A-F' 'a-f')
+            if [ "$SHA" != "$EXPECTED" ]; then
+              echo "::error::La huella del APK no coincide con ANDROID_CERT_SHA256"; exit 1
+            fi
+            echo "Firma verificada contra la huella esperada. OK."
+          fi
 
       - name: Publicar en GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" VibeGrab.apk --clobber
           else

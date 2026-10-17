@@ -7,14 +7,10 @@ gradle-wrapper.jar
 GeneratedPluginRegistrant.java
 .cxx/
 
-# AVISO IMPORTANTE: el keystore de release de VibeGrab SI se versiona a
-# proposito. El 17/10/2026 se perdio la clave anterior al formatear el otro
-# portatil, lo que obligaba a TODOS los usuarios a desinstalar para actualizar.
-# Guardarla en el repo permite firmar actualizaciones compatibles desde
-# cualquier equipo. Es una clave propia de VibeGrab (no de Google Play).
-# See https://flutter.dev/to/reference-keystore
+# La clave de firma y sus contrasenas NUNCA se versionan.
+# GitHub Actions las recibe desde los secretos del repositorio
+# (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_PASSWORD,
+#  ANDROID_KEY_ALIAS). Para uso local: copia key.properties.example.
 key.properties
 **/*.keystore
 **/*.jks
-!key.properties
-!keystore/vibegrab-release.jks

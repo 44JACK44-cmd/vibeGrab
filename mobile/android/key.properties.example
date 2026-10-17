@@ -1,0 +1,12 @@
+# Copia este archivo como `key.properties` SOLO si vas a compilar en local.
+
+# En GitHub Actions NO hace falta: la firma se inyecta desde los secretos del
+# repositorio en el momento de compilar.
+#
+# `key.properties` y los ficheros `.jks` / `.keystore` estan en .gitignore.
+# NO se versionan nunca.
+
+storePassword=TU_CONTRASENA_DEL_KEYSTORE
+keyPassword=TU_CONTRASENA_DE_LA_CLAVE
+keyAlias=vibegrab
+storeFile=../keystore/release.jks

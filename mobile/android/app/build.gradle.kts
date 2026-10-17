@@ -6,15 +6,33 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Firma de release: se lee de android/key.properties. Ese archivo y el keystore
-// se versionan a proposito (ver android/.gitignore) para que cualquier equipo
-// pueda firmar actualizaciones compatibles con las ya publicadas.
+// Firma de release.
+//
+// Orden de busqueda, pensado para NO depender de ningun equipo concreto:
+//   1. Variables de entorno VIBEGRAB_* -> las usa GitHub Actions (secretos del repo).
+//   2. Archivo android/key.properties   -> uso local (NUNCA se versiona).
+//
+// Si no encuentra ninguna de las dos, firma con la clave debug (solo desarrollo).
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
-val hasReleaseKeystore = keystorePropertiesFile.exists()
-if (hasReleaseKeystore) {
+if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
+
+fun signingValue(envName: String, propName: String): String? =
+    System.getenv(envName)?.takeIf { it.isNotBlank() }
+        ?: keystoreProperties.getProperty(propName)?.takeIf { it.isNotBlank() }
+
+val releaseStoreFile = signingValue("VIBEGRAB_STORE_FILE", "storeFile")
+val releaseStorePassword = signingValue("VIBEGRAB_STORE_PASSWORD", "storePassword")
+val releaseKeyAlias = signingValue("VIBEGRAB_KEY_ALIAS", "keyAlias")
+val releaseKeyPassword = signingValue("VIBEGRAB_KEY_PASSWORD", "keyPassword")
+
+val hasReleaseSigning = releaseStoreFile != null &&
+    releaseStorePassword != null &&
+    releaseKeyAlias != null &&
+    releaseKeyPassword != null &&
+    file(releaseStoreFile).exists()
 
 android {
     namespace = "com.example.vibegrab"
@@ -37,21 +55,25 @@ android {
     }
 
     signingConfigs {
-        if (hasReleaseKeystore) {
+        if (hasReleaseSigning) {
             create("release") {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = releaseKeyAlias!!
+                keyPassword = releaseKeyPassword!!
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword!!
+                // Maxima compatibilidad entre dispositivos: v1 (JAR) + v2 + v3.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }
 
     buildTypes {
         release {
-            // Si hay keystore de release se usa; si no, se cae a la clave debug
-            // para no romper a quien clone el repo sin el archivo.
-            signingConfig = if (hasReleaseKeystore) {
+            // Si hay clave de release configurada se usa; si no, se cae a la clave
+            // debug para no romper a quien clone el repo (solo desarrollo).
+            signingConfig = if (hasReleaseSigning) {
                 signingConfigs.getByName("release")
             } else {
                 signingConfigs.getByName("debug")
