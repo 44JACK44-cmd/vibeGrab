@@ -33,6 +33,30 @@ class ApiConfig {
 
   static String get displayUrl => baseUrl;
 
+  /// Optional shared secret sent as `X-API-Key` on every backend request.
+  ///
+  /// Baked in at build time so it never lives in the repo:
+  ///   flutter build apk --dart-define=VIBEGRAB_API_KEY=xxxx
+  /// Empty (the default) means the backend has auth disabled, matching
+  /// current production.
+  static const String apiKey =
+      String.fromEnvironment('VIBEGRAB_API_KEY', defaultValue: '');
+
+  /// Headers required by the backend on every /api/* request.
+  static Map<String, String> get authHeaders =>
+      apiKey.isEmpty ? const {} : {'X-API-Key': apiKey};
+
+  /// UA used when the app streams media (googlevideo, our relay/proxy).
+  static const String streamUserAgent =
+      'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36';
+
+  /// Headers for media streams: harmless on direct CDN URLs, required on the
+  /// backend relay/proxy once API-key auth is enabled there.
+  static Map<String, String> get streamHeaders => {
+        'User-Agent': streamUserAgent,
+        ...authHeaders,
+      };
+
   /// Feed locale for the backend (YouTube innertube hl/gl): `lang=es&gl=ES`.
   /// Derived from the device locale so trending/search match the region.
   static String get feedLocaleQuery {

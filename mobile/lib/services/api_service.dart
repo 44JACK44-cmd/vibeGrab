@@ -41,6 +41,30 @@ class NetworkException implements Exception {
   }
 }
 
+/// http.Client that stamps the backend API key on every outgoing request.
+///
+/// When the app is built without `--dart-define=VIBEGRAB_API_KEY=...` the key
+/// is empty and no header is added, so behaviour is unchanged.
+class ApiHttpClient extends http.BaseClient {
+  ApiHttpClient([http.Client? inner, String? apiKey])
+      : _inner = inner ?? http.Client(),
+        _apiKey = apiKey ?? ApiConfig.apiKey;
+
+  final http.Client _inner;
+  final String _apiKey;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    if (_apiKey.isNotEmpty) {
+      request.headers['X-API-Key'] = _apiKey;
+    }
+    return _inner.send(request);
+  }
+
+  @override
+  void close() => _inner.close();
+}
+
 class ApiService {
   final http.Client _client;
   final Duration _shortTimeout;
@@ -52,7 +76,7 @@ class ApiService {
     Duration? shortTimeout,
     Duration? mediumTimeout,
     Duration? longTimeout,
-  })  : _client = client ?? http.Client(),
+  })  : _client = client ?? ApiHttpClient(),
         _shortTimeout = shortTimeout ?? const Duration(seconds: 8),
         _mediumTimeout = mediumTimeout ?? const Duration(seconds: 15),
         _longTimeout = longTimeout ?? const Duration(seconds: 45);

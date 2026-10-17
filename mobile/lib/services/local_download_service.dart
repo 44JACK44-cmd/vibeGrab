@@ -46,11 +46,12 @@ class LocalDownloadService {
     'Referer': 'https://www.youtube.com/',
   };
 
-  static const _directHeaders = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept': '*/*',
-  };
+  static Map<String, String> get _directHeaders => {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': '*/*',
+        ...ApiConfig.authHeaders,
+      };
 
   Future<DownloadTask> _downloadDirect({
     required DownloadTask task,

@@ -28,7 +28,10 @@ class NetworkDiagnostics {
     // 1) Backend health.
     out.add(await _timed('backend', () async {
       final r = await http
-          .get(Uri.parse(ApiConfig.healthUrl))
+          .get(
+            Uri.parse(ApiConfig.healthUrl),
+            headers: ApiConfig.authHeaders,
+          )
           .timeout(const Duration(seconds: 15));
       if (r.statusCode != 200) throw Exception('http ${r.statusCode}');
       return 'ok';
@@ -38,7 +41,10 @@ class NetworkDiagnostics {
     try {
       final sw = Stopwatch()..start();
       final r = await http
-          .get(Uri.parse('${ApiConfig.exploreStreamUrl}?v=$_testVideoId'))
+          .get(
+            Uri.parse('${ApiConfig.exploreStreamUrl}?v=$_testVideoId'),
+            headers: ApiConfig.authHeaders,
+          )
           .timeout(const Duration(seconds: 25));
       sw.stop();
       if (r.statusCode == 200) {

@@ -1489,7 +1489,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       final response = await http
           .post(
             Uri.parse(ApiConfig.analyzeUrl),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              ...ApiConfig.authHeaders,
+            },
             body: jsonEncode({'url': url}),
           )
           .timeout(const Duration(seconds: 40));
@@ -1672,7 +1675,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     for (var attempt = 0; attempt < 2; attempt++) {
       try {
         final response = await http
-            .get(Uri.parse('${ApiConfig.exploreStreamUrl}?v=$videoId'))
+            .get(
+              Uri.parse('${ApiConfig.exploreStreamUrl}?v=$videoId'),
+              headers: ApiConfig.authHeaders,
+            )
             .timeout(const Duration(seconds: 25));
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -1722,10 +1728,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     await _videoController?.dispose();
     final controller = VideoPlayerController.networkUrl(
       streamUrl,
-      httpHeaders: const {
-        'User-Agent':
-            'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
-      },
+      httpHeaders: ApiConfig.streamHeaders,
     );
     _videoController = controller;
 
@@ -1918,10 +1921,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           .setAudioSource(AudioSource.uri(
             streamUrl,
             tag: mediaItem,
-            headers: const {
-              'User-Agent':
-                  'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
-            },
+            headers: ApiConfig.streamHeaders,
           ))
           .timeout(const Duration(seconds: 20));
       _wireAudioSubscriptions(youtubeUrl);
@@ -2122,7 +2122,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     } else if (uri.scheme == 'file') {
       _videoController = VideoPlayerController.file(File(uri.toFilePath()));
     } else {
-      _videoController = VideoPlayerController.networkUrl(uri);
+      _videoController = VideoPlayerController.networkUrl(
+        uri,
+        httpHeaders: ApiConfig.streamHeaders,
+      );
     }
 
     try {
@@ -2236,7 +2239,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       }
       final item = _createMediaItemFromState();
       try {
-        await _player.setAudioSource(AudioSource.uri(streamUri, tag: item));
+        await _player.setAudioSource(
+          AudioSource.uri(
+            streamUri,
+            tag: item,
+            headers: ApiConfig.streamHeaders,
+          ),
+        );
         await _player.seek(_bgAudioOffset > Duration.zero
             ? Duration.zero
             : savedPosition);
