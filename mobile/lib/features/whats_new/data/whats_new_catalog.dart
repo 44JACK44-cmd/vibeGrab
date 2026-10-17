@@ -23,6 +23,41 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.35
+    WhatsNewEntry(
+      id: 'wn-1135-notes',
+      version: '1.1.35',
+      build: 40,
+      category: WhatsNewCategory.features,
+      emoji: '🎉',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Descubre qué cambió en cada versión',
+        en: 'See what changed in every version',
+      ),
+      description: LocalizedText(
+        es: 'Al actualizar verás una pantalla de novedades clara y ordenada, con las funciones, mejoras y correcciones de cada versión.',
+        en: "After updating you will see a clear, tidy what's-new screen with the features, improvements and fixes of each version.",
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1135-update-preview',
+      version: '1.1.35',
+      build: 40,
+      category: WhatsNewCategory.improvements,
+      emoji: '🚀',
+      order: 0,
+      title: LocalizedText(
+        es: 'Sabes qué cambia antes de actualizar',
+        en: 'Know what changes before updating',
+      ),
+      description: LocalizedText(
+        es: 'El aviso de nueva versión resume los cambios principales y puedes abrir el detalle completo.',
+        en: 'The new-version prompt summarises the main changes and lets you open the full detail.',
+      ),
+    ),
+
     // ----------------------------------------------------------------- 1.1.34
     WhatsNewEntry(
       id: 'wn-1134-statusbar',
