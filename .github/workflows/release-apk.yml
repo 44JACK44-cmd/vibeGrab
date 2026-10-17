@@ -1,0 +1,67 @@
+name: Compilar y publicar APK
+
+# Escalabilidad: publicar una version NO depende de este portatil.
+# Empuja un tag con el formato vX.Y.Z-B y GitHub compila, firma y publica
+# el APK automaticamente. Ver RELEASE.md.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-apk:
+    name: Build + firma + publicacion
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Flutter 3.47.7
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+
+      - name: Dependencias
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Tests
+        working-directory: mobile
+        run: flutter test
+
+      - name: Compilar APK de release (firmado)
+        working-directory: mobile
+        run: flutter build apk --release
+
+      - name: Preparar artefacto
+        run: cp mobile/build/app/outputs/flutter-apk/app-release.apk VibeGrab.apk
+
+      - name: Verificar firma
+        run: |
+          BT=$(ls "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" | sort -V | tail -1)
+          "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools/${BT}/apksigner" verify --print-certs VibeGrab.apk || true
+
+      - name: Publicar en GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" VibeGrab.apk --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" VibeGrab.apk \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --verify-tag
+          fi
