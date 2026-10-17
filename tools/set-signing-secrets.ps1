@@ -77,7 +77,10 @@ if (-not $Python) {
         & $candidate -c 'import nacl' 2>$null
         if ($LASTEXITCODE -eq 0) { $Python = $candidate; break }
       }
-    } catch { }
+    } catch {
+      # Candidato no utilizable como interprete de Python: probamos el siguiente.
+      Write-Verbose "Descartado '$candidate': $($_.Exception.Message)"
+    }
   }
   if (-not $Python) { throw "Necesito Python con 'pynacl'. Ejecuta: python -m pip install pynacl" }
 }

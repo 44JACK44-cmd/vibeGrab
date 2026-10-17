@@ -1,9 +1,11 @@
 import re
+import subprocess
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Annotated
 
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -36,7 +38,10 @@ _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 @router.get("/proxy")
-def proxy(u: str, range_header: str | None = Header(None, alias="Range")):
+def proxy(
+    u: str,
+    range_header: Annotated[str | None, Header(alias="Range")] = None,
+):
     """Byte relay for googlevideo streams.
 
     Some mobile networks block googlevideo directly; the phone downloads
@@ -97,6 +102,53 @@ def proxy(u: str, range_header: str | None = Header(None, alias="Range")):
     )
 
 
+def _drain_stderr(proc: subprocess.Popen, buf: list[bytes]) -> None:
+    """Keep reading ffmpeg stderr so its pipe never blocks."""
+    try:
+        while True:
+            data = proc.stderr.read(4096)
+            if not data:
+                break
+            if sum(len(c) for c in buf) < 8192:
+                buf.append(data)
+    except Exception:
+        pass
+
+
+def _relay_stream(proc: subprocess.Popen, first: bytes):
+    try:
+        yield first
+        while True:
+            chunk = proc.stdout.read1(65536)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+
+def _relay_sources_or_error(v: str):
+    """Return relay sources or a JSONResponse describing the failure."""
+    try:
+        return get_relay_sources(v)
+    except WatchError as e:
+        return JSONResponse(
+            status_code=e.status,
+            content={"success": False, "detail": e.detail},
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Relay sources failed for {v}: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": "relay unavailable"},
+        )
+
+
 @router.get("/relay")
 def relay(v: str, t: float = 0):
     """Merge adaptive video+audio with ffmpeg and stream progressive mp4.
@@ -115,19 +167,9 @@ def relay(v: str, t: float = 0):
         if gen is not None:
             return StreamingResponse(gen, media_type="video/mp4")
 
-    try:
-        sources = get_relay_sources(v)
-    except WatchError as e:
-        return JSONResponse(
-            status_code=e.status,
-            content={"success": False, "detail": e.detail},
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"Relay sources failed for {v}: {e}")
-        return JSONResponse(
-            status_code=502,
-            content={"success": False, "detail": "relay unavailable"},
-        )
+    sources = _relay_sources_or_error(v)
+    if isinstance(sources, JSONResponse):
+        return sources
 
     try:
         proc = relay_warm.build_proc(sources, seek_to=t if t > 0 else None)
@@ -139,19 +181,9 @@ def relay(v: str, t: float = 0):
         )
 
     stderr_buf: list[bytes] = []
-
-    def _drain_stderr():
-        try:
-            while True:
-                data = proc.stderr.read(4096)
-                if not data:
-                    break
-                if sum(len(c) for c in stderr_buf) < 8192:
-                    stderr_buf.append(data)
-        except Exception:
-            pass
-
-    threading.Thread(target=_drain_stderr, daemon=True).start()
+    threading.Thread(
+        target=_drain_stderr, args=(proc, stderr_buf), daemon=True
+    ).start()
 
     # Kill ffmpeg if it never produces output (network stall from our side).
     stall_killer = threading.Timer(60.0, proc.kill)
@@ -169,23 +201,7 @@ def relay(v: str, t: float = 0):
             content={"success": False, "detail": f"merge failed: {tail or 'unknown'}"},
         )
 
-    def _gen():
-        try:
-            yield first
-            while True:
-                chunk = proc.stdout.read1(65536)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                pass
-
-    return StreamingResponse(_gen(), media_type="video/mp4")
+    return StreamingResponse(_relay_stream(proc, first), media_type="video/mp4")
 
 
 @router.get("/_relay_debug")

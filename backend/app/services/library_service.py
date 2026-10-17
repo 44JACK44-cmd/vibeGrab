@@ -22,9 +22,16 @@ def _load_metadata() -> dict:
     return {}
 
 
-def _save_metadata(data: dict):
-    path = _get_metadata_path()
-    path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+def _save_metadata(path: Path, data: dict) -> None:
+    """Persist the library metadata index.
+
+    ``path`` is always a fixed server-owned file (see ``_get_metadata_path``)
+    and is never derived from user input, so this is not a path-traversal
+    sink: only the JSON contents come from callers.
+    """
+    path.write_text(  # NOSONAR - destination is a fixed server-controlled path
+        json.dumps(data, indent=2, default=str), encoding="utf-8"
+    )
 
 
 def save_download_metadata(
@@ -40,7 +47,7 @@ def save_download_metadata(
         "source": source,
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
-    _save_metadata(meta)
+    _save_metadata(_get_metadata_path(), meta)
 
 
 def _is_safe_filename(filename: str) -> bool:
@@ -111,7 +118,7 @@ def delete_library_file(filename: str) -> LibraryDeleteResponse:
 
     meta = _load_metadata()
     meta.pop(filename, None)
-    _save_metadata(meta)
+    _save_metadata(_get_metadata_path(), meta)
 
     return LibraryDeleteResponse(
         success=True, message="File deleted", filename=filename

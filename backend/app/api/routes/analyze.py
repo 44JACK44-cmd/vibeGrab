@@ -33,7 +33,7 @@ async def lifespan(app):
 router = APIRouter(prefix="/api", lifespan=lifespan)
 
 
-def _check_tool(name: str, path: str) -> dict:
+def _check_tool(path: str) -> dict:
     """Check if a CLI tool is available."""
     try:
         shutil.which(path)
@@ -64,8 +64,8 @@ def status():
         "status": "ok",
         "version": settings.VERSION,
         "tools": {
-            "yt_dlp": _check_tool("yt-dlp", settings.YT_DLP_PATH),
-            "ffmpeg": _check_tool("ffmpeg", settings.FFMPEG_PATH),
+            "yt_dlp": _check_tool(settings.YT_DLP_PATH),
+            "ffmpeg": _check_tool(settings.FFMPEG_PATH),
         },
         "disk": disk,
         "max_concurrent_downloads": settings.MAX_CONCURRENT_DOWNLOADS,
@@ -128,13 +128,45 @@ _MIME_BY_EXT = {
 }
 
 
-@router.get("/fetch")
-def fetch_media(
-    url: str = Query(..., min_length=10, max_length=2048),
-    format_id: str = Query(..., min_length=1, max_length=64),
-    ext: str = Query("mp4", max_length=8),
-):
-    """Stream a single yt-dlp format to the client (server-side download relay)."""
+def _stderr_tail(buf: list[bytes], length: int = 400) -> str:
+    return b"".join(buf).decode(errors="replace").strip()[-length:]
+
+
+def _drain_stderr(proc: subprocess.Popen, buf: list[bytes]) -> None:
+    """Keep reading yt-dlp stderr so its pipe never blocks."""
+    try:
+        while True:
+            data = proc.stderr.read(4096)
+            if not data:
+                break
+            if sum(len(c) for c in buf) < 8192:
+                buf.append(data)
+    except Exception:
+        pass
+
+
+def _stream_fetch(proc: subprocess.Popen, first: bytes, stderr_buf: list[bytes]):
+    try:
+        yield first
+        while True:
+            chunk = proc.stdout.read(65536)
+            if not chunk:
+                break
+            yield chunk
+        proc.wait(timeout=60)
+        if proc.returncode != 0:
+            tail = _stderr_tail(stderr_buf)
+            logger.warning(f"Fetch stream ended with exit {proc.returncode}: {tail}")
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def _validate_fetch_target(url: str) -> str | JSONResponse:
+    """Return the normalized fetch URL or a 400 JSONResponse."""
     raw_url = extract_url(url)
     if not raw_url:
         return JSONResponse(
@@ -147,15 +179,11 @@ def fetch_media(
             status_code=400,
             content={"success": False, "detail": "Unsupported or invalid URL"},
         )
-    if not re.fullmatch(r"[A-Za-z0-9_.+-]+", format_id):
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "detail": "Invalid format id"},
-        )
+    return target
 
-    logger.info(f"Streaming fetch: {target} format={format_id}")
 
-    proc = subprocess.Popen(
+def _spawn_fetch(target: str, format_id: str) -> subprocess.Popen:
+    return subprocess.Popen(
         [
             settings.YT_DLP_PATH,
             "-f", format_id,
@@ -169,25 +197,36 @@ def fetch_media(
         stderr=subprocess.PIPE,
     )
 
+
+@router.get("/fetch")
+def fetch_media(
+    url: str = Query(..., min_length=10, max_length=2048),
+    format_id: str = Query(..., min_length=1, max_length=64),
+    ext: str = Query("mp4", max_length=8),
+):
+    """Stream a single yt-dlp format to the client (server-side download relay)."""
+    target = _validate_fetch_target(url)
+    if isinstance(target, JSONResponse):
+        return target
+    if not re.fullmatch(r"[A-Za-z0-9_.+-]+", format_id):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "detail": "Invalid format id"},
+        )
+
+    logger.info(f"Streaming fetch: {target} format={format_id}")
+
+    proc = _spawn_fetch(target, format_id)
+
     stderr_buf: list[bytes] = []
-
-    def _drain_stderr():
-        try:
-            while True:
-                data = proc.stderr.read(4096)
-                if not data:
-                    break
-                if sum(len(c) for c in stderr_buf) < 8192:
-                    stderr_buf.append(data)
-        except Exception:
-            pass
-
-    threading.Thread(target=_drain_stderr, daemon=True).start()
+    threading.Thread(
+        target=_drain_stderr, args=(proc, stderr_buf), daemon=True
+    ).start()
 
     first = proc.stdout.read(65536)
     if not first:
         proc.wait(timeout=30)
-        tail = b"".join(stderr_buf).decode(errors="replace").strip()[-400:]
+        tail = _stderr_tail(stderr_buf)
         logger.error(f"Fetch failed for {target}: {tail}")
         return JSONResponse(
             status_code=502,
@@ -195,27 +234,7 @@ def fetch_media(
         )
 
     mime = _MIME_BY_EXT.get(ext.lower(), "application/octet-stream")
-
-    def _stream():
-        try:
-            yield first
-            while True:
-                chunk = proc.stdout.read(65536)
-                if not chunk:
-                    break
-                yield chunk
-            proc.wait(timeout=60)
-            if proc.returncode != 0:
-                tail = b"".join(stderr_buf).decode(errors="replace").strip()[-400:]
-                logger.warning(f"Fetch stream ended with exit {proc.returncode}: {tail}")
-        finally:
-            if proc.poll() is None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-
-    return StreamingResponse(_stream(), media_type=mime)
+    return StreamingResponse(_stream_fetch(proc, first, stderr_buf), media_type=mime)
 
 
 @router.post("/downloads")

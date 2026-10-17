@@ -80,12 +80,14 @@ def test_parse_comments_page():
     items, next_token = parse_comments(payload)
 
     assert len(items) == 20
-    assert next_token and len(next_token) > 50
+    assert next_token
+    assert len(next_token) > 50
 
     first = items[0]
     assert first["author"] == "@YouTube"
     assert "never gave us up" in first["text"]
-    assert first["pinned_text"] and "Pinned by" in first["pinned_text"]
+    assert first["pinned_text"]
+    assert "Pinned by" in first["pinned_text"]
     assert first["likes"] == "322K"
     assert first["replies"] == "962"
     assert first["verified"] is True
@@ -109,7 +111,8 @@ def test_parse_comments_page2_append_action():
     items, next_token = parse_comments(payload)
 
     assert len(items) == 20
-    assert next_token and len(next_token) > 50
+    assert next_token
+    assert len(next_token) > 50
     for item in items:
         assert item["author"], item
         assert item["text"], item

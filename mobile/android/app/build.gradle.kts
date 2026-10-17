@@ -71,6 +71,9 @@ android {
 
     buildTypes {
         release {
+            // R8 (minificacion + ofuscacion) ya venia activo por el plugin de
+            // Flutter; se declara de forma explicita para dejarlo constancia.
+            isMinifyEnabled = true
             // Si hay clave de release configurada se usa; si no, se cae a la clave
             // debug para no romper a quien clone el repo (solo desarrollo).
             signingConfig = if (hasReleaseSigning) {
@@ -83,8 +86,8 @@ android {
 }
 
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
-    implementation("androidx.documentfile:documentfile:1.0.1")
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
+    implementation(libs.androidx.documentfile)
 }
 
 kotlin {

@@ -4,6 +4,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 
 from app.core.logging import logger
 from app.services import relay_warm
@@ -12,13 +13,17 @@ _UA_COOKIES = {
     "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+000; SOCS=CAI",
     "Accept-Language": "en-US,en;q=0.9",
 }
+# Public InnerTube API key: this is the same well-known key that yt-dlp and
+# other web clients embed in their own bundles. It is not a secret and grants
+# no account access; it only identifies the anonymous WEB client.
+_INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"  # NOSONAR
 # Static innertube config. clientVersion must match yt-dlp's real WEB value
 # and (like yt-dlp) we omit ?key= and never send an empty X-Goog-Visitor-Id.
 # Even so, YouTube answers 403 ("Sorry..." bot page) to /next from datacenter
 # IPs (Render), so get_related/get_comments fall back to a Invidious instance
 # (which fetches YouTube from its own IP) and then to yt-dlp.
 _STATIC_CONFIG = {
-    "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+    "api_key": _INNERTUBE_API_KEY,
     "visitor": "",
     "context": {
         "client": {
@@ -41,12 +46,17 @@ _INVIDIOUS_BASES = ["https://invidious.f5.si"]
 _NEXT_FAIL_UNTIL = 0.0
 _NEXT_FAIL_TTL = 120.0
 
-_YT_INITIAL_RE = re.compile(r"var ytInitialData = ({.+?});</script>", re.S)
+_YT_INITIAL_RE = re.compile(r"var ytInitialData = ([^}]+)\};</script>", re.S)
 _API_KEY_RE = re.compile(r'"INNERTUBE_API_KEY":"([^"]+)"')
 _VISITOR_RE = re.compile(r'"VISITOR_DATA":"([^"]+)"')
 _DURATION_RE = re.compile(r"\d+(?::\d+)+$")
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _COMMENT_PANEL_HINT = "comment"
+_AUDIO_MIME_PREFIX = "audio/"
+# Invidious fallback paths are built from whitelisted, single-level segments
+# only: no scheme/host, no traversal and no URL metacharacters.
+_INVIDIOUS_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+_INVIDIOUS_QUERY_RE = re.compile(r"^[A-Za-z0-9._~=&%-]+$")
 
 _TTL_WATCH = 600
 _TTL_RELATED = 900
@@ -145,7 +155,8 @@ def _runs_text(node: dict | None) -> str | None:
     return None
 
 
-def _lockup_item(lv: dict, exclude_id: str | None) -> dict | None:
+def _lockup_video_id(lv: dict, exclude_id: str | None) -> str | None:
+    """Return the usable video id of a lockup view model, or None."""
     content_type = lv.get("contentType")
     if content_type and content_type != "LOCKUP_CONTENT_TYPE_VIDEO":
         return None
@@ -155,32 +166,43 @@ def _lockup_item(lv: dict, exclude_id: str | None) -> dict | None:
     raw = json.dumps(lv, ensure_ascii=False)
     if '"watchEndpoint"' not in raw:
         return None
+    return vid
 
-    meta = lv.get("metadata", {}).get("lockupMetadataViewModel", {})
-    title = (meta.get("title") or {}).get("content") or ""
 
-    channel = None
-    views = None
-    views_label = None
-    age = None
-    rows = (
+def _lockup_rows(meta: dict) -> list:
+    """Metadata rows of a lockup metadata view model."""
+    return (
         meta.get("metadata", {})
         .get("contentMetadataViewModel", {})
         .get("metadataRows", [])
     )
-    if rows:
-        parts0 = rows[0].get("metadataParts") or []
-        if parts0:
-            channel = _runs_text(parts0[0].get("text"))
+
+
+def _lockup_row_info(rows: list) -> dict:
+    """Channel, views, views label and age from the lockup metadata rows."""
+    info: dict = {
+        "channel": None,
+        "views": None,
+        "views_label": None,
+        "age": None,
+    }
+    if not rows:
+        return info
+    parts0 = rows[0].get("metadataParts") or []
+    if parts0:
+        info["channel"] = _runs_text(parts0[0].get("text"))
     if len(rows) > 1:
         parts1 = rows[1].get("metadataParts") or []
         if parts1:
-            views = _runs_text(parts1[0].get("text"))
-            views_label = parts1[0].get("accessibilityLabel")
+            info["views"] = _runs_text(parts1[0].get("text"))
+            info["views_label"] = parts1[0].get("accessibilityLabel")
             if len(parts1) > 1:
-                age = _runs_text(parts1[1].get("text"))
+                info["age"] = _runs_text(parts1[1].get("text"))
+    return info
 
-    duration = None
+
+def _lockup_duration(lv: dict) -> str | None:
+    """Duration badge text found in the lockup thumbnail overlays."""
     overlays = (
         lv.get("contentImage", {})
         .get("thumbnailViewModel", {})
@@ -193,19 +215,20 @@ def _lockup_item(lv: dict, exclude_id: str | None) -> dict | None:
         for badge in bottom.get("badges") or []:
             text = (badge.get("thumbnailBadgeViewModel") or {}).get("text") or ""
             if _DURATION_RE.fullmatch(text):
-                duration = text
-                break
-        if duration:
-            break
+                return text
+    return None
 
+
+def _lockup_item(lv: dict, exclude_id: str | None) -> dict | None:
+    vid = _lockup_video_id(lv, exclude_id)
+    if not vid:
+        return None
+    meta = lv.get("metadata", {}).get("lockupMetadataViewModel", {})
     return {
         "id": vid,
-        "title": title,
-        "channel": channel,
-        "views": views,
-        "views_label": views_label,
-        "age": age,
-        "duration": duration,
+        "title": (meta.get("title") or {}).get("content") or "",
+        **_lockup_row_info(_lockup_rows(meta)),
+        "duration": _lockup_duration(lv),
         "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
     }
 
@@ -226,6 +249,33 @@ def _compact_item(r: dict, exclude_id: str | None) -> dict | None:
     }
 
 
+def _related_entries(slot: dict) -> list:
+    """Expand one secondary-results slot into its candidate renderer dicts."""
+    section = slot.get("itemSectionRenderer")
+    if isinstance(section, dict):
+        inner = section.get("contents")
+        if isinstance(inner, list):
+            return inner
+    return [slot]
+
+
+def _related_entry_item(entry: dict, exclude_id: str | None) -> dict | None:
+    """Convert one compact/lockup renderer into a compact item dict."""
+    if "lockupViewModel" in entry:
+        return _lockup_item(entry["lockupViewModel"], exclude_id)
+    if "compactVideoRenderer" in entry:
+        return _compact_item(entry["compactVideoRenderer"], exclude_id)
+    return None
+
+
+def _add_related(items: list[dict], seen: set[str], item: dict | None) -> None:
+    """Append a related item once, keeping only titled and unseen videos."""
+    if not item or not item["title"] or item["id"] in seen:
+        return
+    seen.add(item["id"])
+    items.append(item)
+
+
 def parse_related(initial: dict, exclude_id: str | None = None) -> list[dict]:
     try:
         results = (
@@ -241,27 +291,13 @@ def parse_related(initial: dict, exclude_id: str | None = None) -> list[dict]:
     items: list[dict] = []
     seen: set[str] = set()
 
-    def _add(item: dict | None) -> None:
-        if item and item["id"] not in seen and item["title"]:
-            seen.add(item["id"])
-            items.append(item)
-
     for slot in results:
         if not isinstance(slot, dict):
             continue
-        entries = [slot]
-        section = slot.get("itemSectionRenderer")
-        if isinstance(section, dict):
-            inner = section.get("contents")
-            if isinstance(inner, list):
-                entries = inner
-        for entry in entries:
+        for entry in _related_entries(slot):
             if not isinstance(entry, dict):
                 continue
-            if "lockupViewModel" in entry:
-                _add(_lockup_item(entry["lockupViewModel"], exclude_id))
-            elif "compactVideoRenderer" in entry:
-                _add(_compact_item(entry["compactVideoRenderer"], exclude_id))
+            _add_related(items, seen, _related_entry_item(entry, exclude_id))
     return items
 
 
@@ -279,18 +315,32 @@ def extract_comment_token(next_payload: dict) -> str | None:
     return None
 
 
-def parse_comments(next_payload: dict) -> tuple[list[dict], str | None]:
+def _comment_entities(next_payload: dict) -> dict[str, dict]:
+    """Index comment entity payloads by their entity key."""
     entities: dict[str, dict] = {}
     updates = next_payload.get("frameworkUpdates") or {}
-    for mutation in (updates.get("entityBatchUpdate") or {}).get("mutations") or []:
+    mutations = (updates.get("entityBatchUpdate") or {}).get("mutations") or []
+    for mutation in mutations:
         payload = mutation.get("payload") or {}
         entity = payload.get("commentEntityPayload")
         if entity and mutation.get("entityKey"):
             entities[mutation["entityKey"]] = entity
+    return entities
 
-    items: list[dict] = []
-    next_token: str | None = None
+
+def _continuation_token(renderer: dict) -> str | None:
+    """Continuation token inside a continuationItemRenderer."""
+    return (
+        renderer.get("continuationEndpoint", {})
+        .get("continuationCommand", {})
+        .get("token")
+    )
+
+
+def _comment_threads(next_payload: dict) -> tuple[list[dict], str | None]:
+    """Comment thread renderers plus the next-page token, if any."""
     threads: list[dict] = []
+    next_token: str | None = None
     for endpoint in next_payload.get("onResponseReceivedEndpoints") or []:
         command = (
             endpoint.get("reloadContinuationItemsCommand")
@@ -303,38 +353,44 @@ def parse_comments(next_payload: dict) -> tuple[list[dict], str | None]:
             if "commentThreadRenderer" in item:
                 threads.append(item["commentThreadRenderer"])
             elif "continuationItemRenderer" in item:
-                token = (
-                    item["continuationItemRenderer"]
-                    .get("continuationEndpoint", {})
-                    .get("continuationCommand", {})
-                    .get("token")
-                )
+                token = _continuation_token(item["continuationItemRenderer"])
                 if token:
                     next_token = token
+    return threads, next_token
 
+
+def _comment_item(thread: dict, entities: dict[str, dict]) -> dict | None:
+    """Map one comment thread renderer to our comment dict, or None."""
+    vm = ((thread.get("commentViewModel") or {}).get("commentViewModel")) or {}
+    entity = entities.get(vm.get("commentKey"))
+    if not entity:
+        return None
+    props = entity.get("properties") or {}
+    text = (props.get("content") or {}).get("content") or ""
+    if not text:
+        return None
+    author = entity.get("author") or {}
+    toolbar = entity.get("toolbar") or {}
+    return {
+        "author": author.get("displayName") or "",
+        "avatar": author.get("avatarThumbnailUrl"),
+        "text": text,
+        "published": props.get("publishedTime"),
+        "likes": toolbar.get("likeCountNotliked"),
+        "replies": toolbar.get("replyCount"),
+        "verified": bool(author.get("isVerified")),
+        "pinned_text": vm.get("pinnedText"),
+    }
+
+
+def parse_comments(next_payload: dict) -> tuple[list[dict], str | None]:
+    entities = _comment_entities(next_payload)
+    threads, next_token = _comment_threads(next_payload)
+    items: list[dict] = []
     for thread in threads:
-        vm = ((thread.get("commentViewModel") or {}).get("commentViewModel")) or {}
-        entity = entities.get(vm.get("commentKey"))
-        if not entity:
-            continue
-        props = entity.get("properties") or {}
-        author = entity.get("author") or {}
-        toolbar = entity.get("toolbar") or {}
-        text = (props.get("content") or {}).get("content") or ""
-        if not text:
-            continue
-        items.append(
-            {
-                "author": author.get("displayName") or "",
-                "avatar": author.get("avatarThumbnailUrl"),
-                "text": text,
-                "published": props.get("publishedTime"),
-                "likes": toolbar.get("likeCountNotliked"),
-                "replies": toolbar.get("replyCount"),
-                "verified": bool(author.get("isVerified")),
-                "pinned_text": vm.get("pinnedText"),
-            }
-        )
+        item = _comment_item(thread, entities)
+        if item:
+            items.append(item)
     return items, next_token
 
 
@@ -381,12 +437,41 @@ def _post_next(bundle: dict, payload: dict) -> dict:
     return resp.json()
 
 
+def _safe_invidious_path(path: str) -> str:
+    """Validate an Invidious API path, rejecting traversal and URL injection.
+
+    Only relative paths made of whitelisted single-level segments are
+    accepted; `..`, empty segments, absolute URLs and any other character
+    outside ``[A-Za-z0-9._~-]`` raise a 400 instead of reaching the network.
+    """
+    if not isinstance(path, str):
+        raise WatchError(400, "Invalid invidious path")
+    raw_path, _, query = path.partition("?")
+    segments = raw_path.split("/")[1:]
+    if not raw_path.startswith("/") or not segments:
+        raise WatchError(400, "Invalid invidious path")
+    safe_segments: list[str] = []
+    for segment in segments:
+        if segment in ("", ".", ".."):
+            raise WatchError(400, "Invalid invidious path")
+        if not _INVIDIOUS_SEGMENT_RE.fullmatch(segment):
+            raise WatchError(400, "Invalid invidious path")
+        safe_segments.append(urllib.parse.quote(segment, safe=""))
+    safe = "/" + "/".join(safe_segments)
+    if query:
+        if not _INVIDIOUS_QUERY_RE.fullmatch(query):
+            raise WatchError(400, "Invalid invidious path")
+        safe = f"{safe}?{query}"
+    return safe
+
+
 def _invidious_get(
     path: str, params: dict | None = None, timeout: float = 20
 ) -> dict:
+    safe_path = _safe_invidious_path(path)
     last: Exception | None = None
     for base in _INVIDIOUS_BASES:
-        url = f"{base}{path}"
+        url = f"{base}{safe_path}"
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
         try:
@@ -524,6 +609,14 @@ def _yt_dlp_comments(video_id: str) -> tuple[list[dict], str | None]:
 
     from app.core.config import settings
 
+    # Strict whitelist check before the id reaches a subprocess argument.
+    if not _VIDEO_ID_RE.fullmatch(video_id or ""):
+        raise WatchError(400, "Invalid video id")
+    watch_url = "https://www.youtube.com/watch?" + urllib.parse.urlencode(
+        {"v": video_id}
+    )
+    # Arguments are a fixed list of constants plus one validated id: no shell
+    # string is ever built, so the value cannot inject extra arguments.
     cmd = [
         settings.YT_DLP_PATH,
         "--skip-download",
@@ -531,7 +624,7 @@ def _yt_dlp_comments(video_id: str) -> tuple[list[dict], str | None]:
         "--extractor-args",
         "youtube:max_comments=20,all,all;comment_sort=top",
         "--dump-single-json",
-        f"https://www.youtube.com/watch?v={video_id}",
+        watch_url,
     ]
     logger.info(f"yt-dlp comments fallback for {video_id}")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -615,6 +708,50 @@ def _innertube_android(video_id: str) -> dict:
     return data
 
 
+def _media_height(f: dict) -> int:
+    try:
+        return int(f.get("height") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _media_bitrate(f: dict) -> int:
+    try:
+        return int(f.get("bitrate") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pick_smallest_or_lowest(
+    cands: list[dict], height: Callable[[dict], int]
+) -> dict | None:
+    """Best format <=480p, or the lowest resolution when none is small."""
+    if not cands:
+        return None
+    small = [f for f in cands if 0 < height(f) <= 480]
+    pool = sorted(small or cands, key=height)
+    return pool[-1] if small else pool[0]
+
+
+def _pick_highest_bitrate(cands: list[dict]) -> dict | None:
+    if not cands:
+        return None
+    return sorted(cands, key=_media_bitrate)[-1]
+
+
+def _innertube_formats(sd: dict, mime: str, codec: str | None = None) -> list[dict]:
+    """Innertube adaptive formats that have a url and match mime (and codec)."""
+    out: list[dict] = []
+    for f in sd.get("adaptiveFormats") or []:
+        mime_type = f.get("mimeType") or ""
+        if not f.get("url") or mime not in mime_type:
+            continue
+        if codec is not None and codec not in mime_type:
+            continue
+        out.append(f)
+    return out
+
+
 def _innertube_pick(video_id: str) -> dict:
     """Extract muxed/adaptive urls + video details from the innertube player."""
     d = _innertube_android(video_id)
@@ -622,45 +759,23 @@ def _innertube_pick(video_id: str) -> dict:
         return {}
     sd = d.get("streamingData") or {}
     details = d.get("videoDetails") or {}
-
-    def _height(f) -> int:
-        try:
-            return int(f.get("height") or 0)
-        except (TypeError, ValueError):
-            return 0
-
     out: dict = {"details": details}
 
-    muxed = [f for f in (sd.get("formats") or []) if f.get("url")]
+    muxed = _pick_smallest_or_lowest(
+        [f for f in (sd.get("formats") or []) if f.get("url")], _media_height
+    )
     if muxed:
-        small = [f for f in muxed if 0 < _height(f) <= 480]
-        pool = small or muxed
-        pool.sort(key=_height)
-        out["muxed"] = (pool[-1] if small else pool[0]).get("url")
+        out["muxed"] = muxed.get("url")
 
-    adaptive = [f for f in (sd.get("adaptiveFormats") or []) if f.get("url")]
-    v_cands = [
-        f
-        for f in adaptive
-        if "video/mp4" in (f.get("mimeType") or "")
-        and "avc1" in (f.get("mimeType") or "")
-    ]
-    if v_cands:
-        small_v = [f for f in v_cands if 0 < _height(f) <= 480]
-        vpool = small_v or v_cands
-        vpool.sort(key=_height)
-        out["video"] = (vpool[-1] if small_v else vpool[0]).get("url")
+    video = _pick_smallest_or_lowest(
+        _innertube_formats(sd, "video/mp4", "avc1"), _media_height
+    )
+    if video:
+        out["video"] = video.get("url")
 
-    a_cands = [f for f in adaptive if (f.get("mimeType") or "").startswith("audio/")]
-    if a_cands:
-        def _br(f) -> int:
-            try:
-                return int(f.get("bitrate") or 0)
-            except (TypeError, ValueError):
-                return 0
-
-        a_cands.sort(key=_br)
-        out["audio"] = a_cands[-1].get("url")
+    audio = _pick_highest_bitrate(_innertube_formats(sd, _AUDIO_MIME_PREFIX))
+    if audio:
+        out["audio"] = audio.get("url")
     return out
 
 
@@ -685,6 +800,133 @@ def _relay_warm_kick(video_id: str) -> None:
     threading.Thread(target=_go, daemon=True).start()
 
 
+def _to_int(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stream_defaults() -> dict:
+    """Empty stream-url result, filled in from innertube and/or Invidious."""
+    return {
+        "video": None,
+        "audio": None,
+        "title": None,
+        "channel": None,
+        "duration": None,
+        "description": None,
+        "channel_avatar": None,
+        "comment_count": None,
+    }
+
+
+def _stream_from_innertube(video_id: str, it: dict) -> dict:
+    """Video/audio urls and video details from an innertube player payload."""
+    det = it.get("details") or {}
+    fields = _stream_defaults()
+    fields["video"] = it.get("muxed")
+    fields["audio"] = it.get("audio")
+    fields["title"] = det.get("title")
+    fields["channel"] = det.get("author")
+    fields["duration"] = _to_int(det.get("lengthSeconds")) or None
+    fields["description"] = (det.get("shortDescription") or "")[:500] or None
+    # Seed the relay cache so /relay never waits on Invidious.
+    if it.get("video") and it.get("audio"):
+        _cache_put(
+            f"relay:{video_id}",
+            {"video": it["video"], "audio": it["audio"]},
+            900,
+        )
+    return fields
+
+
+def _invidious_muxed_url(data: dict) -> str | None:
+    """Highest-itag progressive mp4 url from an Invidious payload."""
+    muxed = [
+        f
+        for f in (data.get("formatStreams") or [])
+        if f.get("url") and "mp4" in (f.get("container") or f.get("type") or "")
+    ]
+    if not muxed:
+        return None
+    muxed.sort(key=lambda f: _to_int(f.get("itag")))
+    return muxed[-1].get("url")
+
+
+def _invidious_audio_url(data: dict) -> str | None:
+    """Highest-bitrate audio url from an Invidious payload (mp4 preferred)."""
+    audio_fmts = [
+        f
+        for f in (data.get("adaptiveFormats") or [])
+        if f.get("url") and (f.get("type") or "").startswith(_AUDIO_MIME_PREFIX)
+    ]
+    if not audio_fmts:
+        return None
+    mp4_audio = [
+        f for f in audio_fmts if "mp4" in (f.get("type") or "").lower()
+    ]
+    pool = mp4_audio or audio_fmts
+    pool.sort(key=lambda f: _to_int(f.get("bitrate")))
+    return pool[-1].get("url")
+
+
+def _apply_invidious_metadata(fields: dict, data: dict) -> None:
+    """Fill missing stream fields from an Invidious /videos payload."""
+    if not fields["video"]:
+        fields["video"] = _invidious_muxed_url(data)
+    if not fields["audio"]:
+        fields["audio"] = _invidious_audio_url(data)
+    avatars = data.get("authorThumbnails") or []
+    fields["channel_avatar"] = avatars[-1].get("url") if avatars else None
+    comment_count = data.get("commentCount")
+    if comment_count is not None:
+        comment_count = _to_int(comment_count) or None
+    fields["comment_count"] = comment_count
+    fields["title"] = fields["title"] or data.get("title")
+    fields["channel"] = fields["channel"] or data.get("author")
+    length = _to_int(data.get("lengthSeconds")) or None
+    fields["duration"] = fields["duration"] or length
+    if not fields["description"]:
+        fields["description"] = (data.get("description") or "")[:500] or None
+
+
+def _stream_result(fields: dict) -> dict:
+    """Public stream-url payload built from the collected fields."""
+    return {
+        "video": fields["video"],
+        "audio": fields["audio"],
+        "proxy": (
+            "/api/explore/proxy?u="
+            + urllib.parse.quote(fields["video"], safe="")
+            if fields["video"]
+            else None
+        ),
+        "title": fields["title"],
+        "channel": fields["channel"],
+        "channel_avatar": fields["channel_avatar"],
+        "comment_count": fields["comment_count"],
+        "duration": fields["duration"],
+        "description": fields["description"],
+    }
+
+
+def _warm_anubis(warm_url: str | None) -> None:
+    """Pre-solve the anti-bot cookie in the background (best effort)."""
+    if not warm_url or ".f5.si" not in warm_url:
+        return
+
+    def _warm() -> None:
+        try:
+            from app.services.anubis_client import cookie_header
+
+            cookie_header(warm_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(f"anubis warmup skipped: {exc}")
+
+    threading.Thread(target=_warm, daemon=True).start()
+
+
 def get_stream_urls(video_id: str) -> dict:
     """Playable stream URLs + channel/comment metadata.
 
@@ -698,131 +940,67 @@ def get_stream_urls(video_id: str) -> dict:
             _relay_warm_kick(video_id)
         return cached
 
-    def _int(v) -> int:
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            return 0
-
-    video_url = None
-    audio_url = None
-    title = channel = description = None
-    duration = None
-    channel_avatar = None
-    comment_count = None
-
+    fields = _stream_defaults()
     it = _innertube_pick(video_id)
     if it:
-        video_url = it.get("muxed")
-        audio_url = it.get("audio")
-        det = it.get("details") or {}
-        title = det.get("title")
-        channel = det.get("author")
-        duration = _int(det.get("lengthSeconds")) or None
-        description = (det.get("shortDescription") or "")[:500] or None
-        # Seed the relay cache so /relay never waits on Invidious.
-        if it.get("video") and it.get("audio"):
-            _cache_put(
-                f"relay:{video_id}",
-                {"video": it["video"], "audio": it["audio"]},
-                900,
-            )
+        fields = _stream_from_innertube(video_id, it)
 
     # Invidious: avatar, comment count and any missing urls (best effort).
     try:
         # local=true: instance serves bytes itself (googlevideo may block).
         data = _invidious_get(f"/api/v1/videos/{video_id}?local=true")
-
-        if not video_url:
-            muxed = [
-                f
-                for f in (data.get("formatStreams") or [])
-                if f.get("url")
-                and "mp4" in (f.get("container") or f.get("type") or "")
-            ]
-            if muxed:
-                muxed.sort(key=lambda f: _int(f.get("itag")))
-                video_url = muxed[-1].get("url")
-
-        if not audio_url:
-            audio_fmts = [
-                f
-                for f in (data.get("adaptiveFormats") or [])
-                if f.get("url") and (f.get("type") or "").startswith("audio/")
-            ]
-            if audio_fmts:
-                mp4_audio = [
-                    f for f in audio_fmts if "mp4" in (f.get("type") or "").lower()
-                ]
-                pool = mp4_audio or audio_fmts
-                pool.sort(key=lambda f: _int(f.get("bitrate")))
-                audio_url = pool[-1].get("url")
-
-        avatars = data.get("authorThumbnails") or []
-        channel_avatar = avatars[-1].get("url") if avatars else None
-
-        comment_count = data.get("commentCount")
-        if comment_count is not None:
-            comment_count = _int(comment_count) or None
-
-        title = title or data.get("title")
-        channel = channel or data.get("author")
-        duration = duration or (_int(data.get("lengthSeconds")) or None)
-        if not description:
-            description = (data.get("description") or "")[:500] or None
+        _apply_invidious_metadata(fields, data)
     except Exception as e:  # noqa: BLE001
         logger.info(f"invidious metadata unavailable for {video_id}: {e}")
-        if not video_url and not audio_url:
+        if not fields["video"] and not fields["audio"]:
             raise WatchError(
                 502,
                 f"all stream sources failed — innertube: {_IT_LAST_ERR or 'empty'}"
                 f" | invidious: {str(e)[:120]}",
             ) from e
 
-    if not video_url and not audio_url:
+    if not fields["video"] and not fields["audio"]:
         raise WatchError(502, "no stream urls")
 
-    result = {
-        "video": video_url,
-        "audio": audio_url,
-        "proxy": (
-            "/api/explore/proxy?u="
-            + urllib.parse.quote(video_url, safe="")
-            if video_url
-            else None
-        ),
-        "title": title,
-        "channel": channel,
-        "channel_avatar": channel_avatar,
-        "comment_count": comment_count,
-        "duration": duration,
-        "description": description,
-    }
+    result = _stream_result(fields)
     _cache_put(cache_key, result, 900)
-    logger.info(f"Stream urls for {video_id}: video={bool(video_url)} audio={bool(audio_url)}")
+    logger.info(
+        f"Stream urls for {video_id}: video={bool(fields['video'])}"
+        f" audio={bool(fields['audio'])}"
+    )
 
     # No muxed format → playback will go through /relay. Start the merge
     # NOW while the user is still on the video card: by the time they press
     # play the first bytes are buffered (ExoPlayer aborts after 8s).
-    if not video_url:
+    if not fields["video"]:
         _relay_warm_kick(video_id)
 
     # Pre-solve the anti-bot cookie in the background while the user is
     # still looking at the video card, so pressing play doesn't wait for it.
-    warm_url = video_url or audio_url
-    if warm_url and ".f5.si" in warm_url:
-
-        def _warm() -> None:
-            try:
-                from app.services.anubis_client import cookie_header
-
-                cookie_header(warm_url)
-            except Exception as exc:  # noqa: BLE001
-                logger.info(f"anubis warmup skipped: {exc}")
-
-        threading.Thread(target=_warm, daemon=True).start()
+    _warm_anubis(fields["video"] or fields["audio"])
 
     return result
+
+
+def _quality_height(f: dict) -> int:
+    """Height from Invidious format fields (height or qualityLabel)."""
+    try:
+        return int(str(f.get("height") or f.get("qualityLabel") or "0").strip("p"))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _invidious_formats(data: dict, mime: str, codec: str | None = None) -> list[dict]:
+    """Invidious adaptive formats that have a url and match mime (and codec)."""
+    out: list[dict] = []
+    for f in data.get("adaptiveFormats") or []:
+        mime_type = f.get("type") or ""
+        if not f.get("url") or mime not in mime_type:
+            continue
+        if codec is not None and codec not in mime_type:
+            continue
+        out.append(f)
+    return out
 
 
 def get_relay_sources(video_id: str) -> dict:
@@ -850,53 +1028,22 @@ def get_relay_sources(video_id: str) -> dict:
     # the instance instead of googlevideo).
     data = _invidious_get(f"/api/v1/videos/{video_id}?local=true")
 
-    def _h(f) -> int:
-        try:
-            return int(str(f.get("height") or f.get("qualityLabel") or "0").strip("p"))
-        except (TypeError, ValueError):
-            return 0
-
-    video_cands = [
-        f
-        for f in (data.get("adaptiveFormats") or [])
-        if f.get("url")
-        and "video/mp4" in (f.get("type") or "")
-        and "avc1" in (f.get("type") or "")
-    ]
+    video_cands = _invidious_formats(data, "video/mp4", "avc1")
     if not video_cands:
         raise WatchError(502, "no mp4 video format")
-    small = [f for f in video_cands if 0 < _h(f) <= 480]
-    vpool = small or video_cands
-    vpool.sort(key=_h)
-    video = vpool[0] if not small else vpool[-1]
+    video = _pick_smallest_or_lowest(video_cands, _quality_height)
 
-    audio_cands = [
-        f
-        for f in (data.get("adaptiveFormats") or [])
-        if f.get("url") and "audio/mp4" in (f.get("type") or "")
-    ]
+    audio_cands = _invidious_formats(data, "audio/mp4")
     if not audio_cands:
-        audio_cands = [
-            f
-            for f in (data.get("adaptiveFormats") or [])
-            if f.get("url") and (f.get("type") or "").startswith("audio/")
-        ]
+        audio_cands = _invidious_formats(data, _AUDIO_MIME_PREFIX)
     if not audio_cands:
         raise WatchError(502, "no audio format")
-
-    def _br(f) -> int:
-        try:
-            return int(f.get("bitrate") or 0)
-        except (TypeError, ValueError):
-            return 0
-
-    audio_cands.sort(key=_br)
-    audio = audio_cands[-1]
+    audio = _pick_highest_bitrate(audio_cands)
 
     result = {"video": video.get("url"), "audio": audio.get("url")}
     _cache_put(cache_key, result, 900)
     logger.info(
-        f"Relay sources for {video_id}: v={_h(video)}p "
+        f"Relay sources for {video_id}: v={_quality_height(video)}p "
         f"vlen={len(video.get('url') or '')} alen={len(audio.get('url') or '')}"
     )
     return result
@@ -949,6 +1096,58 @@ def get_play_url(video_id: str) -> dict:
     return result
 
 
+def _invidious_comment_page(
+    video_id: str, continuation: str
+) -> tuple[list[dict], str | None]:
+    """Next comment page from Invidious using an 'iv:' continuation token."""
+    data = _invidious_get(
+        f"/api/v1/comments/{video_id}", {"continuation": continuation}
+    )
+    items = _invidious_map_comments(data)
+    cont = data.get("continuation")
+    return items, f"iv:{cont}" if cont else None
+
+
+def _first_comment_page(video_id: str) -> tuple[list[dict], str | None] | None:
+    """First innertube comment page.
+
+    Returns None when the watch payload exposes no comment continuation.
+    """
+    global _NEXT_FAIL_UNTIL
+
+    bundle = _bundle(video_id)
+    first = _post_next(bundle, {"context": bundle["context"], "videoId": video_id})
+    _NEXT_FAIL_UNTIL = 0.0
+    comment_token = extract_comment_token(first)
+    if not comment_token:
+        return None
+    payload = _post_next(
+        bundle, {"context": bundle["context"], "continuation": comment_token}
+    )
+    return parse_comments(payload)
+
+
+def _next_comment_page(video_id: str, token: str) -> tuple[list[dict], str | None]:
+    """Continuation page for a comment token issued by innertube."""
+    global _NEXT_FAIL_UNTIL
+
+    bundle = _bundle(video_id)
+    payload = _post_next(bundle, {"context": bundle["context"], "continuation": token})
+    _NEXT_FAIL_UNTIL = 0.0
+    return parse_comments(payload)
+
+
+def _comments_fallback(video_id: str) -> tuple[list[dict], str | None]:
+    """Invidious comments, then yt-dlp, when innertube cannot serve them."""
+    try:
+        return _invidious_comments(video_id)
+    except WatchError as exc:
+        logger.warning(
+            f"Invidious comments failed ({exc.detail[:60]}), trying yt-dlp"
+        )
+        return _yt_dlp_comments(video_id)
+
+
 def get_comments(video_id: str, token: str | None = None) -> tuple[list[dict], str | None]:
     global _NEXT_FAIL_UNTIL
 
@@ -959,12 +1158,7 @@ def get_comments(video_id: str, token: str | None = None) -> tuple[list[dict], s
 
     # Continuation token issued by the invidious fallback -> stay there.
     if token and token.startswith("iv:"):
-        data = _invidious_get(
-            f"/api/v1/comments/{video_id}", {"continuation": token[3:]}
-        )
-        items = _invidious_map_comments(data)
-        cont = data.get("continuation")
-        next_token = f"iv:{cont}" if cont else None
+        items, next_token = _invidious_comment_page(video_id, token[3:])
         _cache_put(cache_key, (items, next_token), _TTL_COMMENTS)
         logger.info(f"Comments for {video_id}: {len(items)} items (fallback page)")
         return items, next_token
@@ -977,26 +1171,15 @@ def get_comments(video_id: str, token: str | None = None) -> tuple[list[dict], s
         fallback = True
     else:
         try:
-            bundle = _bundle(video_id)
-            if token:
-                next_payload = _post_next(
-                    bundle, {"context": bundle["context"], "continuation": token}
-                )
-                _NEXT_FAIL_UNTIL = 0.0
-                items, next_token = parse_comments(next_payload)
-            else:
-                first = _post_next(
-                    bundle, {"context": bundle["context"], "videoId": video_id}
-                )
-                _NEXT_FAIL_UNTIL = 0.0
-                comment_token = extract_comment_token(first)
-                if not comment_token:
-                    _cache_put(cache_key, ([], None), _TTL_COMMENTS)
-                    return [], None
-                next_payload = _post_next(
-                    bundle, {"context": bundle["context"], "continuation": comment_token}
-                )
-                items, next_token = parse_comments(next_payload)
+            page = (
+                _next_comment_page(video_id, token)
+                if token
+                else _first_comment_page(video_id)
+            )
+            if page is None:
+                _cache_put(cache_key, ([], None), _TTL_COMMENTS)
+                return [], None
+            items, next_token = page
         except WatchError as exc:
             _NEXT_FAIL_UNTIL = time.time() + _NEXT_FAIL_TTL
             logger.warning(f"Innertube comments failed ({exc.detail[:80]})")
@@ -1005,13 +1188,7 @@ def get_comments(video_id: str, token: str | None = None) -> tuple[list[dict], s
             fallback = True
 
     if fallback:
-        try:
-            items, next_token = _invidious_comments(video_id)
-        except WatchError as exc:
-            logger.warning(
-                f"Invidious comments failed ({exc.detail[:60]}), trying yt-dlp"
-            )
-            items, next_token = _yt_dlp_comments(video_id)
+        items, next_token = _comments_fallback(video_id)
 
     _cache_put(cache_key, (items, next_token), _TTL_COMMENTS)
     logger.info(f"Comments for {video_id}: {len(items)} items")

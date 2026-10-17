@@ -16,6 +16,108 @@ def needs_processing(task) -> bool:
     return task.has_video and not task.has_audio
 
 
+def _spawn(cmd: list[str]) -> subprocess.Popen:
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+
+def _drain_or_cancel(proc: subprocess.Popen, task_id: str, task) -> bool:
+    """Drain process output; kill it and clean temp files if cancelled.
+
+    Returns True when the task was cancelled and the process was stopped.
+    """
+    for _ in proc.stdout:
+        task_now = task_store.get(task_id)
+        if task_now and task_now.status == DownloadStatus.CANCELLED:
+            proc.kill()
+            proc.wait()
+            _cleanup_temp_files(task)
+            return True
+    proc.wait()
+    return False
+
+
+def _keep_video_only(task_id: str, video_file: Path) -> None:
+    """Audio stage failed: keep the video-only file as the final result."""
+    task_store.update(
+        task_id,
+        status=DownloadStatus.COMPLETED,
+        progress=100.0,
+        file_path=str(video_file),
+        completed_at=_now_iso(),
+        error=None,
+    )
+
+
+def _find_audio_file(temp_dir: Path, stem: str, default: Path) -> Path:
+    """Return the audio file yt-dlp produced (it may change the extension)."""
+    if default.exists():
+        return default
+    for f in temp_dir.iterdir():
+        if f.stem.startswith(stem) and f.suffix in ('.m4a', '.opus', '.webm', '.mp3'):
+            return f
+    return default
+
+
+def _download_audio(task_id: str, task, audio_path: Path) -> str:
+    """Download the best audio track. Returns 'ok', 'cancelled' or 'failed'."""
+    logger.info(f"Downloading audio track for merge: {task_id}")
+    audio_cmd = [
+        settings.YT_DLP_PATH,
+        "-f", "bestaudio",
+        "--no-playlist",
+        "-o", str(audio_path),
+        "--no-overwrites",
+        "--newline",
+        "--progress",
+        task.url,
+    ]
+    proc = _spawn(audio_cmd)
+    if _drain_or_cancel(proc, task_id, task):
+        return "cancelled"
+    return "ok" if proc.returncode == 0 else "failed"
+
+
+def _merge_av(
+    task_id: str, task, video_file: Path, actual_audio: Path, output_path: Path
+) -> str:
+    """Run the FFmpeg merge. Returns 'ok', 'cancelled' or 'failed'."""
+    logger.info(f"Running FFmpeg merge: {task_id}")
+    merge_cmd = [
+        settings.FFMPEG_PATH,
+        "-y",
+        "-i", str(video_file),
+        "-i", str(actual_audio),
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    proc = _spawn(merge_cmd)
+    if _drain_or_cancel(proc, task_id, task):
+        return "cancelled"
+    return "ok" if proc.returncode == 0 else "failed"
+
+
+def _save_metadata(task_id: str, task, output_path: Path) -> None:
+    try:
+        from app.services.library_service import save_download_metadata
+
+        save_download_metadata(
+            filename=output_path.name,
+            title=task.title,
+            thumbnail=task.thumbnail,
+            source=task.source,
+        )
+    except Exception as e:
+        logger.error(f"Failed to save metadata for {task_id}: {e}")
+
+
 def run_merge(task_id: str, video_path: str):
     """Download best audio and merge with video using FFmpeg."""
     task = task_store.get(task_id)
@@ -44,102 +146,25 @@ def run_merge(task_id: str, video_path: str):
     logger.info(f"Processing: {task_id} — merging audio + video")
 
     try:
-        # Step 1: Download best audio with yt-dlp
-        logger.info(f"Downloading audio track for merge: {task_id}")
-        audio_cmd = [
-            settings.YT_DLP_PATH,
-            "-f", "bestaudio",
-            "--no-playlist",
-            "-o", str(audio_path),
-            "--no-overwrites",
-            "--newline",
-            "--progress",
-            task.url,
-        ]
-
-        audio_proc = subprocess.Popen(
-            audio_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-
-        for line in audio_proc.stdout:
-            task_now = task_store.get(task_id)
-            if task_now and task_now.status == DownloadStatus.CANCELLED:
-                audio_proc.kill()
-                audio_proc.wait()
-                _cleanup_temp_files(task)
-                return
-
-        audio_proc.wait()
-
-        if audio_proc.returncode != 0:
+        audio_status = _download_audio(task_id, task, audio_path)
+        if audio_status == "cancelled":
+            return
+        if audio_status == "failed":
             # If audio download fails, keep the video-only file as final
             logger.warning(f"Audio download failed for {task_id}, keeping video-only")
-            task_store.update(
-                task_id,
-                status=DownloadStatus.COMPLETED,
-                progress=100.0,
-                file_path=str(video_file),
-                completed_at=_now_iso(),
-                error=None,
-            )
+            _keep_video_only(task_id, video_file)
             return
 
-        # Find the actual audio file (yt-dlp may change extension)
-        actual_audio = audio_path
-        if not actual_audio.exists():
-            for f in temp_dir.iterdir():
-                if f.stem.startswith(stem) and f.suffix in ('.m4a', '.opus', '.webm', '.mp3'):
-                    actual_audio = f
-                    break
-
+        actual_audio = _find_audio_file(temp_dir, stem, audio_path)
         if not actual_audio.exists():
             logger.warning(f"Audio file not found for {task_id}, keeping video-only")
-            task_store.update(
-                task_id,
-                status=DownloadStatus.COMPLETED,
-                progress=100.0,
-                file_path=str(video_file),
-                completed_at=_now_iso(),
-                error=None,
-            )
+            _keep_video_only(task_id, video_file)
             return
 
-        # Step 2: Merge with FFmpeg
-        logger.info(f"Running FFmpeg merge: {task_id}")
-        merge_cmd = [
-            settings.FFMPEG_PATH,
-            "-y",
-            "-i", str(video_file),
-            "-i", str(actual_audio),
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-movflags", "+faststart",
-            str(output_path),
-        ]
-
-        merge_proc = subprocess.Popen(
-            merge_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-
-        for line in merge_proc.stdout:
-            task_now = task_store.get(task_id)
-            if task_now and task_now.status == DownloadStatus.CANCELLED:
-                merge_proc.kill()
-                merge_proc.wait()
-                _cleanup_temp_files(task)
-                return
-
-        merge_proc.wait()
-
-        if merge_proc.returncode != 0:
+        merge_status = _merge_av(task_id, task, video_file, actual_audio, output_path)
+        if merge_status == "cancelled":
+            return
+        if merge_status == "failed":
             logger.error(f"FFmpeg merge failed for {task_id}")
             task_store.update(
                 task_id,
@@ -165,16 +190,7 @@ def run_merge(task_id: str, video_path: str):
         logger.info(f"Merge completed: {task_id} -> {output_path}")
 
         # Save library metadata
-        try:
-            from app.services.library_service import save_download_metadata
-            save_download_metadata(
-                filename=output_path.name,
-                title=task.title,
-                thumbnail=task.thumbnail,
-                source=task.source,
-            )
-        except Exception as e:
-            logger.error(f"Failed to save metadata for {task_id}: {e}")
+        _save_metadata(task_id, task, output_path)
 
     except Exception as e:
         task_store.update(

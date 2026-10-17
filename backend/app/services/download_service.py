@@ -1,5 +1,4 @@
 import uuid
-import re
 import subprocess
 import asyncio
 from datetime import datetime, timezone
@@ -91,16 +90,20 @@ def _update_task(task_id: str, **kwargs) -> None:
     task_store.update(task_id, **kwargs)
 
 
-def _run_download(task_id: str, url: str, format_id: str):
-    task = task_store.get(task_id)
-    if not task:
-        return
+def _parse_progress_pct(line: str) -> float | None:
+    """Extract the percentage from a yt-dlp '[download] ..%' line."""
+    if "%" not in line:
+        return None
+    head = line.split("%", 1)[0]
+    token = head.rsplit(None, 1)[-1] if head.strip() else ""
+    try:
+        return float(token)
+    except ValueError:
+        return None
 
-    output_dir = settings.DOWNLOAD_DIR
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_template = str(output_dir / "%(title)s.%(ext)s")
 
-    cmd = [
+def _download_cmd(url: str, format_id: str, output_template: str) -> list[str]:
+    return [
         settings.YT_DLP_PATH,
         "-f", format_id,
         "--no-playlist",
@@ -110,6 +113,88 @@ def _run_download(task_id: str, url: str, format_id: str):
         "--no-overwrites",
         url,
     ]
+
+
+def _apply_progress_line(task_id: str, line: str, last_file: str | None) -> str | None:
+    """Apply one yt-dlp output line to the task; return the new output path."""
+    if "[download] Destination:" in line:
+        last_file = line.split("Destination:", 1)[1].strip()
+
+    if "[download] Merging" in line or "[Merger]" in line:
+        _update_task(task_id, status=DownloadStatus.PROCESSING, progress=99.0)
+
+    if "has already been downloaded" in line:
+        _update_task(task_id, progress=100.0)
+
+    pct = _parse_progress_pct(line)
+    if pct is not None:
+        _update_task(
+            task_id,
+            progress=min(pct, 99.9),
+            status=DownloadStatus.DOWNLOADING,
+        )
+
+    if "[download] 100%" in line:
+        _update_task(task_id, progress=100.0)
+
+    return last_file
+
+
+def _consume_stdout(
+    task_id: str, process: subprocess.Popen
+) -> tuple[str | None, bool]:
+    """Read yt-dlp output until EOF; return (output_file, cancelled)."""
+    last_file: str | None = None
+    for raw in process.stdout:
+        task_now = task_store.get(task_id)
+        if task_now and task_now.status == DownloadStatus.CANCELLED:
+            process.kill()
+            process.wait()
+            logger.info(f"Download cancelled mid-stream: {task_id}")
+            return last_file, True
+
+        line = raw.strip()
+        if not line:
+            continue
+        last_file = _apply_progress_line(task_id, line, last_file)
+    return last_file, False
+
+
+def _find_recent_file(output_dir: Path) -> str | None:
+    """Fallback: return a file written to output_dir in the last few seconds."""
+    cutoff = datetime.now().timestamp() - 10
+    for f in output_dir.iterdir():
+        if f.is_file() and f.stat().st_mtime > cutoff:
+            return str(f)
+    return None
+
+
+def _save_library_metadata(task_id: str, file_path: str | None) -> None:
+    if not file_path:
+        return
+    try:
+        filename = Path(file_path).name
+        task_done = task_store.get(task_id)
+        save_download_metadata(
+            filename=filename,
+            title=task_done.title if task_done else Path(file_path).stem,
+            thumbnail=task_done.thumbnail if task_done else None,
+            source=task_done.source if task_done else None,
+        )
+    except Exception as meta_err:
+        logger.error(f"Failed to save metadata for {task_id}: {meta_err}")
+
+
+def _run_download(task_id: str, url: str, format_id: str):
+    task = task_store.get(task_id)
+    if not task:
+        return
+
+    output_dir = settings.DOWNLOAD_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_template = str(output_dir / "%(title)s.%(ext)s")
+
+    cmd = _download_cmd(url, format_id, output_template)
 
     try:
         _update_task(task_id, status=DownloadStatus.PREPARING, started_at=_now_iso(), error=None)
@@ -123,41 +208,9 @@ def _run_download(task_id: str, url: str, format_id: str):
             bufsize=1,
         )
 
-        last_file = None
-
-        for line in process.stdout:
-            task_now = task_store.get(task_id)
-            if task_now and task_now.status == DownloadStatus.CANCELLED:
-                process.kill()
-                process.wait()
-                logger.info(f"Download cancelled mid-stream: {task_id}")
-                return
-
-            line = line.strip()
-            if not line:
-                continue
-
-            if "[download] Destination:" in line:
-                last_file = line.split("Destination:", 1)[1].strip()
-
-            if "[download] Merging" in line or "[Merger]" in line:
-                _update_task(task_id, status=DownloadStatus.PROCESSING, progress=99.0)
-
-            if "has already been downloaded" in line:
-                _update_task(task_id, progress=100.0)
-
-            if "%" in line:
-                match = re.search(r"(\d+\.?\d*)%", line)
-                if match:
-                    pct = float(match.group(1))
-                    _update_task(
-                        task_id,
-                        progress=min(pct, 99.9),
-                        status=DownloadStatus.DOWNLOADING,
-                    )
-
-            if "[download] 100%" in line:
-                _update_task(task_id, progress=100.0)
+        last_file, cancelled = _consume_stdout(task_id, process)
+        if cancelled:
+            return
 
         process.wait()
 
@@ -175,12 +228,7 @@ def _run_download(task_id: str, url: str, format_id: str):
             logger.error(f"Download failed: {task_id} (code {process.returncode})")
             return
 
-        file_path = last_file
-        if not file_path:
-            for f in output_dir.iterdir():
-                if f.is_file() and f.stat().st_mtime > (datetime.now().timestamp() - 10):
-                    file_path = str(f)
-                    break
+        file_path = last_file or _find_recent_file(output_dir)
 
         _update_task(
             task_id,
@@ -199,18 +247,7 @@ def _run_download(task_id: str, url: str, format_id: str):
             run_merge(task_id, file_path)
             return
 
-        if file_path:
-            try:
-                filename = Path(file_path).name
-                task_done = task_store.get(task_id)
-                save_download_metadata(
-                    filename=filename,
-                    title=task_done.title if task_done else Path(file_path).stem,
-                    thumbnail=task_done.thumbnail if task_done else None,
-                    source=task_done.source if task_done else None,
-                )
-            except Exception as meta_err:
-                logger.error(f"Failed to save metadata for {task_id}: {meta_err}")
+        _save_library_metadata(task_id, file_path)
 
     except Exception as e:
         _update_task(

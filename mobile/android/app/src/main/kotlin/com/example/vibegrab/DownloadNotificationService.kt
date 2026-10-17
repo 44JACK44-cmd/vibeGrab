@@ -62,7 +62,6 @@ class DownloadNotificationService : Service() {
             "failed" -> showFailed(
                 intent.getStringExtra("taskId") ?: return START_NOT_STICKY,
                 intent.getStringExtra("title") ?: "Download",
-                intent.getStringExtra("error") ?: "Error",
             )
             "stop" -> stopClean()
         }
@@ -134,7 +133,7 @@ class DownloadNotificationService : Service() {
         if (activeTasks.isEmpty()) stopClean()
     }
 
-    private fun showFailed(taskId: String, title: String, error: String) {
+    private fun showFailed(taskId: String, title: String) {
         activeTasks.remove(taskId)
         val retryPI = makeActionPI(taskId, "retry", 30000)
         val notification = NotificationCompat.Builder(this, CHANNEL_RESULTS)

@@ -102,8 +102,9 @@ class TestVerifyRequest:
 
     def test_requires_key_when_configured(self, monkeypatch):
         monkeypatch.setattr(settings, "API_KEY", "secret")
+        request = _make_request(path="/api/status")
         with pytest.raises(HTTPException) as exc:
-            verify_request(_make_request(path="/api/status"))
+            verify_request(request)
         assert exc.value.status_code == 401
 
     def test_accepts_correct_key(self, monkeypatch):
@@ -118,8 +119,9 @@ class TestVerifyRequest:
         monkeypatch.setattr(settings, "RATE_LIMIT_PER_MINUTE", 2)
         verify_request(_make_request(path="/api/status"))
         verify_request(_make_request(path="/api/status"))
+        throttled = _make_request(path="/api/status")
         with pytest.raises(HTTPException) as exc:
-            verify_request(_make_request(path="/api/status"))
+            verify_request(throttled)
         assert exc.value.status_code == 429
 
     def test_rate_limit_can_be_disabled(self, monkeypatch):

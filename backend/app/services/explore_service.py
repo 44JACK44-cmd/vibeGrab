@@ -11,6 +11,30 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.explore import ExploreVideo
 
+
+class ExploreError(Exception):
+    """Raised when an explore/search operation cannot be completed.
+
+    Subclasses ``Exception`` so existing ``except Exception`` callers keep
+    working unchanged while giving the module a specific error type.
+    """
+
+
+# http(s) scheme prefixes reused across the module (kept as constants so the
+# literal is not duplicated and SonarCloud stays happy).
+_HTTP_PREFIX = "http://"
+_HTTPS_PREFIX = "https://"
+_HTTP_SCHEMES = (_HTTP_PREFIX, _HTTPS_PREFIX)
+
+# Search terms are user supplied and end up as a yt-dlp argument; reject
+# control characters and clamp the length before use (Sonar S6350).
+_MAX_SEARCH_TERM_LENGTH = 200
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+# Non-cryptographic RNG: SystemRandom only keeps the rotating trending seeds
+# from always being tried in the same order, so os.urandom entropy is plenty.
+_RANDOM = random.SystemRandom()
+
 # Curated seeds per UI language, used only when the real trending feed is
 # unreachable. Every entry is executed as a real search, never fixed data.
 _TRENDING_QUERIES: dict[str, list[str]] = {
@@ -102,6 +126,20 @@ def search_videos(
     return _ytdlp_search(query, limit=limit, page=page)
 
 
+def _clean_search_term(query: str) -> str:
+    """Validate a user search term before it reaches yt-dlp.
+
+    Rejects control characters and clamps the length so a crafted term can
+    never inject extra arguments or escape the ``ytsearch`` value.
+    """
+    term = (query or "").strip()
+    if not term:
+        raise ValueError("search term is required")
+    if _CONTROL_CHARS_RE.search(term):
+        raise ValueError("search term contains control characters")
+    return term[:_MAX_SEARCH_TERM_LENGTH]
+
+
 def _ytdlp_search(query: str, limit: int = 10, page: int = 1) -> list[ExploreVideo]:
     """yt-dlp backed search: requests the first N*limit results and slices
     the window [(N-1)*limit+1 .. N*limit] so page 2 never repeats page 1.
@@ -110,12 +148,15 @@ def _ytdlp_search(query: str, limit: int = 10, page: int = 1) -> list[ExploreVid
     page = max(1, int(page))
     start = (page - 1) * limit
     end = page * limit
+    term = _clean_search_term(query)
 
-    cache_key = f"{query.strip().lower()}|{page}|{limit}"
+    cache_key = f"{term.lower()}|{page}|{limit}"
     cached = _search_cache_get(cache_key)
     if cached is not None:
         return cached
 
+    # Arguments are always passed as a list (never a command string); the
+    # search term itself was validated above.
     cmd = [
         settings.YT_DLP_PATH,
         "--dump-json",
@@ -123,10 +164,10 @@ def _ytdlp_search(query: str, limit: int = 10, page: int = 1) -> list[ExploreVid
         "--no-warnings",
         "--playlist-items",
         f"1-{end}",
-        f"ytsearch{end}:{query}",
+        f"ytsearch{end}:{term}",
     ]
 
-    logger.info(f"Searching YouTube: '{query}' (page={page}, limit={limit})")
+    logger.info(f"Searching YouTube: '{term}' (page={page}, limit={limit})")
 
     result = subprocess.run(
         cmd,
@@ -136,21 +177,26 @@ def _ytdlp_search(query: str, limit: int = 10, page: int = 1) -> list[ExploreVid
     )
 
     if result.returncode != 0:
-        raise Exception(f"yt-dlp search error: {result.stderr.strip()}")
+        raise ExploreError(f"yt-dlp search error: {result.stderr.strip()}")
 
-    all_videos = []
-    for line in result.stdout.strip().split("\n"):
+    all_videos = _parse_ytdlp_lines(result.stdout)
+    videos = all_videos[start:end]
+    _search_cache_put(cache_key, videos)
+    return videos
+
+
+def _parse_ytdlp_lines(stdout: str) -> list[ExploreVideo]:
+    """Parse the newline-delimited JSON dump emitted by yt-dlp."""
+    videos: list[ExploreVideo] = []
+    for line in stdout.strip().split("\n"):
         if not line.strip():
             continue
         try:
             video = _parse_result(json.loads(line))
-            if video is not None:
-                all_videos.append(video)
         except json.JSONDecodeError:
             continue
-
-    videos = all_videos[start:end]
-    _search_cache_put(cache_key, videos)
+        if video is not None:
+            videos.append(video)
     return videos
 
 
@@ -220,29 +266,39 @@ def _post_search(payload: dict, lang: str = "en", gl: str = "US") -> dict:
     return resp.json()
 
 
+def _append_video_node(node: dict, items: list[ExploreVideo]) -> None:
+    """Append the video held by a known renderer node, when present."""
+    if "videoRenderer" in node:
+        item = _video_renderer_item(node["videoRenderer"])
+    elif "lockupViewModel" in node:
+        item = _lockup_to_item(node["lockupViewModel"])
+    else:
+        return
+    if item is not None:
+        items.append(item)
+
+
+def _collect_continuation_token(node: dict, tokens: list[str]) -> None:
+    """Append the continuation token carried by a renderer node, when present."""
+    endpoint = (
+        node["continuationItemRenderer"]
+        .get("continuationEndpoint", {})
+        .get("continuationCommand", {})
+        .get("token")
+    )
+    if endpoint:
+        tokens.append(endpoint)
+
+
 def _walk_search(node, items: list[ExploreVideo], tokens: list[str]) -> None:
     if isinstance(node, dict):
-        if "videoRenderer" in node:
-            item = _video_renderer_item(node["videoRenderer"])
-            if item is not None:
-                items.append(item)
-        elif "lockupViewModel" in node:
-            item = _lockup_to_item(node["lockupViewModel"])
-            if item is not None:
-                items.append(item)
+        if "videoRenderer" in node or "lockupViewModel" in node:
+            _append_video_node(node, items)
         if "continuationItemRenderer" in node:
-            endpoint = (
-                node["continuationItemRenderer"]
-                .get("continuationEndpoint", {})
-                .get("continuationCommand", {})
-                .get("token")
-            )
-            if endpoint:
-                tokens.append(endpoint)
+            _collect_continuation_token(node, tokens)
         for key, value in node.items():
-            if key in _SKIP_KEYS:
-                continue
-            _walk_search(value, items, tokens)
+            if key not in _SKIP_KEYS:
+                _walk_search(value, items, tokens)
     elif isinstance(node, list):
         for value in node:
             _walk_search(value, items, tokens)
@@ -253,6 +309,29 @@ def _parse_search_response(data: dict) -> tuple[list[ExploreVideo], str | None]:
     tokens: list[str] = []
     _walk_search(data, items, tokens)
     return items, (tokens[0] if tokens else None)
+
+
+def _renderer_channel_id(vr: dict) -> str | None:
+    """Extract the channel browse id from a videoRenderer node."""
+    owner_runs = (vr.get("ownerText") or {}).get("runs") or []
+    if not owner_runs:
+        return None
+    browse = (owner_runs[0].get("navigationEndpoint") or {}).get("browseEndpoint") or {}
+    return browse.get("browseId")
+
+
+def _renderer_thumbnail(vr: dict, video_id: str) -> str:
+    """Pick the best available thumbnail URL, falling back to YouTube's."""
+    thumbnails = (vr.get("thumbnail") or {}).get("thumbnails") or []
+    thumbnail = None
+    for thumb in thumbnails:
+        if (thumb.get("height") or 0) >= 360:
+            thumbnail = thumb.get("url")
+    if thumbnail is None and thumbnails:
+        thumbnail = thumbnails[-1].get("url")
+    if thumbnail is None:
+        return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    return thumbnail
 
 
 def _video_renderer_item(vr: dict) -> ExploreVideo | None:
@@ -267,38 +346,23 @@ def _video_renderer_item(vr: dict) -> ExploreVideo | None:
         or _runs_text(vr.get("longBylineText"))
         or _runs_text(vr.get("shortBylineText"))
     )
-    channel_id = None
-    owner_runs = (vr.get("ownerText") or {}).get("runs") or []
-    if owner_runs:
-        browse = (owner_runs[0].get("navigationEndpoint") or {}).get("browseEndpoint") or {}
-        channel_id = browse.get("browseId")
     views_text = _runs_text(vr.get("viewCountText")) or _runs_text(
         vr.get("shortViewCountText")
     )
-    age = _runs_text(vr.get("publishedTimeText"))
     duration_string = _runs_text(vr.get("lengthText"))
-    thumbnails = (vr.get("thumbnail") or {}).get("thumbnails") or []
-    thumbnail = None
-    for t in thumbnails:
-        if (t.get("height") or 0) >= 360:
-            thumbnail = t.get("url")
-    if thumbnail is None and thumbnails:
-        thumbnail = thumbnails[-1].get("url")
-    if thumbnail is None:
-        thumbnail = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
     return ExploreVideo(
         id=str(video_id),
         title=title,
         url=f"https://www.youtube.com/watch?v={video_id}",
-        thumbnail=thumbnail,
+        thumbnail=_renderer_thumbnail(vr, video_id),
         channel=channel,
-        channel_id=channel_id,
+        channel_id=_renderer_channel_id(vr),
         duration=_parse_hms(duration_string),
         duration_string=duration_string,
         view_count=_parse_count(views_text),
         views_label=None,
-        age=age,
+        age=_runs_text(vr.get("publishedTimeText")),
         provider="youtube",
     )
 
@@ -364,21 +428,17 @@ def _parse_count(text: str | None) -> int | None:
     return int(digits) if digits else None
 
 
-def _innertube_search(
-    query: str,
-    limit: int,
-    page: int,
-    sort: str,
-    when: str,
-    lang: str = "en",
-    gl: str = "US",
-) -> list[ExploreVideo]:
-    params = _WHEN_PARAMS.get(when) or _SORT_PARAMS.get(sort)
-    key = f"{query.strip().lower()}|{params or '-'}|{lang}|{gl}"
+def _trim_search_state() -> None:
+    """Drop the oldest cached search states, keeping the dict bounded."""
+    if len(_search_state) > 40:
+        for old in list(_search_state)[:-20]:
+            _search_state.pop(old, None)
 
+
+def _get_search_state(key: str, query: str, params: str | None, now: float) -> dict:
+    """Return the cached paging state for [key], creating it when stale."""
     with _search_lock:
         state = _search_state.get(key)
-        now = time.time()
         if state is None or now - state["at"] > _INNERTUBE_TTL:
             state = {
                 "query": query.strip(),
@@ -390,52 +450,90 @@ def _innertube_search(
                 "at": now,
             }
             _search_state[key] = state
-            if len(_search_state) > 40:
-                for old in list(_search_state)[:-20]:
-                    _search_state.pop(old, None)
+            _trim_search_state()
+        return state
+
+
+def _is_first_search_page(state: dict) -> bool:
+    """True while no page has been fetched yet for this state."""
+    return not state["items"] and state["next_token"] is None
+
+
+def _build_search_payload(state: dict, params: str | None, lang: str, gl: str) -> dict:
+    """Build the innertube payload for the first page or a continuation."""
+    if _is_first_search_page(state):
+        payload = {
+            "context": _search_context(lang, gl),
+            "query": state["query"],
+        }
+        if params:
+            payload["params"] = params
+        return payload
+    return {
+        "context": _search_context(lang, gl),
+        "continuation": state["next_token"],
+    }
+
+
+def _fetch_search_page(payload: dict, lang: str, gl: str, state: dict) -> dict | None:
+    """Fetch one innertube page with a single retry for transient resets.
+
+    Returns ``None`` when we should stop because earlier pages were already
+    collected; otherwise returns the parsed JSON response.
+    """
+    try:
+        return _post_search(payload, lang, gl)
+    except Exception:
+        try:
+            return _post_search(payload, lang, gl)
+        except Exception:
+            if state["items"]:
+                # Return the pages we already have instead of mixing a
+                # second source (which would duplicate results).
+                return None
+            state["exhausted"] = True
+            raise
+
+
+def _merge_search_page(state: dict, data: dict) -> None:
+    """Append a page's new items and advance the continuation token."""
+    items, token = _parse_search_response(data)
+    for item in items:
+        if item.id in state["seen"]:
+            continue
+        state["seen"].add(item.id)
+        state["items"].append(item)
+    state["next_token"] = token
+    state["at"] = time.time()
+    if token is None or not items:
+        state["exhausted"] = True
+
+
+def _innertube_search(
+    query: str,
+    limit: int,
+    page: int,
+    sort: str,
+    when: str,
+    lang: str = "en",
+    gl: str = "US",
+) -> list[ExploreVideo]:
+    params = _WHEN_PARAMS.get(when) or _SORT_PARAMS.get(sort)
+    key = f"{query.strip().lower()}|{params or '-'}|{lang}|{gl}"
+    state = _get_search_state(key, query, params, time.time())
 
     need = page * limit
     for _ in range(8):
         if state["exhausted"] or len(state["items"]) >= need:
             break
-        is_first = not state["items"] and state["next_token"] is None
-        if not is_first and state["next_token"] is None:
+        if not _is_first_search_page(state) and state["next_token"] is None:
             state["exhausted"] = True
             break
-        if is_first:
-            payload = {
-                "context": _search_context(lang, gl),
-                "query": state["query"],
-            }
-            if params:
-                payload["params"] = params
-        else:
-            payload = {
-                "context": _search_context(lang, gl),
-                "continuation": state["next_token"],
-            }
-        try:
-            data = _post_search(payload, lang, gl)
-        except Exception:
-            try:
-                data = _post_search(payload, lang, gl)  # one retry: transient resets happen
-            except Exception:
-                if state["items"]:
-                    # Return the pages we already have instead of mixing a
-                    # second source (which would duplicate results).
-                    break
-                state["exhausted"] = True
-                raise
-        items, token = _parse_search_response(data)
-        for item in items:
-            if item.id in state["seen"]:
-                continue
-            state["seen"].add(item.id)
-            state["items"].append(item)
-        state["next_token"] = token
-        state["at"] = time.time()
-        if token is None or not items:
-            state["exhausted"] = True
+        payload = _build_search_payload(state, params, lang, gl)
+        data = _fetch_search_page(payload, lang, gl, state)
+        if data is None:
+            break
+        _merge_search_page(state, data)
 
     start = (page - 1) * limit
     return list(state["items"][start : start + limit])
@@ -453,6 +551,52 @@ def _search_context(lang: str = "en", gl: str = "US") -> dict:
 
 _trending_cache: dict[tuple[str, str], tuple[float, list[ExploreVideo]]] = {}
 _TRENDING_TTL = 600
+
+
+def _collect_trending_seed(
+    query: str,
+    limit: int,
+    lang: str,
+    gl: str,
+    out: list[ExploreVideo],
+    seen: set[str],
+) -> None:
+    """Run one seed query and append its unseen videos to [out]."""
+    try:
+        for video in search_videos(
+            query, limit=10, page=1, sort="views", lang=lang, gl=gl
+        ):
+            if video.id in seen:
+                continue
+            seen.add(video.id)
+            out.append(video)
+            if len(out) >= limit:
+                break
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Trending seed '{query}' failed: {e}")
+
+
+def _collect_trending(
+    queries: list[str], limit: int, lang: str, gl: str
+) -> list[ExploreVideo]:
+    """Run the rotating seed queries until [limit] unique videos are found."""
+    out: list[ExploreVideo] = []
+    seen: set[str] = set()
+    for query in queries:
+        if len(out) >= limit:
+            break
+        _collect_trending_seed(query, limit, lang, gl, out, seen)
+    return out
+
+
+def _cache_trending(lang: str, gl: str, out: list[ExploreVideo]) -> None:
+    """Store a trending result and keep the per-locale cache bounded."""
+    _trending_cache[(lang, gl)] = (time.time(), list(out))
+    if len(_trending_cache) > 8:
+        for old in sorted(_trending_cache, key=lambda k: _trending_cache[k][0])[
+            : len(_trending_cache) - 8
+        ]:
+            _trending_cache.pop(old, None)
 
 
 def get_trending(
@@ -474,33 +618,11 @@ def get_trending(
         return list(cached[1][:limit]), "search"
 
     queries = list(_TRENDING_QUERIES.get(lang[:2], _TRENDING_QUERIES["en"]))
-    random.shuffle(queries)
+    _RANDOM.shuffle(queries)
 
-    out: list[ExploreVideo] = []
-    seen: set[str] = set()
-    for query in queries:
-        if len(out) >= limit:
-            break
-        try:
-            for video in search_videos(
-                query, limit=10, page=1, sort="views", lang=lang, gl=gl
-            ):
-                if video.id in seen:
-                    continue
-                seen.add(video.id)
-                out.append(video)
-                if len(out) >= limit:
-                    break
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"Trending seed '{query}' failed: {e}")
-
+    out = _collect_trending(queries, limit, lang, gl)
     if out:
-        _trending_cache[(lang, gl)] = (time.time(), list(out))
-        if len(_trending_cache) > 8:
-            for old in sorted(_trending_cache, key=lambda k: _trending_cache[k][0])[
-                : len(_trending_cache) - 8
-            ]:
-                _trending_cache.pop(old, None)
+        _cache_trending(lang, gl, out)
     return out[:limit], "search"
 
 
@@ -513,7 +635,7 @@ def _is_playable_format(fmt) -> bool:
     if not isinstance(fmt, dict):
         return False
     url = str(fmt.get("url") or "")
-    if not url.startswith(("http://", "https://")):
+    if not url.startswith(_HTTP_SCHEMES):
         return False
     protocol = str(fmt.get("protocol") or "")
     if "m3u8" in protocol or "m3u8" in url or "dash" in protocol:
@@ -533,8 +655,8 @@ def get_link_metadata(url: str) -> dict:
     url = (url or "").strip()
     if not url:
         raise ValueError("url is required")
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
+    if not url.startswith(_HTTP_SCHEMES):
+        url = f"{_HTTPS_PREFIX}{url}"
 
     provider = _provider_for(url)
 
@@ -549,11 +671,11 @@ def get_link_metadata(url: str) -> dict:
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
     if result.returncode != 0:
         err = (result.stderr or "").strip().split("\n")[-1][:200]
-        raise Exception(f"metadata failed: {err}")
+        raise ExploreError(f"metadata failed: {err}")
 
-    lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+    lines = [line for line in result.stdout.strip().split("\n") if line.strip()]
     if not lines:
-        raise Exception("metadata failed: empty response")
+        raise ExploreError("metadata failed: empty response")
     data = json.loads(lines[0])
 
     provider = (data.get("extractor_key") or data.get("extractor") or provider or "unknown")
@@ -563,7 +685,7 @@ def get_link_metadata(url: str) -> dict:
 
     video = _parse_result(data)
     if video is None:
-        raise Exception("metadata failed: no id")
+        raise ExploreError("metadata failed: no id")
 
     # Playable whenever we can hand the app a direct media URL: the
     # MediaEngine resolves it through /api/analyze and plays it in-app,
@@ -597,6 +719,21 @@ def _provider_for(url: str) -> str:
     return "unknown"
 
 
+def _provider_from_data(data: dict, url: str, video_id) -> str:
+    """Resolve the provider slug from yt-dlp extractor metadata and URL."""
+    extractor = str(
+        data.get("extractor_key") or data.get("ie_key") or data.get("extractor") or ""
+    ).lower()
+    if "youtube" in extractor:
+        return "youtube"
+    provider = _provider_for(url)
+    if provider == "unknown" and extractor:
+        provider = extractor.replace("extractor", "").strip() or "unknown"
+    if provider == "unknown" and _looks_youtube_id(str(video_id)):
+        provider = "youtube"
+    return provider
+
+
 def _parse_result(data: dict) -> ExploreVideo | None:
     video_id = data.get("id")
     if not video_id:
@@ -604,20 +741,6 @@ def _parse_result(data: dict) -> ExploreVideo | None:
 
     url = _resolve_url(data, str(video_id))
 
-    extractor = str(
-        data.get("extractor_key") or data.get("ie_key") or data.get("extractor") or ""
-    ).lower()
-    provider = "youtube"
-    if "youtube" not in extractor:
-        provider = _provider_for(url)
-        if provider == "unknown" and extractor:
-            provider = extractor.replace("extractor", "").strip() or "unknown"
-        if provider == "unknown" and _looks_youtube_id(str(video_id)):
-            provider = "youtube"
-
-    title = data.get("title") or "Untitled"
-    thumbnail = _best_thumbnail(data)
-    channel = data.get("channel") or data.get("uploader")
     duration = data.get("duration")
     duration_string = data.get("duration_string") or _duration_string(duration)
     view_count = data.get("view_count")
@@ -626,17 +749,17 @@ def _parse_result(data: dict) -> ExploreVideo | None:
 
     return ExploreVideo(
         id=str(video_id),
-        title=title,
+        title=data.get("title") or "Untitled",
         url=url,
-        thumbnail=thumbnail,
-        channel=channel,
+        thumbnail=_best_thumbnail(data),
+        channel=data.get("channel") or data.get("uploader"),
         channel_id=data.get("channel_id"),
         duration=int(duration) if duration else None,
         duration_string=duration_string,
         view_count=int(view_count) if view_count else None,
         views_label=_views_label(view_count),
         age=_age_label(timestamp, upload_date),
-        provider=provider,
+        provider=_provider_from_data(data, url, video_id),
     )
 
 
@@ -686,7 +809,19 @@ def _views_label(view_count) -> str | None:
     return f"{n} views"
 
 
-def _age_label(timestamp, upload_date) -> str | None:
+# Ordered (upper bound, seconds per unit, unit name) used to render an age.
+_AGE_UNITS: tuple[tuple[int, int, str], ...] = (
+    (3600, 60, "minute"),
+    (86400, 3600, "hour"),
+    (86400 * 7, 86400, "day"),
+    (86400 * 30, 86400 * 7, "week"),
+    (86400 * 365, 86400 * 30, "month"),
+)
+_SECONDS_PER_YEAR = 86400 * 365
+
+
+def _parse_age_datetime(timestamp, upload_date) -> datetime | None:
+    """Build a UTC datetime from a yt-dlp timestamp or upload date string."""
     dt: datetime | None = None
     if timestamp:
         try:
@@ -698,29 +833,26 @@ def _age_label(timestamp, upload_date) -> str | None:
             dt = datetime.strptime(str(upload_date), "%Y%m%d").replace(tzinfo=timezone.utc)
         except ValueError:
             dt = None
+    return dt
+
+
+def _format_age(seconds: int, unit_seconds: int, unit: str) -> str:
+    value = seconds // unit_seconds
+    return f"{value} {unit}{'s' if value != 1 else ''} ago"
+
+
+def _age_label(timestamp, upload_date) -> str | None:
+    dt = _parse_age_datetime(timestamp, upload_date)
     if dt is None:
         return None
 
     seconds = max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
     if seconds < 60:
         return "just now"
-    if seconds < 3600:
-        m = seconds // 60
-        return f"{m} minute{'s' if m != 1 else ''} ago"
-    if seconds < 86400:
-        h = seconds // 3600
-        return f"{h} hour{'s' if h != 1 else ''} ago"
-    if seconds < 86400 * 7:
-        d = seconds // 86400
-        return f"{d} day{'s' if d != 1 else ''} ago"
-    if seconds < 86400 * 30:
-        w = seconds // (86400 * 7)
-        return f"{w} week{'s' if w != 1 else ''} ago"
-    if seconds < 86400 * 365:
-        mo = seconds // (86400 * 30)
-        return f"{mo} month{'s' if mo != 1 else ''} ago"
-    y = seconds // (86400 * 365)
-    return f"{y} year{'s' if y != 1 else ''} ago"
+    for threshold, unit_seconds, unit in _AGE_UNITS:
+        if seconds < threshold:
+            return _format_age(seconds, unit_seconds, unit)
+    return _format_age(seconds, _SECONDS_PER_YEAR, "year")
 
 
 def _best_thumbnail(data: dict) -> str | None:
