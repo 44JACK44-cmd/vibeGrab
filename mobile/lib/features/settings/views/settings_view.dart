@@ -15,6 +15,7 @@ import '../../../services/update_service.dart';
 import '../controllers/settings_controller.dart';
 import '../../downloads/controllers/downloads_controller.dart';
 import '../widgets/update_dialog.dart';
+import '../../whats_new/whats_new_service.dart';
 import 'trash_view.dart';
 import 'vault_view.dart';
 import 'status_view.dart';
@@ -221,6 +222,7 @@ class _SettingsViewState extends State<SettingsView> {
               const SizedBox(height: 24),
               _sectionHeader(loc.sectionAbout, cs.primary),
               _buildAboutTile(context, cs, text1, text2),
+              _buildWhatsNewTile(context, cs, text1, text2),
               _buildMediaSessionTile(context, cs, text1, text2),
               _buildNetTestTile(context, cs, text1, text2),
             ],
@@ -747,6 +749,22 @@ return Padding(
           onTap: () => UpdateDialog.checkAndShow(context, manual: true),
         );
       },
+    );
+  }
+
+  Widget _buildWhatsNewTile(BuildContext context, ColorScheme cs, Color text1, Color text2) {
+    final loc = AppLocalizations.of(context);
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(Icons.auto_awesome, color: text2),
+      title:
+          Text(loc.whatsNewViewNotes, style: TextStyle(color: text1, fontSize: 15)),
+      subtitle: Text(
+        loc.whatsNewSubtitle,
+        style: TextStyle(color: text2.withValues(alpha: 0.7), fontSize: 12),
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => WhatsNewService.showLatest(context),
     );
   }
 

@@ -503,5 +503,25 @@
   "linkResolveFailed": "No se pudo leer este enlace.",
   "prevVideo": "Anterior",
   "nextVideo": "Siguiente",
-  "addedToQueue": "Añadido a la cola"
+  "addedToQueue": "Añadido a la cola",
+  "whatsNewTitle": "¡VibeGrab se ha actualizado! 🎉",
+  "whatsNewTitleManual": "Novedades de VibeGrab",
+  "whatsNewSubtitle": "Descubre lo nuevo de esta versión.",
+  "whatsNewSinceLast": "Esto es lo que ha cambiado desde tu última versión.",
+  "whatsNewCatFeatures": "Nuevas funciones",
+  "whatsNewCatImprovements": "Mejoras",
+  "whatsNewCatFixes": "Correcciones",
+  "whatsNewCatStability": "Estabilidad y compatibilidad",
+  "whatsNewGotIt": "¡Entendido!",
+  "whatsNewClose": "Cerrar",
+  "whatsNewVersion": "Versión {version}",
+  "@whatsNewVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "whatsNewViewNotes": "Ver novedades",
+  "whatsNewOpenFull": "Ver todas las novedades"
 }

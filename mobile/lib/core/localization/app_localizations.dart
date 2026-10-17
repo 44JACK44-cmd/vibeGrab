@@ -380,6 +380,21 @@ class AppLocalizations {
   String get updateLatest => _get('updateLatest');
   String get updateChecking => _get('updateChecking');
   String get updateCheckFailed => _get('updateCheckFailed');
+
+  String get whatsNewTitle => _get('whatsNewTitle');
+  String get whatsNewTitleManual => _get('whatsNewTitleManual');
+  String get whatsNewSubtitle => _get('whatsNewSubtitle');
+  String get whatsNewSinceLast => _get('whatsNewSinceLast');
+  String get whatsNewCatFeatures => _get('whatsNewCatFeatures');
+  String get whatsNewCatImprovements => _get('whatsNewCatImprovements');
+  String get whatsNewCatFixes => _get('whatsNewCatFixes');
+  String get whatsNewCatStability => _get('whatsNewCatStability');
+  String get whatsNewGotIt => _get('whatsNewGotIt');
+  String get whatsNewClose => _get('whatsNewClose');
+  String whatsNewVersion(String version) =>
+      _get('whatsNewVersion', {'version': version});
+  String get whatsNewViewNotes => _get('whatsNewViewNotes');
+  String get whatsNewOpenFull => _get('whatsNewOpenFull');
   String get aboutVersion => _get('aboutVersion');
   String get shareSaved => _get('shareSaved');
   String get shareDownloadingText => _get('shareDownloadingText');

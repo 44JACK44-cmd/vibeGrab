@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../services/update_service.dart';
+import '../../whats_new/data/whats_new_catalog.dart';
+import '../../whats_new/widgets/whats_new_dialog.dart';
 
 class UpdateDialog {
   static bool _showing = false;
@@ -118,6 +120,10 @@ class _UpdateAvailableDialogState extends State<_UpdateAvailableDialog> {
     final loc = AppLocalizations.of(context);
     final info = widget.info;
     final notes = info.notes.trim();
+    final lang = Localizations.localeOf(context).languageCode;
+    final entries =
+        WhatsNewCatalog.forVersion(info.versionName, info.buildNumber);
+    final highlights = WhatsNewCatalog.highlights(entries, max: 4);
 
     return AlertDialog(
       title: Text(loc.updateTitle),
@@ -131,7 +137,40 @@ class _UpdateAvailableDialogState extends State<_UpdateAvailableDialog> {
             'v${info.versionName}',
             style: Theme.of(context).textTheme.titleMedium,
           ),
-          if (notes.isNotEmpty) ...[
+          if (highlights.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            for (final entry in highlights)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ExcludeSemantics(
+                      child:
+                          Text(entry.emoji, style: const TextStyle(fontSize: 15)),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        entry.title.resolve(lang),
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: () => WhatsNewDialog.show(
+                  context,
+                  groups: WhatsNewCatalog.groupByVersion(entries),
+                  isUpdate: false,
+                ),
+                child: Text(loc.whatsNewOpenFull),
+              ),
+            ),
+          ] else if (notes.isNotEmpty) ...[
             const SizedBox(height: 10),
             Container(
               constraints: const BoxConstraints(maxHeight: 140),

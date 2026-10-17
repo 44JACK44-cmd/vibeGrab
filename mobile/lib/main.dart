@@ -34,6 +34,7 @@ import 'features/library/views/library_view.dart';
 import 'features/settings/views/settings_view.dart';
 import 'features/media_player/widgets/mini_player.dart';
 import 'features/settings/widgets/update_dialog.dart';
+import 'features/whats_new/whats_new_service.dart';
 import 'features/share/controllers/shared_download_controller.dart';
 import 'features/share/widgets/share_overlay_page.dart';
 import 'features/share/widgets/shared_download_sheet.dart';
@@ -270,7 +271,9 @@ context.read<MediaEngine>().initAudioService().then((_) {
         if (!mounted) return;
         DownloadNotificationService().requestPermission();
       });
-      Future.delayed(const Duration(milliseconds: 5000), () {
+      Future.delayed(const Duration(milliseconds: 5000), () async {
+        if (!mounted) return;
+        await WhatsNewService.maybeShow(context);
         if (!mounted) return;
         UpdateDialog.checkAndShow(context);
       });
