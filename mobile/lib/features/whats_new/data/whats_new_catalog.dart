@@ -23,6 +23,24 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.37
+    WhatsNewEntry(
+      id: 'wn-1137-update-explained',
+      version: '1.1.37',
+      build: 42,
+      category: WhatsNewCategory.improvements,
+      emoji: '🎁',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Las actualizaciones llegan explicadas',
+        en: 'Updates arrive explained',
+      ),
+      description: LocalizedText(
+        es: 'A partir de esta versión, cuando salga una nueva, el aviso te cuenta qué cambia con el mismo formato de novedades en lugar de una lista técnica de cambios.',
+        en: "From this version on, when a new one comes out, the prompt tells you what changed in the same what's-new format instead of a technical change list.",
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.36
     WhatsNewEntry(
       id: 'wn-1136-queue-progress',

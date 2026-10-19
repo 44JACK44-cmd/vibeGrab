@@ -105,11 +105,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" VibeGrab.apk --clobber
+          TAG="${GITHUB_REF_NAME}"
+          # v1.1.36-41 -> 1.1.36. Las notas elegantes de cada version viven en
+          # docs/releases/ y viajan con el release: la app las pinta con el
+          # mismo formato de novedades aunque todavia no conozca la version.
+          VER="${TAG#v}"
+          VER="${VER%-*}"
+          NOTES="docs/releases/${VER}.md"
+          if [ -f "$NOTES" ]; then
+            if gh release view "${TAG}" >/dev/null 2>&1; then
+              gh release upload "${TAG}" VibeGrab.apk --clobber
+              gh release edit "${TAG}" --notes-file "$NOTES"
+            else
+              gh release create "${TAG}" VibeGrab.apk \
+                --title "${TAG}" \
+                --notes-file "$NOTES" \
+                --verify-tag
+            fi
+          elif gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" VibeGrab.apk --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" VibeGrab.apk \
-              --title "${GITHUB_REF_NAME}" \
+            # Sin notas escritas se cae al texto generado a partir de los
+            # commits: legible para quien desarrolla, no para quien usa.
+            gh release create "${TAG}" VibeGrab.apk \
+              --title "${TAG}" \
               --generate-notes \
               --verify-tag
           fi

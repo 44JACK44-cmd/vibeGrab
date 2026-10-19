@@ -11,9 +11,10 @@ de ningun portatil concreto: lo hace GitHub Actions.
 |------|-----------|
 | 1 | Subir la version en 3 sitios |
 | 2 | Anadir las novedades (catalogo) |
-| 3 | Commit + push a `main` |
-| 4 | Crear y empujar el tag `vX.Y.Z-B` |
-| 5 | GitHub Actions compila, firma y publica el APK solo |
+| 3 | Escribir las notas del release (`docs/releases`) |
+| 4 | Commit + push a `main` |
+| 5 | Crear y empujar el tag `vX.Y.Z-B` |
+| 6 | GitHub Actions compila, firma y publica el APK solo |
 
 ---
 
@@ -34,7 +35,23 @@ Reglas:
 - Cada novedad va a una categoria: `features`, `improvements`, `fixes`, `stability`.
 - La pantalla "Novedades" y el catalogo son la unica fuente de lo que ve el usuario.
 
-## 3. Commit y push
+## 3. Notas del release
+
+Crea `docs/releases/X.Y.Z.md` (sin el build) con esas mismas novedades, en el
+formato `## Seccion` + `- **Titulo** — descripcion`, con los dos idiomas
+separados por los marcadores `<!-- es -->` y `<!-- en -->`. Copia el bloque mas
+reciente del catalogo y conviertelo a texto.
+
+Para que? El catalogo viaja **dentro** del binario, asi que la app instalada
+solo conoce las versiones que ya tenia: la **primera** actualizacion que ve un
+usuario llega sin catalogo y lo unico que puede enseñar es el texto del
+release. Sin ese archivo, GitHub rellena el release con la lista de commits,
+que es una lista de cambios tecnica y no algo para quien usa la app.
+
+Si el archivo falta, el workflow cae al texto generado (no rompe nada) y la
+app filtra el ruido y pinta lo que quede. Pero lo correcto es escribirlo.
+
+## 4. Commit y push
 
 ```bash
 git checkout main
@@ -44,7 +61,7 @@ git push origin main
 
 > `main` despliega el backend en Render. El APK **no** se genera con esto.
 
-## 4. Tag (formato EXACTO)
+## 5. Tag (formato EXACTO)
 
 ```bash
 git tag vX.Y.Z-B
@@ -54,7 +71,7 @@ git push origin vX.Y.Z-B
 El formato `vX.Y.Z-B` es obligatorio: la app lo lee con
 `^v(\d+)\.(\d+)\.(\d+)-(\d+)$`. Ejemplo: `v1.1.35-40`.
 
-## 5. Compilacion y publicacion
+## 6. Compilacion y publicacion
 
 ### Opcion A - GitHub Actions (unica recomendada)
 
