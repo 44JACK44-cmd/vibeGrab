@@ -40,9 +40,10 @@ class SharedDownloadController extends ChangeNotifier {
   MediaInfo? get media => _earlyMedia ?? _result?.media;
 
   /// Adopts metadata that arrived while the analysis is still running, as long
-  /// as the sheet is still looking at that same URL.
+  /// as the sheet is still looking at that same URL and no finished response
+  /// has landed meanwhile (the real result is authoritative).
   void _showEarlyMetadata(String url, MediaInfo media) {
-    if (_url != url) return;
+    if (_url != url || _result != null) return;
     _earlyMedia = media;
     notifyListeners();
   }

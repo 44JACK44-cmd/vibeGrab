@@ -49,6 +49,35 @@ class _PerUrlExtraction extends LocalExtractionService {
   }
 }
 
+/// Device extraction that reports its metadata only when the test says so,
+/// after the backend leg may have answered already.
+class _LateExtraction extends LocalExtractionService {
+  final Completer<void> metadata = Completer<void>();
+  final Completer<void> done = Completer<void>();
+
+  @override
+  Future<AnalyzeResponse> extractMedia(String url,
+      {void Function(MediaInfo media)? onMetadata}) async {
+    await metadata.future;
+    final media =
+        MediaInfo(id: 'abc123abc12', title: 'Titulo temprano', source: 'youtube');
+    onMetadata?.call(media);
+    await done.future;
+    return AnalyzeResponse(success: true, media: media, formats: const []);
+  }
+}
+
+/// Backend leg that answers immediately.
+class _FastApi extends ApiService {
+  @override
+  Future<AnalyzeResponse> analyze(String url) async => AnalyzeResponse(
+        success: true,
+        media:
+            MediaInfo(id: 'abc123abc12', title: 'Del backend', source: 'youtube'),
+        formats: const [],
+      );
+}
+
 /// The backend leg never answers: these tests are about the device path.
 class _SilentApi extends ApiService {
   @override
@@ -110,5 +139,24 @@ void main() {
 
     expect(controller.media?.title, 'Titulo $second');
     expect(controller.status, SharedSheetStatus.ready);
+  });
+
+  test('late device metadata cannot overwrite a finished response', () async {
+    final extraction = _LateExtraction();
+    final controller =
+        SharedDownloadController(extraction: extraction, api: _FastApi());
+
+    await controller
+        .analyzeUrl('https://www.youtube.com/watch?v=abc123abc12');
+    expect(controller.status, SharedSheetStatus.ready);
+    expect(controller.media?.title, 'Del backend');
+
+    // The device leg finally reports its own metadata after the backend has
+    // already answered: the sheet keeps the authoritative response.
+    extraction.metadata.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.media?.title, 'Del backend');
+
+    extraction.done.complete();
   });
 }
