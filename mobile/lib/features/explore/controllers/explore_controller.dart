@@ -195,17 +195,25 @@ class ExploreController extends ChangeNotifier {
   }) {
     final s = <String>{};
     if (continueWatching) {
-      for (final v in _continueWatching) s.add(_keyOf(v));
+      for (final v in _continueWatching) {
+        s.add(_keyOf(v));
+      }
     }
     if (trending) {
-      for (final v in _trending) s.add(_keyOf(v));
+      for (final v in _trending) {
+        s.add(_keyOf(v));
+      }
     }
     if (forYou) {
-      for (final v in _forYou) s.add(_keyOf(v));
+      for (final v in _forYou) {
+        s.add(_keyOf(v));
+      }
     }
     if (rails) {
       for (final list in _rails.values) {
-        for (final v in list) s.add(_keyOf(v));
+        for (final v in list) {
+          s.add(_keyOf(v));
+        }
       }
     }
     return s;

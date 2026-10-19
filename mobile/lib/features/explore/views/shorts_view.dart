@@ -5,7 +5,6 @@ import 'package:video_player/video_player.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../data/models/explore_video.dart';
 import '../../../services/media_engine.dart';
-import '../../../services/media_metadata_service.dart';
 import '../controllers/explore_controller.dart';
 import 'video_detail_view.dart';
 

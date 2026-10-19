@@ -69,7 +69,6 @@ Future<void> main() async {
         debugPrint('[Main] Backend warmup: $ok');
       }).catchError((e) {
         debugPrint('[Main] Backend warmup failed: $e');
-        return false;
       });
     });
 
@@ -234,6 +233,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     });
 
     PiPService.onPiPChanged.listen((isInPip) {
+      if (!mounted) return;
       final engine = context.read<MediaEngine>();
       if (isInPip) {
         engine.onPiPEntered();
@@ -332,7 +332,7 @@ context.read<MediaEngine>().initAudioService().then((_) {
               children: [
                 const ExploreView(),
                 const BrowserView(),
-                AnalyzerView(),
+                const AnalyzerView(),
                 DownloadsView(onNavigateToAnalyze: () => _navigateToTab(2)),
                 const LibraryView(),
                 const SettingsView(),

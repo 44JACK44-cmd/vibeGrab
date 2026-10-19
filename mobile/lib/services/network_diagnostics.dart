@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../core/constants/api_constants.dart';
@@ -87,7 +86,7 @@ class NetworkDiagnostics {
     // 4) Direct googlevideo bytes (carrier blocking shows up here).
     if (videoUrl != null) {
       out.add(await _timed('direct', () async {
-        final req = await http.Request('GET', Uri.parse(videoUrl!))
+        final req = http.Request('GET', Uri.parse(videoUrl!))
           ..headers['Range'] = 'bytes=0-1023'
           ..headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 14)';
         final res = await http.Response.fromStream(

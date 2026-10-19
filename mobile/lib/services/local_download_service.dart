@@ -371,10 +371,6 @@ class LocalDownloadService {
         }
 
         final streamUrl = candidate.stream.url;
-        if (streamUrl == null) {
-          _log('  SKIP: URL is null');
-          continue;
-        }
 
         if (candidate.needsMux && candidate.stream is VideoOnlyStreamInfo) {
           final muxResult = await _downloadWithMuxing(
@@ -602,22 +598,19 @@ class LocalDownloadService {
     final audioExt = audioStream.container.name;
     final videoTempPath = '$dir/${safeTitle}_video_temp.$videoExt';
     final audioTempPath = '$dir/${safeTitle}_video_audio_temp.$audioExt';
-    final outputPath = '$dir/${safeTitle}.mp4';
+    final outputPath = '$dir/$safeTitle.mp4';
 
     try {
       final totalVideoBytes = videoOnlyStream.size.totalBytes;
       final totalAudioBytes = audioStream.size.totalBytes;
 
-      _log('MUX: video tag=${videoOnlyStream.tag} size=${totalVideoBytes} (${(totalVideoBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
-      _log('MUX: audio tag=${audioStream.tag} size=${totalAudioBytes} (${(totalAudioBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
+      _log('MUX: video tag=${videoOnlyStream.tag} size=$totalVideoBytes (${(totalVideoBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
+      _log('MUX: audio tag=${audioStream.tag} size=$totalAudioBytes (${(totalAudioBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
 
       onStep(const DownloadStep('downloading', 'Downloading video track...'));
       _log('MUX STEP 1: Downloading video...');
 
       final videoUrl = videoOnlyStream.url;
-      if (videoUrl == null) {
-        return task.copyWith(status: 'failed', error: 'Video stream URL not available', errorCode: 'urlNull');
-      }
 
       final videoResult = await _downloadViaHttpClient(
         url: videoUrl,
@@ -640,9 +633,6 @@ class LocalDownloadService {
       _log('MUX STEP 2: Downloading audio...');
 
       final audioUrl = audioStream.url;
-      if (audioUrl == null) {
-        return task.copyWith(status: 'failed', error: 'Audio stream URL not available', errorCode: 'urlNull');
-      }
 
       final audioResult = await _downloadViaHttpClient(
         url: audioUrl,
@@ -690,7 +680,7 @@ String finalPath = '';
         finalPath = outputPath;
       } else if (task.mediaType == DownloadMediaType.audio) {
         // For audio-only downloads, convert to MP3 using FFmpeg
-        final audioPath = '$dir/${safeTitle}.mp3';
+        final audioPath = '$dir/$safeTitle.mp3';
         bool converted = false;
         try {
           _log('AUDIO: Converting to MP3...');
@@ -718,7 +708,7 @@ String finalPath = '';
         if (!converted) {
           // Fallback: use original audio file with proper extension
           final audioExt = _getExtension(audioStream);
-          final audioPath = '$dir/${safeTitle}.$audioExt';
+          final audioPath = '$dir/$safeTitle.$audioExt';
           await File(audioTempPath).rename(audioPath);
           finalPath = audioPath;
           _log('AUDIO: Using original format as fallback');
@@ -729,7 +719,11 @@ String finalPath = '';
         if (await videoFile.exists()) {
           await videoFile.rename(fallbackPath);
         }
-        await File(audioTempPath).delete().catchError((_) {});
+        try {
+          await File(audioTempPath).delete();
+        } catch (_) {
+          // Temporal ya eliminado o inaccesible: no es un error fatal.
+        }
         finalPath = fallbackPath;
         _log('MUX: Fallback to video-only: $finalPath');
       }
@@ -839,7 +833,11 @@ String finalPath = '';
         if (!_activeDownloads.containsKey(task.id)) {
           _log('HTTP: Download cancelled');
           await fileSink.close();
-          await file.delete().catchError((_) {});
+          try {
+            await file.delete();
+          } catch (_) {
+            // El fichero parcial puede no existir todavia: se ignora.
+          }
           throw Exception('Download cancelled');
         }
 

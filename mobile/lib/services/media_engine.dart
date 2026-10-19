@@ -55,10 +55,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   MediaState _state = MediaState();
   MediaState get state => _state;
   bool get hasMedia => _state.hasMedia;
+  @override
   bool get isPlaying => _state.isPlaying;
   bool get isVideo => _state.mediaType == MediaType.video;
   bool get hasVideoController => _videoController != null;
   VideoPlayerController? get videoController => _videoController;
+  @override
   AudioPlayer get audioPlayer => _player;
   Duration get position => _state.position;
   Duration get duration => _state.duration;
@@ -113,6 +115,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _pausedByInterruption = false;
     _audioSession?.setActive(false).catchError((e) {
       debugPrint('[MediaEngine] AudioSession deactivate error: $e');
+      return false;
     });
   }
 
@@ -241,7 +244,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   Future<void> _loadPosition(String mediaId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final ms = prefs.getInt('${_prefix}${mediaId}_pos') ?? 0;
+      final ms = prefs.getInt('$_prefix${mediaId}_pos') ?? 0;
       _state = _state.copyWith(position: Duration(milliseconds: ms));
     } catch (_) {}
   }
@@ -253,13 +256,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (!force && position < const Duration(milliseconds: 500)) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('${_prefix}${mediaId}_pos', position.inMilliseconds);
+      await prefs.setInt('$_prefix${mediaId}_pos', position.inMilliseconds);
     } catch (_) {}
   }
 
   Future<void> clearResumePosition(String mediaId) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('${_prefix}${mediaId}_pos');
+    await prefs.remove('$_prefix${mediaId}_pos');
   }
 
   Uri? _resolvePlaybackUri(LibraryFile file) {
@@ -815,6 +818,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   /// Applies a repeat+shuffle combination and persists it.
+  @override
   void setPlayMode(PlayerRepeatMode mode, bool shuffle) {
     _state = _state.copyWith(repeatMode: mode, isShuffle: shuffle);
     // Engine-level shuffle owns the order; just_audio's internal shuffle
@@ -834,6 +838,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   /// The mode button cycle: normal -> all -> one -> shuffle -> normal.
+  @override
   void cyclePlayMode() {
     if (_state.repeatMode == PlayerRepeatMode.none && !_state.isShuffle) {
       setPlayMode(PlayerRepeatMode.all, false);
@@ -931,6 +936,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   /// Toggles favorite for whatever is playing. Local files use the
   /// filename flag (Library "Favoritos"); remote Explorer/YouTube items use
   /// the liked-videos store (songs + "Videos que me gustan").
+  @override
   Future<void> toggleFavoriteCurrent() async {
     final key = _favoriteKey;
     if (key == null) return;
@@ -1012,6 +1018,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   // --- Navigation ---
 
+  @override
   Future<void> skipToNext() async {
     if (_queue.isEmpty) return;
     if (_state.isShuffle) {
@@ -1030,6 +1037,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     }
   }
 
+  @override
   Future<void> skipToPrevious() async {
     if (_queue.isEmpty) return;
     if (_state.position.inSeconds > 3) {
@@ -1263,7 +1271,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       {Duration? duration}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final ms = prefs.getInt('${_prefix}${mediaId}_pos') ?? 0;
+      final ms = prefs.getInt('$_prefix${mediaId}_pos') ?? 0;
       if (ms < 10000) return Duration.zero;
       final durMs = duration?.inMilliseconds ?? 0;
       if (durMs > 0 && ms / durMs >= 0.95) return Duration.zero;
@@ -1305,17 +1313,6 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   static bool _durationLooksUnknown(Duration d) =>
       d < const Duration(seconds: 1) || d > const Duration(hours: 24);
 
-  /// Adaptive shortcut: carriers that block googlevideo fail the direct
-  /// attempt every time. After 2 consecutive direct failures we skip it
-  /// for 10 minutes and go straight to the server paths.
-  int _directFails = 0;
-  DateTime? _directSkipUntil;
-
-  bool get _shouldTryDirect {
-    final until = _directSkipUntil;
-    if (until != null && DateTime.now().isBefore(until)) return false;
-    return true;
-  }
   String? _watchdogMedia;
 
   void _setStage(String? key) {
@@ -1471,7 +1468,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final detail = errs.join(' · ');
     _failPlayback(detail.isEmpty
         ? 'no reproducible'
-        : '${detail.length > 280 ? '${detail.substring(0, 280)}…' : detail}');
+        : detail.length > 280 ? '${detail.substring(0, 280)}…' : detail);
   }
 
   /// Non-YouTube links (TikTok, Instagram, Facebook, ...): ask the backend
@@ -2596,6 +2593,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     seek(target);
   }
 
+  @override
   Future<void> seek(Duration position) async {
     if (position < Duration.zero) position = Duration.zero;
     final mid = _state.mediaId;
@@ -2691,6 +2689,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     await seek(newPos < Duration.zero ? Duration.zero : newPos);
   }
 
+  @override
   Future<void> pause() async {
     if (_videoController != null) {
       await _videoController!.pause();
@@ -2702,6 +2701,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     notifyListeners();
   }
 
+  @override
   Future<void> resume() async {
     // Idle/completed means there is NO live source (e.g. after a failed
     // video play): re-play the current queue item from scratch so state
@@ -2788,6 +2788,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _isAudioBackgroundActive = false;
   }
 
+  @override
   Future<void> stop() async {
     _playToken++;
     await _stopCurrent();

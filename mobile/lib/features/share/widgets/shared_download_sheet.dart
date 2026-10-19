@@ -6,9 +6,6 @@ import '../../../core/localization/app_localizations.dart';
 import '../../../data/models/format_option.dart';
 import '../../../data/models/download_task.dart';
 import '../../../features/downloads/controllers/downloads_controller.dart';
-import '../../../services/media_engine.dart';
-import '../../../data/models/library_file.dart';
-import '../../../services/storage_service.dart';
 import '../controllers/shared_download_controller.dart';
 
 class SharedDownloadSheet extends StatefulWidget {
@@ -304,11 +301,11 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
             style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
           ),
           const SizedBox(height: 20),
-          ShimmerLoading(width: double.infinity, height: 100, borderRadius: 12),
+          const ShimmerLoading(width: double.infinity, height: 100, borderRadius: 12),
           const SizedBox(height: 12),
-          ShimmerLoading(width: double.infinity, height: 44, borderRadius: 10),
+          const ShimmerLoading(width: double.infinity, height: 44, borderRadius: 10),
           const SizedBox(height: 8),
-          ShimmerLoading(width: double.infinity, height: 44, borderRadius: 10),
+          const ShimmerLoading(width: double.infinity, height: 44, borderRadius: 10),
         ],
       ),
     );
@@ -931,7 +928,7 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
     controller.setCompleted();
 
     Future.delayed(const Duration(seconds: 2), () {
-      if (context.mounted) {
+      if (mounted) {
         Navigator.of(context).pop();
         controller.reset();
       }

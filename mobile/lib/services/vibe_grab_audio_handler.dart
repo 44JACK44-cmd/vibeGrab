@@ -57,14 +57,14 @@ class VibeGrabAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> updateMediaItem(MediaItem newMediaItem) {
-    final prev = mediaItem.value;
-    if (prev?.id != newMediaItem.id || prev?.duration != newMediaItem.duration) {
-      debugPrint('[MEDIA_SESSION] MediaItem updated: "${newMediaItem.title}" '
-          'by "${newMediaItem.artist}" dur=${newMediaItem.duration} '
-          'art=${newMediaItem.artUri ?? "none"}');
+  Future<void> updateMediaItem(MediaItem mediaItem) {
+    final prev = this.mediaItem.value;
+    if (prev?.id != mediaItem.id || prev?.duration != mediaItem.duration) {
+      debugPrint('[MEDIA_SESSION] MediaItem updated: "${mediaItem.title}" '
+          'by "${mediaItem.artist}" dur=${mediaItem.duration} '
+          'art=${mediaItem.artUri ?? "none"}');
     }
-    mediaItem.add(newMediaItem);
+    this.mediaItem.add(mediaItem);
     return Future.value();
   }
 
@@ -175,9 +175,9 @@ void updatePlaybackState({
     );
   }
 
-  /// The platform delivers notification custom-action taps here (the
-  /// deprecated name is what audio_service actually calls on this path).
-  @override
+  /// Handles notification custom-action taps. audio_service no longer declares
+  /// this method in the base class, so it is invoked from [customAction] below
+  /// instead of through a platform override.
   Future<dynamic> onCustomAction(String name, dynamic arguments) async {
     // A single tap can reach us through both routes (onCustomAction and
     // customAction) or be redelivered when the PendingIntent is re-fired.

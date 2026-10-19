@@ -133,7 +133,7 @@ class LibraryCard extends StatelessWidget {
                   const PopupMenuDivider(),
                   PopupMenuItem(
                     value: 'delete',
-                    child: Text(loc.delete, style: TextStyle(color: AppColors.error)),
+                    child: Text(loc.delete, style: const TextStyle(color: AppColors.error)),
                   ),
                 ],
                 padding: EdgeInsets.zero,
@@ -282,7 +282,7 @@ class LibraryCard extends StatelessWidget {
               Navigator.pop(ctx);
               libraryController.deleteFile(file.filename);
             },
-            child: Text(loc.delete, style: TextStyle(color: AppColors.error)),
+            child: Text(loc.delete, style: const TextStyle(color: AppColors.error)),
           ),
         ],
       ),

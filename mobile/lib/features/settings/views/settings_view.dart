@@ -241,7 +241,7 @@ class _SettingsViewState extends State<SettingsView> {
       trailing: const Icon(Icons.chevron_right),
       onTap: () async {
         final path = await controller.pickDownloadDirectory();
-        if (path != null && context.mounted) {
+        if (path != null && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(loc.directorySelected)),
           );
@@ -344,15 +344,24 @@ class _SettingsViewState extends State<SettingsView> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(loc.defaultQuality),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _qualityOption(ctx, loc, 'best', loc.qualityBest, current),
-            _qualityOption(ctx, loc, '1080p', '1080p', current),
-            _qualityOption(ctx, loc, '720p', '720p', current),
-            _qualityOption(ctx, loc, '480p', '480p', current),
-            _qualityOption(ctx, loc, 'audio', loc.qualityAudioOnly, current),
-          ],
+        content: RadioGroup<String>(
+          groupValue: current,
+          onChanged: (v) {
+            if (v != null) {
+              context.read<SettingsController>().updateSetting(defaultQuality: v);
+            }
+            Navigator.pop(ctx);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _qualityOption(loc, 'best', loc.qualityBest),
+              _qualityOption(loc, '1080p', '1080p'),
+              _qualityOption(loc, '720p', '720p'),
+              _qualityOption(loc, '480p', '480p'),
+              _qualityOption(loc, 'audio', loc.qualityAudioOnly),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -364,20 +373,12 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
-  Widget _qualityOption(
-      BuildContext ctx, AppLocalizations loc, String value, String label, String current) {
+  Widget _qualityOption(AppLocalizations loc, String value, String label) {
     return RadioListTile<String>(
       value: value,
-      groupValue: current,
       dense: true,
       title: Text(label, style: const TextStyle(fontSize: 15)),
       contentPadding: EdgeInsets.zero,
-      onChanged: (v) {
-        if (v != null) {
-          context.read<SettingsController>().updateSetting(defaultQuality: v);
-        }
-        Navigator.pop(ctx);
-      },
     );
   }
 
@@ -404,15 +405,24 @@ class _SettingsViewState extends State<SettingsView> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(loc.speedLimit),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _speedOption(ctx, loc, 0, current),
-            _speedOption(ctx, loc, 100, current),
-            _speedOption(ctx, loc, 300, current),
-            _speedOption(ctx, loc, 500, current),
-            _speedOption(ctx, loc, 1000, current),
-          ],
+        content: RadioGroup<int>(
+          groupValue: current,
+          onChanged: (v) {
+            if (v != null) {
+              context.read<SettingsController>().updateSetting(speedLimitKbps: v);
+            }
+            Navigator.pop(ctx);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _speedOption(loc, 0),
+              _speedOption(loc, 100),
+              _speedOption(loc, 300),
+              _speedOption(loc, 500),
+              _speedOption(loc, 1000),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -424,19 +434,12 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
-  Widget _speedOption(BuildContext ctx, AppLocalizations loc, int value, int current) {
+  Widget _speedOption(AppLocalizations loc, int value) {
     return RadioListTile<int>(
       value: value,
-      groupValue: current,
       dense: true,
       title: Text(_speedLabel(loc, value), style: const TextStyle(fontSize: 15)),
       contentPadding: EdgeInsets.zero,
-      onChanged: (v) {
-        if (v != null) {
-          context.read<SettingsController>().updateSetting(speedLimitKbps: v);
-        }
-        Navigator.pop(ctx);
-      },
     );
   }
 
@@ -957,28 +960,30 @@ return Padding(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(loc.language),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _languageOption(ctx, langProv, loc.languageAuto, 'auto', langProv.mode == 'auto'),
-            _languageOption(ctx, langProv, '${loc.languageSpanish} \u{1F1EA}\u{1F1F8}', 'es', langProv.mode == 'es'),
-            _languageOption(ctx, langProv, '${loc.languageEnglish} \u{1F1FA}\u{1F1F8}', 'en', langProv.mode == 'en'),
-          ],
+        content: RadioGroup<String>(
+          groupValue: langProv.mode,
+          onChanged: (value) {
+            if (value != null) {
+              langProv.setLanguage(value);
+            }
+            Navigator.pop(ctx);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _languageOption(loc.languageAuto, 'auto'),
+              _languageOption('${loc.languageSpanish} \u{1F1EA}\u{1F1F8}', 'es'),
+              _languageOption('${loc.languageEnglish} \u{1F1FA}\u{1F1F8}', 'en'),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _languageOption(BuildContext ctx, LanguageProvider langProv, String label, String mode, bool selected) {
+  Widget _languageOption(String label, String mode) {
     return RadioListTile<String>(
       value: mode,
-      groupValue: langProv.mode,
-      onChanged: (value) {
-        if (value != null) {
-          langProv.setLanguage(value);
-        }
-        Navigator.pop(ctx);
-      },
       title: Text(label, style: const TextStyle(fontSize: 15)),
       contentPadding: EdgeInsets.zero,
     );

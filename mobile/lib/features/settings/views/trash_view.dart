@@ -56,7 +56,7 @@ class _TrashViewState extends State<TrashView> {
               _load();
               _refreshLibrary();
             },
-            child: Text(loc.emptyTrash, style: TextStyle(color: AppColors.error)),
+            child: Text(loc.emptyTrash, style: const TextStyle(color: AppColors.error)),
           ),
         ],
       ),
@@ -80,7 +80,7 @@ class _TrashViewState extends State<TrashView> {
               await TrashService.instance.deleteForever(entry);
               _load();
             },
-            child: Text(loc.delete, style: TextStyle(color: AppColors.error)),
+            child: Text(loc.delete, style: const TextStyle(color: AppColors.error)),
           ),
         ],
       ),

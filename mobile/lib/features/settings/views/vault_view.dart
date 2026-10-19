@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/theme/app_colors.dart';
-import '../../../data/models/library_file.dart';
 import '../../../features/library/controllers/library_controller.dart';
 import '../../../services/media_engine.dart';
 import '../../../services/storage_service.dart';
@@ -211,7 +210,7 @@ class _VaultViewState extends State<VaultView> {
               await VaultService.instance.deleteFromVault(vf.name);
               _loadFiles();
               // Keep the Library in sync (it owns the metadata/history).
-              if (context.mounted) {
+              if (mounted) {
                 context.read<LibraryController>().loadLibrary();
               }
             },

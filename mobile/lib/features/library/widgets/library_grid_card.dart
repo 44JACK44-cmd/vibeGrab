@@ -58,7 +58,7 @@ class LibraryGridCard extends StatelessWidget {
                         ),
                         child: Text(
                           _formatDuration(resumeMs),
-                          style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600),
+                          style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600),
                         ),
                       ),
                     ),
@@ -129,7 +129,7 @@ class LibraryGridCard extends StatelessWidget {
                             PopupMenuItem(
                               value: 'delete',
                               child: Text(AppLocalizations.of(context).delete,
-                                  style: TextStyle(
+                                  style: const TextStyle(
                                       color: AppColors.error, fontSize: 13)),
                             ),
                           ],

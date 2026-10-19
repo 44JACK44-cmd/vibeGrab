@@ -40,54 +40,54 @@ void main() {
 
   group('viewCountFormatted', () {
     test('formats billions', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u', viewCount: 2500000000);
+      const v = ExploreVideo(id: '1', title: 't', url: 'u', viewCount: 2500000000);
       expect(v.viewCountFormatted, '2.5B views');
     });
 
     test('formats millions', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u', viewCount: 3200000);
+      const v = ExploreVideo(id: '1', title: 't', url: 'u', viewCount: 3200000);
       expect(v.viewCountFormatted, '3.2M views');
     });
 
     test('formats thousands', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u', viewCount: 45600);
+      const v = ExploreVideo(id: '1', title: 't', url: 'u', viewCount: 45600);
       expect(v.viewCountFormatted, '46K views');
     });
 
     test('formats small numbers', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u', viewCount: 42);
+      const v = ExploreVideo(id: '1', title: 't', url: 'u', viewCount: 42);
       expect(v.viewCountFormatted, '42 views');
     });
 
     test('returns empty for null', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u');
+      const v = ExploreVideo(id: '1', title: 't', url: 'u');
       expect(v.viewCountFormatted, '');
     });
   });
 
   group('durationFormatted', () {
     test('uses durationString when available', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u', durationString: '5:30');
+      const v = ExploreVideo(id: '1', title: 't', url: 'u', durationString: '5:30');
       expect(v.durationFormatted, '5:30');
     });
 
     test('formats seconds to mm:ss', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u', duration: 125);
+      const v = ExploreVideo(id: '1', title: 't', url: 'u', duration: 125);
       expect(v.durationFormatted, '02:05');
     });
 
     test('formats hours to h:mm:ss', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u', duration: 3661);
+      const v = ExploreVideo(id: '1', title: 't', url: 'u', duration: 3661);
       expect(v.durationFormatted, '1:01:01');
     });
 
     test('returns empty for null duration', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u');
+      const v = ExploreVideo(id: '1', title: 't', url: 'u');
       expect(v.durationFormatted, '');
     });
 
     test('returns empty for zero duration', () {
-      final v = ExploreVideo(id: '1', title: 't', url: 'u', duration: 0);
+      const v = ExploreVideo(id: '1', title: 't', url: 'u', duration: 0);
       expect(v.durationFormatted, '');
     });
   });

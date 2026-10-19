@@ -341,12 +341,12 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
   }
 
   Widget _buildSkeletonLoading() {
-    return Column(
+    return const Column(
       children: [
         ShimmerLoading(width: double.infinity, height: 200, borderRadius: 16),
-        const SizedBox(height: 16),
+        SizedBox(height: 16),
         ShimmerLoading(width: double.infinity, height: 48, borderRadius: 12),
-        const SizedBox(height: 8),
+        SizedBox(height: 8),
         ShimmerLoading(width: double.infinity, height: 48, borderRadius: 12),
       ],
     );
@@ -422,12 +422,12 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline, color: AppColors.error, size: 20),
+          const Icon(Icons.error_outline, color: AppColors.error, size: 20),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               _localizedAnalyzerError(controller.error!, loc),
-              style: TextStyle(color: AppColors.error, fontSize: 13),
+              style: const TextStyle(color: AppColors.error, fontSize: 13),
             ),
           ),
         ],

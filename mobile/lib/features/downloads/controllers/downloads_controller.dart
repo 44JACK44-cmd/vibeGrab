@@ -600,9 +600,7 @@ class DownloadsController extends ChangeNotifier {
     // Deleting a download must also drop its favorite + history entries,
     // otherwise the Library keeps orphan cards that do nothing when tapped.
     final meta = MediaMetadataService();
-    final name = task.filePath != null
-        ? task.filePath!.split(Platform.pathSeparator).last
-        : null;
+    final name = task.filePath?.split(Platform.pathSeparator).last;
     if (name != null) {
       await meta.removeFileData(name);
     }

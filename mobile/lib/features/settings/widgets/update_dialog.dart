@@ -42,7 +42,10 @@ class UpdateDialog {
       final info = await UpdateService.checkForUpdate();
 
       if (manual && spinnerContext != null) {
-        Navigator.of(spinnerContext!).pop();
+        final spinner = spinnerContext!;
+        if (spinner.mounted) {
+          Navigator.of(spinner).pop();
+        }
         spinnerContext = null;
       }
 
@@ -64,7 +67,10 @@ class UpdateDialog {
     } catch (e) {
       debugPrint('[Update] check failed: $e');
       if (spinnerContext != null) {
-        Navigator.of(spinnerContext!).pop();
+        final spinner = spinnerContext!;
+        if (spinner.mounted) {
+          Navigator.of(spinner).pop();
+        }
         spinnerContext = null;
       }
       if (manual && context.mounted) {

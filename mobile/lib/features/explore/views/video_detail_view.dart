@@ -658,7 +658,7 @@ Future<void> _toggleLike() async {
             onPressed: () async {
               final available = await engine.isPiPAvailable();
               final entered = available && await engine.enterPiP();
-              if (!entered && context.mounted) {
+              if (!entered && mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                   content: Text(loc.piPNotAvailable),
                   behavior: SnackBarBehavior.floating,
