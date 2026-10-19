@@ -2267,82 +2267,67 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     // on relay `?t=` streams, so the offset-aware state is the truth here.
     final savedPosition = _state.position;
     final savedDuration = _state.duration;
+    final videoBefore = _videoController;
 
-    await _videoController?.dispose();
-    _videoController = null;
-    _bgAudioOffset = Duration.zero;
-
-    // 1) Local or content:// source: plain file streaming, no URL expiry.
-    final uri = _resolvePlaybackUriById(mediaId);
-    if (uri != null) {
-      final item = _createMediaItemFromState();
-      try {
-        await _player.setAudioSource(AudioSource.uri(uri, tag: item));
-        await _player.seek(savedPosition);
-        await _player.play();
-        _wireAudioSubscriptions(mediaId);
-        _state = _state.copyWith(
-          status: MediaStatus.playing,
-          position: savedPosition,
-          duration: savedDuration,
-        );
-        _isAudioBackgroundActive = true;
-        _syncPlaybackStateToHandler();
-        notifyListeners();
-        return;
-      } catch (e) {
-        debugPrint('[MediaEngine] Screen off local audio error: $e');
-      }
-    }
-
-    // 2) YouTube: audio-only variant (saves data on long videos).
-    if (_parseVideoIdFromUrl(mediaId) != null &&
-        await _startBackgroundAudioForYouTube(savedPosition)) {
+    // The handoff used to DISPOSE THE VIDEO FIRST and only then go resolve
+    // the audio source, so the sound died for the whole resolution: the
+    // YouTube path alone waits on a network manifest for up to 10s. That is
+    // the audible pause when the screen goes off or the app is minimized.
+    // The other way around: resolve and BUFFER the audio while the video
+    // keeps playing, and swap only once the next source is ready. Failing
+    // anywhere leaves the video playing instead of leaving silence behind.
+    final source = await _prepareBackgroundAudio(mediaId, savedPosition);
+    if (source == null) {
+      _bgAudioOffset = Duration.zero;
+      debugPrint('[MediaEngine] No background audio source for $mediaId');
       return;
     }
 
-    // 3) Any direct stream (external mp4, proxy, relay merge): the last live
-    // URL. Merge streams have no index, so reconnect from `?t=` instead of
-    // seeking — and tell the position listener about the offset.
-    final last = _lastDirectUrl;
-    if (last != null && last.startsWith('http')) {
-      var streamUri = Uri.parse(last);
-      if (_activeKind == MediaSourceKind.relayMerge &&
-          savedPosition > Duration.zero) {
-        streamUri = _relayUriWithStart(streamUri, savedPosition);
-        _bgAudioOffset = savedPosition;
-      }
-      final item = _createMediaItemFromState();
-      try {
-        await _player.setAudioSource(
-          AudioSource.uri(
-            streamUri,
-            tag: item,
-            headers: ApiConfig.streamHeaders,
-          ),
-        );
-        await _player.seek(_bgAudioOffset > Duration.zero
-            ? Duration.zero
-            : savedPosition);
-        await _player.play();
-        _wireAudioSubscriptions(mediaId);
-        _state = _state.copyWith(
-          status: MediaStatus.playing,
-          position: savedPosition,
-          duration: savedDuration,
-        );
-        _isAudioBackgroundActive = true;
-        _syncPlaybackStateToHandler();
-        notifyListeners();
-        return;
-      } catch (e) {
-        debugPrint('[MediaEngine] Screen off stream audio error: $e');
-        _bgAudioOffset = Duration.zero;
-      }
+    try {
+      // Loading does not play: the audio player is idle during video
+      // playback, so this cannot double the sound.
+      await _player.setAudioSource(source);
+    } catch (e) {
+      debugPrint('[MediaEngine] Screen off audio load error: $e');
+      _bgAudioOffset = Duration.zero;
+      return;
     }
 
-    // Nothing left to stream: playback ends here with the screen off.
-    debugPrint('[MediaEngine] No background audio source for $mediaId');
+    // Resolving took time and the video never stopped, so start the audio
+    // where it is NOW, not where it was when the handoff began. Only the
+    // relay `?t=` stream starts elsewhere, and _bgAudioOffset carries that.
+    if (_state.mediaId != mediaId ||
+        !identical(_videoController, videoBefore) ||
+        _state.status == MediaStatus.paused) {
+      // The queue moved on (a short ended, another video was picked) or the
+      // user paused meanwhile: taking over here would hijack that playback.
+      _bgAudioOffset = Duration.zero;
+      return;
+    }
+    final logicalNow = _state.position;
+    final audioStart = logicalNow > _bgAudioOffset
+        ? logicalNow - _bgAudioOffset
+        : Duration.zero;
+
+    _completionDebounce?.cancel();
+    await _videoController?.dispose();
+    _videoController = null;
+
+    try {
+      await _player.seek(audioStart);
+      await _player.play();
+    } catch (e) {
+      debugPrint('[MediaEngine] Screen off audio play error: $e');
+    }
+    _wireAudioSubscriptions(mediaId);
+    _state = _state.copyWith(
+      status: MediaStatus.playing,
+      position: logicalNow,
+      duration: savedDuration,
+    );
+    _isAudioBackgroundActive = true;
+    _syncPlaybackStateToHandler();
+    notifyListeners();
   }
 
   Future<void> onScreenOn() async {
@@ -2352,82 +2337,76 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final savedPosition = _state.position;
     final mediaId = _state.mediaId;
 
-    // Detach the listeners BEFORE tearing the audio down: a last event must
-    // not persist an offset-less position over the real one.
-    _posSub?.cancel();
-    _durSub?.cancel();
-    _stateSub?.cancel();
-
     if (mediaId == null) {
-      try {
-        await _player.stop();
-      } catch (_) {}
-      _bgAudioOffset = Duration.zero;
-      _isAudioBackgroundActive = false;
+      await _stopBackgroundAudio();
       return;
     }
 
     final localFile = StorageService.instance.getFile(mediaId);
     if (localFile != null && localFile.existsSync()) {
-      try {
-        await _player.stop();
-      } catch (_) {}
-      _bgAudioOffset = Duration.zero;
-      _isAudioBackgroundActive = false;
-      _videoController = VideoPlayerController.file(localFile);
-      try {
-        await _videoController!.initialize();
-        await _videoController!.seekTo(savedPosition);
-        _videoController!.addListener(() {
-          if (_videoController == null ||
-              !_videoController!.value.isInitialized) {
-            return;
-          }
-          if (_videoController!.value.hasError) {
-            return;
-          }
-          final pos = _videoController!.value.position;
-          final dur = _videoController!.value.duration;
-          _state = _state.copyWith(position: pos, duration: dur);
-          _savePosition(_state.mediaId!, pos);
-          _syncPlaybackStateToHandler();
-          if (!_completionHandled && pos >= dur && dur > Duration.zero) {
-            _completionHandled = true;
-            _handlePlaybackComplete();
-          }
-          notifyListeners();
-        });
-        _state =
-            _state.copyWith(status: MediaStatus.playing, position: savedPosition);
-        _syncPlaybackStateToHandler();
-        notifyListeners();
-        await _videoController!.play();
-      } catch (e) {
-        debugPrint('[MediaEngine] Screen on video restore error: $e');
+      if (_state.mediaId != mediaId) {
+        // The queue moved on while the screen was off.
+        return;
       }
+      // A local file initializes in milliseconds: bring the video up FIRST
+      // and only then silence the audio, so the swap cannot be heard.
+      final restored = await _restoreLocalVideo(localFile, savedPosition);
+      if (!restored || !_isAudioBackgroundActive) return;
+      await _stopBackgroundAudio();
       return;
     }
 
-    // Network video: PAUSE (not stop) the background audio first. If the
-    // video restore fails we resume it again — never leave silence behind.
-    try {
-      await _player.pause();
-    } catch (_) {}
-
+    // Network video: the restore costs seconds of network init. The audio
+    // keeps PLAYING through it (it used to be paused up front, which is the
+    // freeze heard when the app comes back) and is only stopped once the
+    // video is live.
     final restored = await _restoreNetworkVideo(savedPosition);
+    if (!_isAudioBackgroundActive) return; // another play took over meanwhile
     if (restored) {
-      try {
-        await _player.stop();
-      } catch (_) {}
-      _bgAudioOffset = Duration.zero;
-      _isAudioBackgroundActive = false;
+      await _catchVideoUpToAudio();
+      await _stopBackgroundAudio();
     } else {
       debugPrint(
           '[MediaEngine] Screen on: video restore failed, audio keeps going');
-      try {
-        await _player.play();
-      } catch (_) {}
-      _wireAudioSubscriptions(mediaId);
+    }
+  }
+
+  /// Silences the background audio player once the video took over (or when
+  /// there is nothing left to play). Cancels the listeners FIRST: a last
+  /// event must not persist an offset-less position over the real one.
+  Future<void> _stopBackgroundAudio() async {
+    _posSub?.cancel();
+    _durSub?.cancel();
+    _stateSub?.cancel();
+    try {
+      await _player.stop();
+    } catch (_) {}
+    _bgAudioOffset = Duration.zero;
+    _isAudioBackgroundActive = false;
+  }
+
+  /// The video came back while the background audio kept playing, so the
+  /// audio is ahead of the position the restore started from. Pull the
+  /// video forward by that gap instead of rewinding the content the moment
+  /// the audio is stopped. Skipped on relay-merge streams, where an
+  /// in-player seek does nothing and a reconnect would re-resolve the URL.
+  Future<void> _catchVideoUpToAudio() async {
+    final c = _videoController;
+    if (c == null || !c.value.isInitialized) return;
+    final logicalNow = _player.position + _bgAudioOffset;
+    if (logicalNow - _state.position < const Duration(seconds: 2)) return;
+    if (_activeKind == MediaSourceKind.relayMerge) return;
+    final physical = logicalNow - _relayClockOffset;
+    if (physical < Duration.zero) return;
+    try {
+      await c.seekTo(physical);
+      _state = _state.copyWith(position: logicalNow);
+      final mid = _state.mediaId;
+      if (mid != null) _savePosition(mid, logicalNow, force: true);
+      _syncPlaybackStateToHandler();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[MediaEngine] Screen on seek catch-up failed: $e');
     }
   }
 
@@ -2472,32 +2451,95 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   /// Backgrounds the YouTube video as an audio-only stream (data saving).
   /// Returns true when the background player is live.
-  Future<bool> _startBackgroundAudioForYouTube(Duration savedPosition) async {
-    final mediaId = _state.mediaId;
-    if (mediaId == null) return false;
-    final videoId = _parseVideoIdFromUrl(mediaId);
-    if (videoId == null) return false;
-    try {
-      final manifest = await _ytc.videos.streamsClient
-          .getManifest(videoId)
-          .timeout(const Duration(seconds: 10));
-      final audioStreams = manifest.audioOnly.toList()
-        ..sort((a, b) =>
-            b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
-      if (audioStreams.isEmpty) return false;
+  /// Resolves the background audio source for [mediaId] WITHOUT touching the
+  /// video: the screen-off handoff must never open a hole in the sound.
+  /// Sets [_bgAudioOffset] to the position the returned URL already starts
+  /// at (only a relay `?t=` stream needs it) and returns null when there is
+  /// nothing to hand off to.
+  Future<AudioSource?> _prepareBackgroundAudio(
+    String mediaId,
+    Duration from,
+  ) async {
+    _bgAudioOffset = Duration.zero;
+    final item = _createMediaItemFromState();
 
-      final item = _createMediaItemFromState();
-      await _player.setAudioSource(
-          AudioSource.uri(audioStreams.first.url, tag: item));
-      await _player.seek(savedPosition);
-      await _player.play();
-      _wireAudioSubscriptions(mediaId);
-      _isAudioBackgroundActive = true;
+    // 1) Local or content:// source: plain file streaming, no URL expiry.
+    final uri = _resolvePlaybackUriById(mediaId);
+    if (uri != null) return AudioSource.uri(uri, tag: item);
+
+    // 2) YouTube: audio-only variant (saves data on long videos). This is
+    // where the resolution time used to be paid with the sound off.
+    final videoId = _parseVideoIdFromUrl(mediaId);
+    if (videoId != null) {
+      try {
+        final manifest = await _ytc.videos.streamsClient
+            .getManifest(videoId)
+            .timeout(const Duration(seconds: 10));
+        final audioStreams = manifest.audioOnly.toList()
+          ..sort((a, b) =>
+              b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+        if (audioStreams.isNotEmpty) {
+          return AudioSource.uri(audioStreams.first.url, tag: item);
+        }
+      } catch (e) {
+        debugPrint('[MediaEngine] Background audio resolve failed: $e');
+      }
+    }
+
+    // 3) Any direct stream (external mp4, proxy, relay merge): the last live
+    // URL. Merge streams have no index, so reconnect from `?t=` instead of
+    // seeking — and tell the position listener about the offset.
+    final last = _lastDirectUrl;
+    if (last != null && last.startsWith('http')) {
+      var streamUri = Uri.parse(last);
+      if (_activeKind == MediaSourceKind.relayMerge && from > Duration.zero) {
+        streamUri = _relayUriWithStart(streamUri, from);
+        _bgAudioOffset = from;
+      }
+      return AudioSource.uri(
+        streamUri,
+        tag: item,
+        headers: ApiConfig.streamHeaders,
+      );
+    }
+    return null;
+  }
+
+  /// Restores a local video after the screen came back on. Returns true when
+  /// the controller is live again. The background audio is left untouched:
+  /// the caller stops it once the video took over, so the swap is silent.
+  Future<bool> _restoreLocalVideo(File file, Duration savedPosition) async {
+    final controller = VideoPlayerController.file(file);
+    _videoController = controller;
+    try {
+      await controller.initialize();
+      await controller.seekTo(savedPosition);
+      controller.addListener(() {
+        if (!identical(_videoController, controller)) return;
+        if (!controller.value.isInitialized) return;
+        if (controller.value.hasError) return;
+        final pos = controller.value.position;
+        final dur = controller.value.duration;
+        _state = _state.copyWith(position: pos, duration: dur);
+        final mid = _state.mediaId;
+        if (mid != null) _savePosition(mid, pos);
+        _syncPlaybackStateToHandler();
+        if (!_completionHandled && pos >= dur && dur > Duration.zero) {
+          _completionHandled = true;
+          _handlePlaybackComplete();
+        }
+        notifyListeners();
+      });
+      _state =
+          _state.copyWith(status: MediaStatus.playing, position: savedPosition);
       _syncPlaybackStateToHandler();
       notifyListeners();
+      await controller.play();
       return true;
     } catch (e) {
-      debugPrint('[MediaEngine] YouTube background audio error: $e');
+      debugPrint('[MediaEngine] Screen on video restore error: $e');
+      await controller.dispose();
+      if (identical(_videoController, controller)) _videoController = null;
       return false;
     }
   }
