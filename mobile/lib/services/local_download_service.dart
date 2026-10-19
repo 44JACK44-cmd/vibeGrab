@@ -53,6 +53,26 @@ class LocalDownloadService {
         ...ApiConfig.authHeaders,
       };
 
+  /// Failures worth retrying with another route (device streams, another
+  /// format): the backend or the network may simply be having a bad moment.
+  static const _retriableErrors = {
+    DownloadErrorType.http403,
+    DownloadErrorType.httpError,
+    DownloadErrorType.connectionTimeout,
+    DownloadErrorType.serverTimeout,
+    DownloadErrorType.connectionFailed,
+  };
+
+  Future<void> _deleteIfExists(String? path) async {
+    if (path == null || path.isEmpty) return;
+    try {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } catch (_) {
+      // A leftover partial file is not worth failing the fallback for.
+    }
+  }
+
   Future<DownloadTask> _downloadDirect({
     required DownloadTask task,
     required String dir,
@@ -60,8 +80,9 @@ class LocalDownloadService {
     required Function(DownloadStep step) onStep,
     required Stopwatch sw,
     String? formatIdOverride,
+    String? extOverride,
   }) async {
-    final ext = _directExtension(task);
+    final ext = extOverride ?? _directExtension(task);
     final safeTitle = _sanitizeFilename(task.title);
     final filePath = '$dir/$safeTitle.$ext';
     final formatId = (formatIdOverride ?? task.formatId).trim();
@@ -200,6 +221,84 @@ class LocalDownloadService {
     return false;
   }
 
+  /// Real MP3, converted by the backend.
+  ///
+  /// Android does not let an app execute a bundled binary and VibeGrab ships
+  /// no ffmpeg, so the old `Process.run('ffmpeg')` conversion could never run:
+  /// the "MP3" was the original m4a/webm under the wrong extension, with no
+  /// tags and no cover. The backend has ffmpeg (backend/Dockerfile): it
+  /// downloads the track, encodes MP3, writes title/artist and embeds the
+  /// cover, then streams the finished file.
+  Future<DownloadTask> _downloadMp3Converted({
+    required DownloadTask task,
+    required String dir,
+    required Function(double progress, int bytesDownloaded) onProgress,
+    required Function(DownloadStep step) onStep,
+    required Stopwatch sw,
+  }) async {
+    final safeTitle = _sanitizeFilename(task.title);
+    final filePath = '$dir/$safeTitle.mp3';
+
+    final params = <String, String>{
+      // yt-dlp resolves the track from the provider URL (fresh, correctly
+      // signed URLs); the direct CDN URL is only used when there is no format
+      // id to ask for.
+      if (task.url.isNotEmpty) 'url': task.url,
+      if (task.formatId.trim().isNotEmpty) 'format_id': task.formatId.trim(),
+      if (task.formatId.trim().isEmpty && (task.directUrl ?? '').isNotEmpty)
+        'direct': task.directUrl!,
+      if (task.title.isNotEmpty) 'title': task.title,
+      if ((task.source ?? '').isNotEmpty) 'artist': task.source!,
+      if ((task.thumbnail ?? '').isNotEmpty) 'cover': task.thumbnail!,
+    };
+    final uri = Uri.parse(ApiConfig.convertAudioUrl).replace(queryParameters: params);
+
+    _log('MP3: server conversion -> ${uri.path} params=${params.keys.join(",")}');
+    onStep(const DownloadStep('processing', 'Converting to MP3...'));
+
+    // The first byte only arrives once the server has downloaded and encoded
+    // the track, so the response timeout has to cover the whole conversion.
+    final result = await _downloadViaHttpClient(
+      url: uri,
+      filePath: filePath,
+      totalBytes: 0,
+      onProgress: onProgress,
+      task: task,
+      headers: _directHeaders,
+      responseTimeout: const Duration(minutes: 5),
+    );
+
+    if (result.status == DownloadStatus.completed) {
+      _log('MP3: saved ${result.filePath} (${result.bytesDownloaded} bytes)');
+    }
+    return result;
+  }
+
+  /// Video-only tracks (the "1080p · sin audio" rows) need a muxer, and the
+  /// device has none: the local `ffmpeg` merge always failed and the file was
+  /// saved muted. The backend merges the chosen video track with the best
+  /// audio track (`yt-dlp -f <tag>+bestaudio`). A pipe cannot carry mp4, so
+  /// yt-dlp writes Matroska and the file is saved as `.mkv`.
+  Future<DownloadTask> _downloadMergedVideo({
+    required DownloadTask task,
+    required String dir,
+    required Function(double progress, int bytesDownloaded) onProgress,
+    required Function(DownloadStep step) onStep,
+    required Stopwatch sw,
+  }) {
+    _log('MERGE: backend muxes ${task.formatId}+bestaudio (no ffmpeg on device)');
+    onStep(const DownloadStep('processing', 'Muxing video + audio on the server...'));
+    return _downloadDirect(
+      task: task,
+      dir: dir,
+      onProgress: onProgress,
+      onStep: onStep,
+      sw: sw,
+      formatIdOverride: '${task.formatId.trim()}+bestaudio',
+      extOverride: 'mkv',
+    );
+  }
+
   Future<DownloadTask> startDownload({
     required DownloadTask task,
     required Function(double progress, int bytesDownloaded) onProgress,
@@ -242,6 +341,42 @@ class LocalDownloadService {
       }
       _log('STEP 0 OK: directory writable = true (${sw.elapsedMilliseconds}ms)');
 
+      // MP3: the file has to be encoded, and the device cannot do it. The
+      // backend converts and streams the finished MP3 (tags + cover).
+      if (task.mediaType == DownloadMediaType.audio &&
+          (task.url.isNotEmpty || (task.directUrl ?? '').isNotEmpty)) {
+        final mp3 = await _downloadMp3Converted(
+          task: task,
+          dir: dir,
+          onProgress: onProgress,
+          onStep: onStep,
+          sw: sw,
+        );
+        if (!_retriableErrors.contains(mp3.errorCode)) return mp3;
+        _log('MP3 conversion failed (${mp3.errorCode}); '
+            'falling back to the original audio track');
+        await _deleteIfExists(mp3.filePath);
+      }
+
+      // Video-only tracks must be muxed: the backend does it, the device
+      // cannot (no ffmpeg binary, no permission to run one).
+      if (task.mediaType == DownloadMediaType.video &&
+          task.hasVideo &&
+          !task.hasAudio &&
+          task.formatId.trim().isNotEmpty) {
+        final merged = await _downloadMergedVideo(
+          task: task,
+          dir: dir,
+          onProgress: onProgress,
+          onStep: onStep,
+          sw: sw,
+        );
+        if (merged.status == DownloadStatus.completed) return merged;
+        _log('Backend merge failed (${merged.errorCode}); '
+            'falling back to the video-only track');
+        await _deleteIfExists(merged.filePath);
+      }
+
       DownloadTask? directResult;
       if (task.directUrl != null && task.directUrl!.isNotEmpty) {
         _log('DIRECT branch: using backend-provided direct URL');
@@ -254,14 +389,7 @@ class LocalDownloadService {
         );
         // Recoverable backend failures (403, 5xx, network) fall through to
         // the device stream path instead of failing the whole download.
-        const retriable = {
-          DownloadErrorType.http403,
-          DownloadErrorType.httpError,
-          DownloadErrorType.connectionTimeout,
-          DownloadErrorType.serverTimeout,
-          DownloadErrorType.connectionFailed,
-        };
-        if (!retriable.contains(directResult.errorCode)) return directResult;
+        if (!_retriableErrors.contains(directResult.errorCode)) return directResult;
         _log('DIRECT failed (${directResult.errorCode}); '
             'falling back to device stream manifest');
       }
@@ -591,21 +719,15 @@ class LocalDownloadService {
       return task.copyWith(status: 'failed', error: 'No audio stream', errorCode: 'muxNoAudio');
     }
 
-    final audioStream = audioStreams.first;
     final dir = StorageService.instance.downloadPath;
     final safeTitle = _sanitizeFilename(task.title);
     final videoExt = videoOnlyStream.container.name;
-    final audioExt = audioStream.container.name;
     final videoTempPath = '$dir/${safeTitle}_video_temp.$videoExt';
-    final audioTempPath = '$dir/${safeTitle}_video_audio_temp.$audioExt';
-    final outputPath = '$dir/$safeTitle.mp4';
 
     try {
       final totalVideoBytes = videoOnlyStream.size.totalBytes;
-      final totalAudioBytes = audioStream.size.totalBytes;
 
       _log('MUX: video tag=${videoOnlyStream.tag} size=$totalVideoBytes (${(totalVideoBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
-      _log('MUX: audio tag=${audioStream.tag} size=$totalAudioBytes (${(totalAudioBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
 
       onStep(const DownloadStep('downloading', 'Downloading video track...'));
       _log('MUX STEP 1: Downloading video...');
@@ -629,106 +751,22 @@ class LocalDownloadService {
         return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
       }
 
-      onStep(const DownloadStep('downloading', 'Downloading audio track...'));
-      _log('MUX STEP 2: Downloading audio...');
-
-      final audioUrl = audioStream.url;
-
-      final audioResult = await _downloadViaHttpClient(
-        url: audioUrl,
-        filePath: audioTempPath,
-        totalBytes: totalAudioBytes,
-        onProgress: (p, b) => onProgress(0.5 + p * 0.5, totalVideoBytes + (b * 0.5).round()),
-        task: task,
-      );
-
-      if (audioResult.status != DownloadStatus.completed) {
-        return audioResult;
+      onStep(const DownloadStep('processing', 'Saving video track...'));
+      // No audio download and no local merge: an Android app cannot execute
+      // the ffmpeg binary it does not ship. The backend merge (see
+      // startDownload) is what returns a file with sound; this path is only
+      // reached when that route failed, so it keeps the video track alone
+      // instead of downloading an audio track it could never join.
+      final videoFile = File(videoTempPath);
+      final finalPath = '$dir/$safeTitle.$videoExt';
+      if (await videoFile.exists()) {
+        await videoFile.rename(finalPath);
       }
+      final fileBytes =
+          await File(finalPath).exists() ? await File(finalPath).length() : 0;
+      _log('VIDEO-ONLY: kept $finalPath ($fileBytes bytes) — merging needs the backend');
 
-      if (!_activeDownloads.containsKey(task.id)) {
-        _log('MUX: Cancelled during audio download');
-        return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
-      }
-
-      onStep(const DownloadStep('processing', 'Muxing video + audio...'));
-      _log('MUX STEP 3: FFmpeg muxing...');
-
-      bool muxed = false;
-      try {
-        final result = await Process.run('ffmpeg', [
-          '-y', '-i', videoTempPath, '-i', audioTempPath,
-          '-c:v', 'copy', '-c:a', 'aac',
-          '-map', '0:v:0', '-map', '1:a:0',
-          outputPath,
-        ]).timeout(const Duration(seconds: 120));
-
-        muxed = result.exitCode == 0;
-        _log('MUX STEP 3: FFmpeg exit=${result.exitCode}');
-        if (!muxed) _log('MUX STEP 3: stderr=${result.stderr}');
-      } catch (e) {
-        _log('MUX STEP 3: FFmpeg failed (non-fatal): $e');
-      }
-
-String finalPath = '';
-        int fileBytes = 0;
-
-      if (muxed) {
-        await _cleanupTempFiles([videoTempPath, audioTempPath]);
-        final f = File(outputPath);
-        fileBytes = await f.exists() ? await f.length() : 0;
-        finalPath = outputPath;
-      } else if (task.mediaType == DownloadMediaType.audio) {
-        // For audio-only downloads, convert to MP3 using FFmpeg
-        final audioPath = '$dir/$safeTitle.mp3';
-        bool converted = false;
-        try {
-          _log('AUDIO: Converting to MP3...');
-          final result = await Process.run('ffmpeg', [
-            '-y', '-i', audioTempPath,
-            '-c:a', 'libmp3lame',
-            '-q:a', '2', // VBR quality ~190kbps
-            audioPath,
-          ]).timeout(const Duration(seconds: 120));
-          
-          if (result.exitCode == 0) {
-            await _cleanupTempFiles([audioTempPath]);
-            final f = File(audioPath);
-            fileBytes = await f.exists() ? await f.length() : 0;
-            finalPath = audioPath;
-            converted = true;
-            _log('AUDIO: Converted to MP3 successfully');
-          } else {
-            _log('AUDIO: FFmpeg failed: ${result.stderr}');
-          }
-        } catch (e) {
-          _log('AUDIO: Conversion failed: $e');
-        }
-        
-        if (!converted) {
-          // Fallback: use original audio file with proper extension
-          final audioExt = _getExtension(audioStream);
-          final audioPath = '$dir/$safeTitle.$audioExt';
-          await File(audioTempPath).rename(audioPath);
-          finalPath = audioPath;
-          _log('AUDIO: Using original format as fallback');
-        }
-      } else {
-        final videoFile = File(videoTempPath);
-        final fallbackPath = '$dir/$safeTitle.$videoExt';
-        if (await videoFile.exists()) {
-          await videoFile.rename(fallbackPath);
-        }
-        try {
-          await File(audioTempPath).delete();
-        } catch (_) {
-          // Temporal ya eliminado o inaccesible: no es un error fatal.
-        }
-        finalPath = fallbackPath;
-        _log('MUX: Fallback to video-only: $finalPath');
-      }
-
-      _log('MUX DONE: path=$finalPath size=$fileBytes (${(fileBytes / 1024 / 1024).toStringAsFixed(1)} MB) muxed=$muxed');
+      _log('MUX DONE: path=$finalPath size=$fileBytes (${(fileBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
 
       if (fileBytes == 0) {
         return task.copyWith(status: 'failed', error: 'Downloaded file is empty', errorCode: 'fileEmpty');
@@ -746,7 +784,7 @@ String finalPath = '';
     } catch (e, st) {
       _log('[ERROR] MUX EXCEPTION: $e');
       _log('[ERROR] MUX STACK: $st');
-      await _cleanupTempFiles([videoTempPath, audioTempPath, outputPath]);
+      await _cleanupTempFiles([videoTempPath]);
       return task.copyWith(status: 'failed', error: 'Download failed', errorCode: 'generic');
     }
   }
@@ -845,7 +883,10 @@ String finalPath = '';
         bytesDownloaded += chunk.length;
         chunkCount++;
         final progress = effectiveTotal > 0 ? bytesDownloaded / effectiveTotal : 0.0;
-        onProgress(progress, bytesDownloaded);
+        // A merged/relayed stream has no Content-Length: the estimate can be
+        // smaller than the real file, and a progress bar above 100% is worse
+        // than one that simply stays full.
+        onProgress(progress > 1.0 ? 1.0 : progress, bytesDownloaded);
 
         if (limitBps > 0) {
           final targetMs = bytesDownloaded * 1000.0 / limitBps;

@@ -110,8 +110,33 @@ void main() {
       expect(res.audioUri, isNull);
     });
 
-    test('server payload is cached between resolves', () async {
+    test('a prefetch and the resolve that follows share one request', () async {
+      // The engine starts the resolve while the previous player is still being
+      // torn down. That prefetch and the play that consumes it must not ask
+      // the server twice for the same video.
       var calls = 0;
+      final gate = Completer<void>();
+      final r = MediaSourceResolver(
+        fetchUrls: (videoId) async {
+          calls++;
+          await gate.future;
+          return const StreamUrlsPayload(
+            video: 'https://x.googlevideo.com/v?expire=9999999999',
+          );
+        },
+        fetchManifest: (_) async => null,
+      );
+
+      final prefetch = r.resolve('abc123abc12', onStage: (_) {});
+      final resolve = r.resolve('abc123abc12', onStage: (_) {});
+      gate.complete();
+      final results = await Future.wait([prefetch, resolve]);
+
+      expect(calls, 1);
+      expect(results.every((res) => res.fetchError == null), isTrue);
+    });
+
+    test('server payload is cached between resolves', () async {      var calls = 0;
       final r = MediaSourceResolver(
         fetchUrls: (videoId) async {
           calls++;

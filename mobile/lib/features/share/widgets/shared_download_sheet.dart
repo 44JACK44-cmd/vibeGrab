@@ -95,7 +95,19 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
                           ],
                           _buildSavingBlock(savingTask, dl, cs, loc),
                         ],
-                        if (!saving && controller.isAnalyzing) _buildAnalyzing(loc, cs),
+                        if (!saving && controller.isAnalyzing) ...[
+                          // The device path knows the title and the thumbnail
+                          // a whole round-trip before the format list does:
+                          // show them instead of a bare spinner (the shimmer
+                          // block stands in for the card only while it is
+                          // still unknown).
+                          if (controller.media != null) ...[
+                            _buildMediaInfo(controller, cs, loc),
+                            const SizedBox(height: 20),
+                          ],
+                          _buildAnalyzing(loc, cs,
+                              withMediaShimmer: controller.media == null),
+                        ],
                         if (!saving && controller.isReady && controller.hasResult) ...[
                           _buildMediaInfo(controller, cs, loc),
                           const SizedBox(height: 20),
@@ -293,7 +305,8 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
     );
   }
 
-  Widget _buildAnalyzing(AppLocalizations loc, ColorScheme cs) {
+  Widget _buildAnalyzing(AppLocalizations loc, ColorScheme cs,
+      {bool withMediaShimmer = true}) {
     return FadeSlideIn(
       child: Column(
         children: [
@@ -305,8 +318,11 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
             style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
           ),
           const SizedBox(height: 20),
-          const ShimmerLoading(width: double.infinity, height: 100, borderRadius: 12),
-          const SizedBox(height: 12),
+          if (withMediaShimmer) ...[
+            const ShimmerLoading(
+                width: double.infinity, height: 100, borderRadius: 12),
+            const SizedBox(height: 12),
+          ],
           const ShimmerLoading(width: double.infinity, height: 44, borderRadius: 10),
           const SizedBox(height: 8),
           const ShimmerLoading(width: double.infinity, height: 44, borderRadius: 10),

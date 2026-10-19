@@ -49,6 +49,10 @@ class MediaSourceResolver {
   /// the same video share one request instead of stacking up).
   final Map<String, Future<StreamManifest?>> _manifestPending = {};
 
+  /// videoId -> server payload fetch already in flight (a prefetch and the
+  /// resolve that consumes it must not hit the server twice).
+  final Map<String, Future<StreamUrlsPayload?>> _payloadPending = {};
+
   static const _urlCacheTtl = Duration(hours: 4);
 
   /// Safety margin before the exact URL expiry.
@@ -170,17 +174,30 @@ class MediaSourceResolver {
         (hit.payload.video == null || !isExpired(hit.payload.video!))) {
       return hit.payload;
     }
-    StreamUrlsPayload? payload;
+    // A prefetch (started while the previous player is still being torn down)
+    // and the resolve that follows it are the same request: share it instead
+    // of asking the server twice for the same video.
+    final pending = _payloadPending[videoId];
+    if (pending != null) return pending;
+    final future = () async {
+      StreamUrlsPayload? payload;
+      try {
+        payload = await fetchUrls(videoId);
+      } catch (e) {
+        debugPrint('[Resolver] fetchUrls failed: $e');
+        payload = null;
+      }
+      if (payload != null) {
+        _urlCache[videoId] = _CachedPayload(payload, DateTime.now());
+      }
+      return payload;
+    }();
+    _payloadPending[videoId] = future;
     try {
-      payload = await fetchUrls(videoId);
-    } catch (e) {
-      debugPrint('[Resolver] fetchUrls failed: $e');
-      payload = null;
+      return await future;
+    } finally {
+      _payloadPending.remove(videoId);
     }
-    if (payload != null) {
-      _urlCache[videoId] = _CachedPayload(payload, DateTime.now());
-    }
-    return payload;
   }
 
   /// Fetches the device manifest, sharing a single in-flight request

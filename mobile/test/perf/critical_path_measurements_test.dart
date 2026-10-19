@@ -43,7 +43,8 @@ class _CountingApi extends ApiService {
 /// the backend leg, and this keeps the two from masking each other.
 class _SilentExtraction extends LocalExtractionService {
   @override
-  Future<AnalyzeResponse> extractMedia(String url) =>
+  Future<AnalyzeResponse> extractMedia(String url,
+          {void Function(MediaInfo media)? onMetadata}) =>
       Completer<AnalyzeResponse>().future;
 }
 

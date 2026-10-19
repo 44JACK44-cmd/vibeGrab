@@ -45,23 +45,27 @@ class _AudioPlayerViewState extends State<AudioPlayerView> {
   body: Consumer<MediaEngine>(
         builder: (context, engine, _) {
         // PiP window: minimal artwork + title only. The system renders
-        // play/pause/prev/next itself from the media session.
+        // play/pause/prev/next itself from the media session. The backdrop is
+        // black like the video window: a floating media window must never
+        // paint the light page background.
         if (engine.isInPiP) {
-          return Center(
+          return Container(
+            color: Colors.black,
+            alignment: Alignment.center,
             child: Padding(
               padding: const EdgeInsets.all(24),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.music_note,
-                      size: 56, color: cs.primary),
+                  const Icon(Icons.music_note,
+                      size: 56, color: Colors.white70),
                   const SizedBox(height: 12),
                   Text(
                     engine.currentTitle ?? '',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        color: cs.onSurface,
+                    style: const TextStyle(
+                        color: Colors.white,
                         fontSize: 15,
                         fontWeight: FontWeight.w600),
                   ),

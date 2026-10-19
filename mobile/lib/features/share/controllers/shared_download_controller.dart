@@ -32,7 +32,20 @@ class SharedDownloadController extends ChangeNotifier {
   AnalyzeResponse? _result;
   AnalyzeResponse? get result => _result;
 
-  MediaInfo? get media => _result?.media;
+  /// Title/thumbnail announced before the format list is ready (the device
+  /// extraction knows them one round-trip earlier). Shown in place of the
+  /// bare spinner; [_applyResult] clears it once the real response lands.
+  MediaInfo? _earlyMedia;
+
+  MediaInfo? get media => _earlyMedia ?? _result?.media;
+
+  /// Adopts metadata that arrived while the analysis is still running, as long
+  /// as the sheet is still looking at that same URL.
+  void _showEarlyMetadata(String url, MediaInfo media) {
+    if (_url != url) return;
+    _earlyMedia = media;
+    notifyListeners();
+  }
 
   List<FormatOption> _audioFormats = [];
   List<FormatOption> get audioFormats => List.unmodifiable(_audioFormats);
@@ -105,6 +118,7 @@ class SharedDownloadController extends ChangeNotifier {
     _status = SharedSheetStatus.analyzing;
     _error = null;
     _result = null;
+    _earlyMedia = null;
     _selectedFormat = null;
     notifyListeners();
 
@@ -140,7 +154,11 @@ class SharedDownloadController extends ChangeNotifier {
       if (LocalExtractionService.supportsPlatform(sanitized)) {
         return _firstSuccess<AnalyzeResponse>([
           _extraction
-              .extractMedia(sanitized)
+              .extractMedia(
+                sanitized,
+                // Device metadata lands before the format list: show it.
+                onMetadata: (media) => _showEarlyMetadata(sanitized, media),
+              )
               .timeout(const Duration(seconds: 25)),
           _api.analyze(sanitized),
         ]);
@@ -158,6 +176,9 @@ class SharedDownloadController extends ChangeNotifier {
 
   Future<void> _applyResult(String sanitized, AnalyzeResponse response) async {
     _url = sanitized;
+    // The finished response is authoritative: the early title/thumbnail was
+    // only there to fill the wait.
+    _earlyMedia = null;
     _result = response;
     if (response.media.source.isNotEmpty) {
       _platform = response.media.source;
@@ -195,6 +216,7 @@ class SharedDownloadController extends ChangeNotifier {
     _status = SharedSheetStatus.idle;
     _error = null;
     _result = null;
+    _earlyMedia = null;
     notifyListeners();
   }
 

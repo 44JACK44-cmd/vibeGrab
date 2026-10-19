@@ -77,16 +77,22 @@ class _VideoPlayerViewState extends State<VideoPlayerView> {
       body: Consumer<MediaEngine>(
         builder: (context, engine, _) {
           // PiP window: ONLY the video surface (system draws its own
-          // transport controls from the media session).
-          if (engine.isInPiP &&
-              engine.videoController != null &&
-              engine.videoController!.value.isInitialized) {
-            final vc = engine.videoController!;
+          // transport controls from the media session). Black even while the
+          // surface is not ready, so resizing never reveals the page behind.
+          if (engine.isInPiP) {
+            final vc = engine.videoController;
+            final pip =
+                vc != null && vc.value.isInitialized && !vc.value.hasError
+                    ? vc
+                    : null;
             return Container(
               color: Colors.black,
               alignment: Alignment.center,
-              child:
-                  AspectRatio(aspectRatio: vc.value.aspectRatio, child: VideoPlayer(vc)),
+              child: pip != null
+                  ? AspectRatio(
+                      aspectRatio: pip.value.aspectRatio,
+                      child: VideoPlayer(pip))
+                  : const SizedBox.shrink(),
             );
           }
           final vc = engine.videoController;

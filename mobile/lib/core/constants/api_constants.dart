@@ -85,6 +85,7 @@ class ApiConfig {
   }
 
   static const String analyzeEndpoint = '/api/analyze';
+  static const String convertAudioEndpoint = '/api/convert/audio';
   static const String downloadsEndpoint = '/api/downloads';
   static const String libraryEndpoint = '/api/library';
   static const String settingsEndpoint = '/api/settings';
@@ -93,6 +94,7 @@ class ApiConfig {
   static const String exploreEndpoint = '/api/explore';
 
   static String get analyzeUrl => '$baseUrl$analyzeEndpoint';
+  static String get convertAudioUrl => '$baseUrl$convertAudioEndpoint';
   static String get downloadsUrl => '$baseUrl$downloadsEndpoint';
   static String get libraryUrl => '$baseUrl$libraryEndpoint';
   static String get settingsUrl => '$baseUrl$settingsEndpoint';

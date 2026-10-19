@@ -456,14 +456,21 @@ Future<void> _toggleLike() async {
         // PiP window: ONLY the video surface. The system renders its own
         // transport controls from the media session; drawing our full UI
         // here overlaps buttons and breaks the floating window.
-        if (engine.isInPiP && showingVideo) {
+        //
+        // The window is black even when the surface is not ready yet: falling
+        // back to the page UI (whose background is the light theme surface)
+        // made the floating window flash white on every minimize and resize.
+        if (engine.isInPiP) {
+          final pip = showingVideo ? controller : null;
           return Container(
             color: Colors.black,
             alignment: Alignment.center,
-            child: AspectRatio(
-              aspectRatio: controller.value.aspectRatio,
-              child: VideoPlayer(controller),
-            ),
+            child: pip != null
+                ? AspectRatio(
+                    aspectRatio: pip.value.aspectRatio,
+                    child: VideoPlayer(pip),
+                  )
+                : const SizedBox.shrink(),
           );
         }
 
@@ -698,10 +705,12 @@ Future<void> _toggleLike() async {
   }
 
   Widget _buildPlaceholder(ColorScheme cs) {
+    // The backdrop of a video surface stays dark: a theme surface here (white
+    // in the light theme) is what flashed while the player was rebuilding.
     return Container(
-      color: cs.surfaceContainerHighest,
-      child: Center(
-        child: Icon(Icons.videocam, color: cs.onSurfaceVariant, size: 48),
+      color: Colors.black,
+      child: const Center(
+        child: Icon(Icons.videocam, color: Colors.white24, size: 48),
       ),
     );
   }

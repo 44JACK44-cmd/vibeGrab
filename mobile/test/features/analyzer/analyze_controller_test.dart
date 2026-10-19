@@ -24,7 +24,9 @@ class _FakeApi extends ApiService {
 
 class _FakeExtraction extends LocalExtractionService {
   @override
-  Future<AnalyzeResponse> extractMedia(String url) => _gate(url);
+  Future<AnalyzeResponse> extractMedia(String url,
+          {void Function(MediaInfo media)? onMetadata}) =>
+      _gate(url);
 }
 
 AnalyzeResponse _response(String id) => AnalyzeResponse(

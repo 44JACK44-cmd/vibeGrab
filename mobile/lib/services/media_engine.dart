@@ -19,6 +19,7 @@ import '../data/models/explore_video.dart';
 import '../data/models/stream_urls.dart';
 import '../services/storage_service.dart';
 import '../services/media_metadata_service.dart';
+import '../services/id3_reader.dart';
 import '../services/media_source.dart';
 import '../services/media_source_resolver.dart';
 import '../services/equalizer_service.dart';
@@ -309,6 +310,33 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       return Uri.tryParse(file.thumbnail!);
     }
     return null;
+  }
+
+  /// Writes a local file's embedded cover into the cache once and returns it.
+  ///
+  /// The name carries the size and modification time, so replacing the file
+  /// produces a fresh cover instead of a stale one, while repeat plays reuse
+  /// the same bytes.
+  Future<File?> _writeCoverToCache(File source, AudioTags tags) async {
+    final picture = tags.picture;
+    if (picture == null || picture.isEmpty) return null;
+    try {
+      final stat = await source.stat();
+      final dir =
+          Directory('${(await getTemporaryDirectory()).path}/vibegrab_covers');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final ext = (tags.pictureMime ?? '').contains('png') ? 'png' : 'jpg';
+      final stamp = '${source.path.hashCode.toRadixString(16)}'
+          '_${stat.size}_${stat.modified.millisecondsSinceEpoch}';
+      final out = File('${dir.path}/$stamp.$ext');
+      if (!await out.exists()) {
+        await out.writeAsBytes(picture, flush: true);
+      }
+      return out;
+    } catch (e) {
+      debugPrint('[MediaEngine] cover cache failed: $e');
+      return null;
+    }
   }
 
   /// Extracts YouTube video ID from various URL formats.
@@ -1256,6 +1284,22 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     // Invalidate any resolution chain still running for the previous item,
     // otherwise a slow resolve could hijack this play.
     _playToken++;
+    final token = _playToken;
+    bool stale() => token != _playToken;
+
+    // Resolve the new stream WHILE the previous player is being torn down.
+    // The two are independent and the network round-trip is the slow half, so
+    // serializing them (teardown, then resolve) added the teardown to the wait
+    // for the first frame. The chain itself still starts only after the
+    // teardown, so there is never more than one live player. The stage labels
+    // only touch the UI once this item is the current one.
+    final videoId = _parseVideoIdFromUrl(item.id);
+    final prefetched = videoId == null
+        ? null
+        : _resolver.resolve(videoId, onStage: (key) {
+            if (!stale() && _state.mediaId == item.id) _setStage(key);
+          });
+
     await _stopCurrent();
     _completionHandled = false;
     playbackError = null;
@@ -1280,7 +1324,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     // chain is never killed.
     _armWatchdog(item.id);
 
-    await _playYouTubeVideo(item.id, item, startAt: startAt);
+    await _playYouTubeVideo(item.id, item,
+        startAt: startAt, prefetched: prefetched);
   }
 
   /// Saved resume position for a remote URL. Mirrors MediaMetadata.hasResume:
@@ -1403,7 +1448,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   int _playToken = 0;
 
   Future<void> _playYouTubeVideo(String youtubeUrl, MediaItem mediaItem,
-      {Duration startAt = Duration.zero}) async {
+      {Duration startAt = Duration.zero,
+      Future<MediaResolution>? prefetched}) async {
     final videoId = _parseVideoIdFromUrl(youtubeUrl);
     if (videoId == null) {
       final uri = Uri.tryParse(youtubeUrl);
@@ -1425,14 +1471,16 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final errs = <String>[];
     late final MediaResolution res;
     try {
-      res = await _resolver.resolve(
-        videoId,
-        // A stage from an abandoned chain must not re-label (or re-arm the
-        // watchdog of) the play the user is waiting on now.
-        onStage: (key) {
-          if (!stale()) _setStage(key);
-        },
-      );
+      res = prefetched != null
+          ? await prefetched
+          : await _resolver.resolve(
+              videoId,
+              // A stage from an abandoned chain must not re-label (or re-arm
+              // the watchdog of) the play the user is waiting on now.
+              onStage: (key) {
+                if (!stale()) _setStage(key);
+              },
+            );
     } catch (e) {
       debugPrint('[MediaEngine] Resolve failed: $e');
       // Failing here would cancel the LIVE chain's watchdog and paint the
@@ -2033,12 +2081,32 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final mediaId = file.hasContentUri ? file.contentUri! : file.filename;
     final video = file.isVideo;
 
-    final artUri = _resolveArtUri(file);
-    final thumbnailPath = file.thumbnailPath;
+    // A downloaded file carries its own title/artist/album and cover when it
+    // was encoded by the backend. Reading them here keeps the player and the
+    // media session honest even when the download has no `.meta.json` sidecar
+    // or the saved thumbnail went missing. The `.meta.json` values stay as the
+    // fallback.
+    var tags = const AudioTags();
+    File? embeddedCover;
+    if (!video && file.filePath.isNotEmpty) {
+      final source = File(file.filePath);
+      if (source.existsSync()) {
+        tags = Id3Reader.read(source);
+        embeddedCover = await _writeCoverToCache(source, tags);
+      }
+    }
+
+    final artUri = embeddedCover != null
+        ? Uri.file(embeddedCover.path)
+        : _resolveArtUri(file);
+    final thumbnailPath = embeddedCover?.path ?? file.thumbnailPath;
+    final displayTitle = tags.title ?? file.title;
+    final displayArtist = tags.artist ?? file.source ?? 'VibeGrab';
     final mediaItem = MediaItem(
       id: mediaId,
-      title: file.title,
-      artist: file.source ?? 'VibeGrab',
+      title: displayTitle,
+      artist: displayArtist,
+      album: tags.album ?? file.album,
       artUri: artUri,
       duration: file.durationMs != null ? Duration(milliseconds: file.durationMs!) : null,
       extras: {
@@ -2051,8 +2119,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
     _state = _state.copyWith(
       mediaId: mediaId,
-      title: file.title,
-      artist: file.source,
+      title: displayTitle,
+      artist: displayArtist,
       thumbnail: file.thumbnail,
       thumbnailPath: thumbnailPath,
       mediaType: video ? MediaType.video : MediaType.audio,
@@ -2063,7 +2131,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
     MediaMetadataService().recordPlay(
       filename: file.filename,
-      title: file.title,
+      title: displayTitle,
       thumbnail: file.thumbnail,
       fileType: file.isVideo ? 'video' : 'audio',
       source: file.source,
@@ -2902,7 +2970,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _expectedDuration = null;
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
-      await _savePosition(_state.mediaId!, _state.position, force: true);
+      // force: this is the last write for this item, throttling must not drop
+      // the resume point. It is NOT awaited: the player does not need the
+      // write to be finished to stop, and awaiting it put a disk round-trip
+      // in front of every new play (the position is captured synchronously,
+      // so a later save for the next item cannot clobber it).
+      unawaited(_savePosition(_state.mediaId!, _state.position, force: true));
     }
 
     try {
@@ -2923,8 +2996,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
       // force: this is the last write for this item, throttling must not
-      // drop the resume point.
-      await _savePosition(_state.mediaId!, _state.position, force: true);
+      // drop the resume point. Fire-and-forget for the same reason as
+      // _stopCurrentSilent: a disk round-trip must not delay the new play.
+      unawaited(_savePosition(_state.mediaId!, _state.position, force: true));
     }
 
     try {

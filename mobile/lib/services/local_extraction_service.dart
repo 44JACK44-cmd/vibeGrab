@@ -144,7 +144,10 @@ class LocalExtractionService {
     return 'analysis_failed';
   }
 
-  Future<AnalyzeResponse> extractMedia(String url) async {
+  Future<AnalyzeResponse> extractMedia(
+    String url, {
+    void Function(MediaInfo media)? onMetadata,
+  }) async {
     final platform = detectPlatform(url);
     if (platform == null) {
       throw UnsupportedPlatformException('unknown');
@@ -160,7 +163,6 @@ class LocalExtractionService {
 
     try {
       final video = await _ytc.videos.get(videoId);
-      final manifest = await _ytc.videos.streamsClient.getManifest(videoId);
 
       final media = MediaInfo(
         id: video.id.value,
@@ -171,6 +173,13 @@ class LocalExtractionService {
         source: 'youtube',
         platform: 'youtube',
       );
+
+      // The manifest (the format list) is a second, slower round-trip. Hand
+      // the title and thumbnail over as soon as they are known so the sheet
+      // shows what it found instead of a bare spinner for the whole wait.
+      onMetadata?.call(media);
+
+      final manifest = await _ytc.videos.streamsClient.getManifest(videoId);
 
       final formats = _buildFormats(manifest);
 
