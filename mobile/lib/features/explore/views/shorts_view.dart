@@ -10,7 +10,9 @@ import 'video_detail_view.dart';
 
 /// Vertical Shorts feed: swipe up for the next short video, with minimal
 /// controls (play/pause on tap, like, copy link, open details/download).
-/// Plays through the shared MediaEngine, like everything else.
+/// Plays through the shared MediaEngine, like everything else, and follows
+/// it: when the player moves on its own (a short ends, the notification
+/// controls are used, MediaSession skips) the feed scrolls with it.
 class ShortsView extends StatefulWidget {
   const ShortsView({super.key});
 
@@ -18,14 +20,50 @@ class ShortsView extends StatefulWidget {
   State<ShortsView> createState() => _ShortsViewState();
 }
 
+/// Decides which page of the Shorts feed has to follow the shared player.
+///
+/// The feed and the player share ONE queue, so every way the player can move
+/// on its own (auto-advance when a short ends, the notification/lockscreen
+/// next-previous, MediaSession) must move the feed with it. The opposite
+/// direction already works: swiping calls [ShortsView._playAt], which drives
+/// the player. So the feed only ever reacts here.
+///
+/// Returns the page to jump to, or null when the feed must not move: it is
+/// already there, the index is out of range, or the player is driving a
+/// DIFFERENT queue (another screen replaced it while this feed was behind it,
+/// in which case this feed is no longer the owner of what is playing).
+int? shortsPageForEngineIndex({
+  required int engineIndex,
+  required List<ExploreVideo> shorts,
+  required int shownIndex,
+  required List<String> engineQueueIds,
+}) {
+  if (engineIndex == shownIndex) return null;
+  if (engineIndex < 0 || engineIndex >= shorts.length) return null;
+  if (engineIndex >= engineQueueIds.length) return null;
+  // MediaItem.id is the video url for Explorer/Shorts items, so this tells
+  // the two queues apart without guessing.
+  if (engineQueueIds[engineIndex] != shorts[engineIndex].url) return null;
+  return engineIndex;
+}
+
 class _ShortsViewState extends State<ShortsView> {
   final _pages = PageController();
   bool _started = false;
   int _index = 0;
+  List<ExploreVideo> _shorts = const [];
+  late final MediaEngine _engine;
+
+  /// True while the feed is moving BECAUSE the player moved: the resulting
+  /// [PageView.onPageChanged] must not drive the player again, or the video
+  /// the player just started would restart from the beginning.
+  bool _followingEngine = false;
 
   @override
   void initState() {
     super.initState();
+    _engine = context.read<MediaEngine>();
+    _engine.addListener(_syncToEngine);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final c = context.read<ExploreController>();
@@ -35,8 +73,39 @@ class _ShortsViewState extends State<ShortsView> {
 
   @override
   void dispose() {
+    _engine.removeListener(_syncToEngine);
     _pages.dispose();
     super.dispose();
+  }
+
+  /// Moves the feed to wherever the player is, no matter what moved it there
+  /// (auto-advance at the end of a short, notification controls, MediaSession).
+  void _syncToEngine() {
+    if (!mounted) return;
+    // Every position tick notifies: the feed only reacts when the player
+    // actually moved somewhere else.
+    if (_engine.currentIndex == _index) return;
+    final target = shortsPageForEngineIndex(
+      engineIndex: _engine.currentIndex,
+      shorts: _shorts,
+      shownIndex: _index,
+      engineQueueIds: [
+        for (final item in _engine.queue) item.id,
+      ],
+    );
+    if (target == null || !_pages.hasClients) return;
+
+    _followingEngine = true;
+    setState(() => _index = target);
+    _pages
+        .animateToPage(
+          target,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutCubic,
+        )
+        .whenComplete(() {
+      _followingEngine = false;
+    });
   }
 
   void _maybeStart(List<ExploreVideo> shorts) {
@@ -50,7 +119,15 @@ class _ShortsViewState extends State<ShortsView> {
     _index = i;
     // The whole feed is the queue: auto-next, the notification controls and
     // previous/next all walk it through the shared MediaEngine.
-    context.read<MediaEngine>().playExploreQueue(shorts, startIndex: i);
+    _engine.playExploreQueue(shorts, startIndex: i);
+  }
+
+  /// A swipe (or the feed scrolling back from [_syncToEngine]) changed the
+  /// page. While following the player the page is already the one playing:
+  /// driving it again would restart that same short.
+  void _onPageChanged(int i, List<ExploreVideo> shorts) {
+    if (_followingEngine) return;
+    _playAt(i, shorts);
   }
 
   @override
@@ -83,12 +160,13 @@ class _ShortsViewState extends State<ShortsView> {
               ),
             );
           }
+          _shorts = shorts;
           _maybeStart(shorts);
           return PageView.builder(
             controller: _pages,
             scrollDirection: Axis.vertical,
             itemCount: shorts.length,
-            onPageChanged: (i) => _playAt(i, shorts),
+            onPageChanged: (i) => _onPageChanged(i, shorts),
             itemBuilder: (context, i) => _ShortPage(
               video: shorts[i],
               active: i == _index,
