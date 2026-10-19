@@ -23,6 +23,136 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.38
+    WhatsNewEntry(
+      id: 'wn-1138-real-mp3',
+      version: '1.1.38',
+      build: 43,
+      category: WhatsNewCategory.features,
+      emoji: '🎵',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Tus audios ahora son MP3 de verdad',
+        en: 'Your audio downloads are real MP3 files now',
+      ),
+      description: LocalizedText(
+        es: 'Al descargar solo el audio, el archivo sale en MP3 reproducible en cualquier reproductor, con el título, el artista y la carátula dentro del propio archivo.',
+        en: 'When you download only the audio, the file comes out as a playable MP3 in any player, with the title, the artist and the cover inside the file itself.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1138-tiktok-photos',
+      version: '1.1.38',
+      build: 43,
+      category: WhatsNewCategory.features,
+      emoji: '🖼️',
+      order: 1,
+      title: LocalizedText(
+        es: 'Los posts de fotos de TikTok ya se descargan',
+        en: 'TikTok photo posts can be downloaded now',
+      ),
+      description: LocalizedText(
+        es: 'Los enlaces de fotos con música ofrecen lo que de verdad tienen: la música para guardarla como MP3 y la imagen del post. Ya no aparece una opción de vídeo que no existe.',
+        en: 'Photo links with music offer what they really have: the music to save as an MP3 and the image of the post. A video option that does not exist no longer shows up.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1138-explorer-start',
+      version: '1.1.38',
+      build: 43,
+      category: WhatsNewCategory.improvements,
+      emoji: '⚡',
+      order: 0,
+      title: LocalizedText(
+        es: 'La reproducción en Explorer empieza antes',
+        en: 'Explorer playback starts sooner',
+      ),
+      description: LocalizedText(
+        es: 'La dirección del vídeo que vas a reproducir se busca mientras se cierra el anterior, así el primer fotograma llega antes y se evita tocar Play dos veces.',
+        en: 'The address of the video you are about to play is looked up while the previous one is closing, so the first frame arrives sooner and there is no need to tap Play twice.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1138-analysis',
+      version: '1.1.38',
+      build: 43,
+      category: WhatsNewCategory.improvements,
+      emoji: '📊',
+      order: 1,
+      title: LocalizedText(
+        es: 'Análisis de enlaces más completo y más rápido',
+        en: 'Link analysis is more complete and faster',
+      ),
+      description: LocalizedText(
+        es: 'El análisis devuelve todas las calidades y pistas de audio disponibles (en algunos vídeos solo aparecía una) y responde antes; repetir el mismo enlace es instantáneo.',
+        en: 'The analysis returns every available quality and audio track (on some videos only one used to show up) and answers sooner; repeating the same link is instant.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1138-file-cover',
+      version: '1.1.38',
+      build: 43,
+      category: WhatsNewCategory.improvements,
+      emoji: '💿',
+      order: 2,
+      title: LocalizedText(
+        es: 'El reproductor enseña la carátula del archivo',
+        en: 'The player shows the cover inside the file',
+      ),
+      description: LocalizedText(
+        es: 'Al reproducir una descarga, el reproductor y la notificación muestran el título, el artista y la carátula que lleva dentro el propio archivo, aunque falten los datos de la descarga.',
+        en: 'When you play a download, the player and the notification show the title, the artist and the cover the file itself carries, even if the download details are missing.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1138-settings-blocks',
+      version: '1.1.38',
+      build: 43,
+      category: WhatsNewCategory.improvements,
+      emoji: '⚙️',
+      order: 3,
+      title: LocalizedText(
+        es: 'Ajustes, ordenado por bloques',
+        en: 'Settings, ordered in blocks',
+      ),
+      description: LocalizedText(
+        es: 'Los ajustes están agrupados en bloques con las descargas primero y cada grupo con su título, para encontrar cada opción de un vistazo.',
+        en: 'Settings are grouped in blocks with downloads first and a title for each group, so every option is easy to find at a glance.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1138-video-audio-merge',
+      version: '1.1.38',
+      build: 43,
+      category: WhatsNewCategory.fixes,
+      emoji: '🎬',
+      order: 0,
+      title: LocalizedText(
+        es: 'Los vídeos sin audio ya se descargan con sonido',
+        en: 'Videos without audio download with sound now',
+      ),
+      description: LocalizedText(
+        es: 'Las calidades que venían sin pista de audio se unen con la mejor pista disponible antes de guardarse, así el archivo nunca acaba mudo.',
+        en: 'Qualities that came without an audio track are joined with the best available track before saving, so the file never ends up muted.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1138-no-white-flash',
+      version: '1.1.38',
+      build: 43,
+      category: WhatsNewCategory.fixes,
+      emoji: '✨',
+      order: 1,
+      title: LocalizedText(
+        es: 'Se acabó el destello blanco al minimizar el vídeo',
+        en: 'No more white flash when minimising the video',
+      ),
+      description: LocalizedText(
+        es: 'Al minimizar el vídeo o redimensionar la ventana flotante ya no aparece un fogonazo blanco: la ventana se pinta en negro mientras se recoloca.',
+        en: 'Minimising the video or resizing the floating window no longer shows a white flash: the window is painted black while it is being resized.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.37
     WhatsNewEntry(
       id: 'wn-1137-update-explained',

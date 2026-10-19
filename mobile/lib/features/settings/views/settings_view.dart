@@ -84,147 +84,175 @@ class _SettingsViewState extends State<SettingsView> {
           final s = controller.settings!;
 
           return ListView(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
             children: [
-              _sectionHeader(loc.sectionGeneral, cs.primary),
-              _buildThemeTile(context, themeProv, cs, text1, text2),
-              _buildAccentTile(context, themeProv, cs, text1, text2),
-              _buildLanguageTile(context, loc, langProv, cs, text1, text2),
-              const SizedBox(height: 24),
-              _sectionHeader(loc.sectionDownloads, cs.primary),
-              _buildDownloadDirTile(controller, s.downloadDir, text1, text2, loc, cs),
-              _buildDefaultQualityTile(loc, s, text1, text2),
-              _buildSliderTile(
-                icon: Icons.speed,
-                title: loc.maxConcurrentDownloads,
-                value: s.maxConcurrentDownloads.toDouble(),
-                min: 1,
-                max: 5,
-                divisions: 4,
-                label: '${s.maxConcurrentDownloads}',
-                onChanged: (v) => controller.updateSetting(maxConcurrentDownloads: v.round()),
+              // Ordered by how often each group is touched: downloads first,
+              // then what the app does with them, then appearance, server and
+              // the tools, and the about block last.
+              _section(
+                title: loc.sectionDownloads,
+                icon: Icons.download_rounded,
                 cs: cs,
-                text1: text1,
+                children: [
+                  _buildDownloadDirTile(
+                      controller, s.downloadDir, text1, text2, loc, cs),
+                  _buildDefaultQualityTile(loc, s, text1, text2),
+                  _buildSliderTile(
+                    icon: Icons.speed,
+                    title: loc.maxConcurrentDownloads,
+                    value: s.maxConcurrentDownloads.toDouble(),
+                    min: 1,
+                    max: 5,
+                    divisions: 4,
+                    label: '${s.maxConcurrentDownloads}',
+                    onChanged: (v) =>
+                        controller.updateSetting(maxConcurrentDownloads: v.round()),
+                    cs: cs,
+                    text1: text1,
+                  ),
+                  _buildSliderTile(
+                    icon: Icons.sd_storage,
+                    title: loc.maxFileSize,
+                    value: s.maxFileSizeMb.toDouble(),
+                    min: 100,
+                    max: 4096,
+                    divisions: 40,
+                    label: '${s.maxFileSizeMb} MB',
+                    onChanged: (v) =>
+                        controller.updateSetting(maxFileSizeMb: v.round()),
+                    cs: cs,
+                    text1: text1,
+                  ),
+                  _buildSpeedLimitTile(loc, s, text1, text2),
+                ],
               ),
-              _buildSliderTile(
-                icon: Icons.sd_storage,
-                title: loc.maxFileSize,
-                value: s.maxFileSizeMb.toDouble(),
-                min: 100,
-                max: 4096,
-                divisions: 40,
-                label: '${s.maxFileSizeMb} MB',
-                onChanged: (v) => controller.updateSetting(maxFileSizeMb: v.round()),
+              _section(
+                title: loc.sectionBehavior,
+                icon: Icons.play_circle_outline,
                 cs: cs,
-                text1: text1,
+                children: [
+                  _buildSwitchTile(
+                    icon: Icons.open_in_new,
+                    title: loc.autoOpen,
+                    subtitle: loc.autoOpenHint,
+                    value: s.autoOpenAfterDownload,
+                    onChanged: (v) =>
+                        controller.updateSetting(autoOpenAfterDownload: v),
+                    text1: text1,
+                    text2: text2,
+                  ),
+                  _buildSwitchTile(
+                    icon: Icons.info_outline,
+                    title: loc.saveMetadata,
+                    subtitle: loc.saveMetadataHint,
+                    value: s.saveMetadata,
+                    onChanged: (v) => controller.updateSetting(saveMetadata: v),
+                    text1: text1,
+                    text2: text2,
+                  ),
+                ],
               ),
-              _buildSpeedLimitTile(loc, s, text1, text2),
-              const SizedBox(height: 24),
-              _sectionHeader(loc.sectionBehavior, cs.primary),
-              _buildSwitchTile(
-                icon: Icons.open_in_new,
-                title: loc.autoOpen,
-                subtitle: loc.autoOpenHint,
-                value: s.autoOpenAfterDownload,
-                onChanged: (v) => controller.updateSetting(autoOpenAfterDownload: v),
-                text1: text1,
-                text2: text2,
+              _section(
+                title: loc.sectionNotifications,
+                icon: Icons.notifications_outlined,
+                cs: cs,
+                children: [
+                  _buildSwitchTile(
+                    icon: Icons.notifications_active_outlined,
+                    title: loc.notifyCompleted,
+                    subtitle: loc.notifyCompletedHint,
+                    value: s.notifyCompleted,
+                    onChanged: (v) => controller.updateSetting(notifyCompleted: v),
+                    text1: text1,
+                    text2: text2,
+                  ),
+                  _buildSwitchTile(
+                    icon: Icons.error_outline,
+                    title: loc.notifyErrors,
+                    subtitle: loc.notifyErrorsHint,
+                    value: s.notifyErrors,
+                    onChanged: (v) => controller.updateSetting(notifyErrors: v),
+                    text1: text1,
+                    text2: text2,
+                  ),
+                  _buildSwitchTile(
+                    icon: Icons.volume_up_outlined,
+                    title: loc.notifySound,
+                    subtitle: loc.notifySoundHint,
+                    value: s.notifySound,
+                    onChanged: (v) {
+                      controller.updateSetting(notifySound: v);
+                      DownloadNotificationService().setResultsSound(v);
+                    },
+                    text1: text1,
+                    text2: text2,
+                  ),
+                ],
               ),
-              _buildSwitchTile(
+              _section(
+                title: loc.sectionAppearance,
+                icon: Icons.palette_outlined,
+                cs: cs,
+                children: [
+                  _buildThemeTile(context, themeProv, cs, text1, text2),
+                  _buildAccentTile(context, themeProv, cs, text1, text2),
+                  _buildLanguageTile(context, loc, langProv, cs, text1, text2),
+                ],
+              ),
+              _section(
+                title: loc.sectionServer,
+                icon: Icons.dns_outlined,
+                cs: cs,
+                children: [
+                  _buildBackendUrlTile(context, loc, text1, text2),
+                  _buildServerStatusTile(loc, cs, text1, text2),
+                ],
+              ),
+              _section(
+                title: loc.sectionTools,
+                icon: Icons.build_outlined,
+                cs: cs,
+                children: [
+                  _buildNavTile(
+                    icon: Icons.delete_sweep_outlined,
+                    title: loc.trash,
+                    subtitle: loc.trashHint,
+                    text1: text1,
+                    text2: text2,
+                    onTap: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const TrashView())),
+                  ),
+                  _buildNavTile(
+                    icon: Icons.lock_outline,
+                    title: loc.vault,
+                    subtitle: loc.vaultHint,
+                    text1: text1,
+                    text2: text2,
+                    onTap: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const VaultView())),
+                  ),
+                  _buildNavTile(
+                    icon: Icons.perm_media_outlined,
+                    title: loc.statusSaver,
+                    subtitle: loc.statusSaverHint,
+                    text1: text1,
+                    text2: text2,
+                    onTap: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const StatusView())),
+                  ),
+                ],
+              ),
+              _section(
+                title: loc.sectionAbout,
                 icon: Icons.info_outline,
-                title: loc.saveMetadata,
-                subtitle: loc.saveMetadataHint,
-                value: s.saveMetadata,
-                onChanged: (v) => controller.updateSetting(saveMetadata: v),
-                text1: text1,
-                text2: text2,
+                cs: cs,
+                children: [
+                  _buildAboutTile(context, cs, text1, text2),
+                  _buildWhatsNewTile(context, cs, text1, text2),
+                  _buildMediaSessionTile(context, cs, text1, text2),
+                  _buildNetTestTile(context, cs, text1, text2),
+                ],
               ),
-              const SizedBox(height: 24),
-              _sectionHeader(loc.sectionNotifications, cs.primary),
-              _buildSwitchTile(
-                icon: Icons.notifications_active_outlined,
-                title: loc.notifyCompleted,
-                subtitle: loc.notifyCompletedHint,
-                value: s.notifyCompleted,
-                onChanged: (v) => controller.updateSetting(notifyCompleted: v),
-                text1: text1,
-                text2: text2,
-              ),
-              _buildSwitchTile(
-                icon: Icons.error_outline,
-                title: loc.notifyErrors,
-                subtitle: loc.notifyErrorsHint,
-                value: s.notifyErrors,
-                onChanged: (v) => controller.updateSetting(notifyErrors: v),
-                text1: text1,
-                text2: text2,
-              ),
-              _buildSwitchTile(
-                icon: Icons.volume_up_outlined,
-                title: loc.notifySound,
-                subtitle: loc.notifySoundHint,
-                value: s.notifySound,
-                onChanged: (v) {
-                  controller.updateSetting(notifySound: v);
-                  DownloadNotificationService().setResultsSound(v);
-                },
-                text1: text1,
-                text2: text2,
-              ),
-              const SizedBox(height: 24),
-              _sectionHeader(loc.sectionServer, cs.primary),
-              _buildBackendUrlTile(context, loc, text1, text2),
-              _buildServerStatusTile(loc, cs, text1, text2),
-              const SizedBox(height: 24),
-              _sectionHeader(loc.sectionTools, cs.primary),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.delete_sweep_outlined, color: text2),
-                title: Text(loc.trash,
-                    style: TextStyle(color: text1, fontSize: 15)),
-                subtitle: Text(loc.trashHint,
-                    style: TextStyle(
-                        color: text2.withValues(alpha: 0.7), fontSize: 12)),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const TrashView())),
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.lock_outline, color: text2),
-                title: Text(loc.vault,
-                    style: TextStyle(color: text1, fontSize: 15)),
-                subtitle: Text(loc.vaultHint,
-                    style: TextStyle(
-                        color: text2.withValues(alpha: 0.7), fontSize: 12)),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const VaultView())),
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.perm_media_outlined, color: text2),
-                title: Text(loc.statusSaver,
-                    style: TextStyle(color: text1, fontSize: 15)),
-                subtitle: Text(loc.statusSaverHint,
-                    style: TextStyle(
-                        color: text2.withValues(alpha: 0.7), fontSize: 12)),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const StatusView())),
-              ),
-              const SizedBox(height: 24),
-              _sectionHeader(loc.sectionAbout, cs.primary),
-              _buildAboutTile(context, cs, text1, text2),
-              _buildWhatsNewTile(context, cs, text1, text2),
-              _buildMediaSessionTile(context, cs, text1, text2),
-              _buildNetTestTile(context, cs, text1, text2),
             ],
           );
         },
@@ -480,17 +508,76 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
-  Widget _sectionHeader(String title, Color accent) {
+  /// A settings group: a labelled card. Grouping the tiles this way makes the
+  /// screen read as a handful of blocks instead of one long list, and keeps
+  /// every tile and its behaviour untouched.
+  Widget _section({
+    required String title,
+    required IconData icon,
+    required ColorScheme cs,
+    required List<Widget> children,
+  }) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(
-        title.toUpperCase(),
-        style: TextStyle(
-          color: accent,
-          fontSize: 12,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 1.2,
-        ),
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionHeader(title, icon, cs),
+          Container(
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: cs.outlineVariant.withValues(alpha: 0.35),
+              ),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+            child: Column(children: children),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Row tile that opens another screen (trash, vault, statuses).
+  Widget _buildNavTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color text1,
+    required Color text2,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(icon, color: text2),
+      title: Text(title, style: TextStyle(color: text1, fontSize: 15)),
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(color: text2.withValues(alpha: 0.7), fontSize: 12),
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: onTap,
+    );
+  }
+
+  Widget _sectionHeader(String title, IconData icon, ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 8),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: cs.primary),
+          const SizedBox(width: 8),
+          Text(
+            title.toUpperCase(),
+            style: TextStyle(
+              color: cs.primary,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+            ),
+          ),
+        ],
       ),
     );
   }
