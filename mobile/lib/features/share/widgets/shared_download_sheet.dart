@@ -105,8 +105,12 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
                             if (controller.audioFormats.isNotEmpty) const SizedBox(height: 16),
                             _buildFormatSection(loc, cs, controller, isAudio: false),
                           ],
-                          if (controller.media?.thumbnail != null &&
-                              controller.media!.thumbnail!.isNotEmpty) ...[
+                          // Only when the source really offers an image as
+                          // its own downloadable asset: a thumbnail alone is
+                          // not always an image the user can save (see
+                          // MediaInfo.hasDownloadableImage).
+                          if (controller.media?.hasDownloadableImage ==
+                              true) ...[
                             if (controller.audioFormats.isNotEmpty ||
                                 controller.videoFormats.isNotEmpty)
                               const SizedBox(height: 16),
@@ -760,7 +764,7 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'JPG',
+                        loc.downloadImageAction,
                         style: TextStyle(
                           fontWeight: FontWeight.w600,
                           fontSize: 13,
@@ -769,7 +773,8 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        loc.imageCover,
+                        loc.imageCover(
+                            controller.media?.imageExtension ?? 'jpg'),
                         style: TextStyle(
                           fontSize: 11,
                           color: cs.onSurfaceVariant.withValues(alpha: 0.7),
@@ -789,15 +794,17 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
   void _startImageDownload(
       SharedDownloadController controller, AppLocalizations loc) async {
     if (controller.isDownloading) return;
+    final downloadsController = context.read<DownloadsController>();
     final media = controller.media;
     final thumb = media?.thumbnail;
+    if (media == null || !media.hasDownloadableImage) return;
     if (thumb == null || thumb.isEmpty) return;
 
-    final downloadsController = context.read<DownloadsController>();
     controller.setDownloading();
     final task = downloadsController.addImageDownload(
       imageUrl: thumb,
-      title: media?.title ?? loc.untitled,
+      title: media.title.isEmpty ? loc.untitled : media.title,
+      fileExt: media.imageExtension,
     );
 
     if (widget.overlay) {
@@ -810,13 +817,10 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
       return;
     }
 
-    controller.setCompleted();
-
-    Future.delayed(const Duration(seconds: 2), () {
-      if (!mounted) return;
-      Navigator.of(context).pop();
-      controller.reset();
-    });
+    // Same flow as a format download: close the panel at once, the compact
+    // progress panel in the app shell keeps reporting the real progress.
+    if (mounted) Navigator.of(context).pop();
+    controller.reset();
   }
 
   Widget _buildDownloadButton(AppLocalizations loc, ColorScheme cs, SharedDownloadController controller) {
@@ -925,13 +929,11 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
       return;
     }
 
-    controller.setCompleted();
-
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) {
-        Navigator.of(context).pop();
-        controller.reset();
-      }
-    });
+    // Snaptube-style flow: the format panel closes as soon as the queue has
+    // accepted the task. The compact progress panel hosted in the app shell
+    // takes over from here, reports the real progress and survives this
+    // sheet being dismissed — closing it never stops the download.
+    if (mounted) Navigator.of(context).pop();
+    controller.reset();
   }
 }

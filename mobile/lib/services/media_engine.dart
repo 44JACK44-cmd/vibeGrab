@@ -249,14 +249,32 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     } catch (_) {}
   }
 
+  /// Resume-position writes are throttled. The player emits position at
+  /// ~10Hz and every tick used to be a SharedPreferences platform-channel
+  /// round trip (a real write to disk) for a value that only matters every
+  /// few seconds. [force] (stop / seek / handoff) always writes at once.
+  static const _positionSaveInterval = Duration(seconds: 2);
+  String? _pendingPositionId;
+  Duration _pendingPosition = Duration.zero;
+  DateTime _lastPositionSave = DateTime.fromMillisecondsSinceEpoch(0);
+
   Future<void> _savePosition(String mediaId, Duration position,
       {bool force = false}) async {
     // A player stop/reconnect emits a ~0 blip; persisting it would
     // clobber a valid resume point. Explicit seeks bypass this.
     if (!force && position < const Duration(milliseconds: 500)) return;
+    _pendingPositionId = mediaId;
+    _pendingPosition = position;
+    final now = DateTime.now();
+    if (!force && now.difference(_lastPositionSave) < _positionSaveInterval) {
+      return;
+    }
+    _lastPositionSave = now;
+    final id = _pendingPositionId!;
+    final ms = _pendingPosition.inMilliseconds;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('$_prefix${mediaId}_pos', position.inMilliseconds);
+      await prefs.setInt('$_prefix${id}_pos', ms);
     } catch (_) {}
   }
 
@@ -1308,6 +1326,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   /// Kind of the active stream (relay merge needs `?t=` reconnects to seek).
   MediaSourceKind? _activeKind;
 
+  /// Coalescing window for the position-tick notifications (the player
+  /// emits ~10/s; see the controller listener in _startNetworkVideo).
+  static const _tickNotifyInterval = Duration(milliseconds: 200);
+  DateTime _lastTickNotify = DateTime.fromMillisecondsSinceEpoch(0);
+
   /// True when the controller reports no usable timeline: 0, the ~1ms
   /// wrap of ExoPlayer's C.TIME_UNSET, or absurd values (>24h).
   static bool _durationLooksUnknown(Duration d) =>
@@ -1402,9 +1425,19 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final errs = <String>[];
     late final MediaResolution res;
     try {
-      res = await _resolver.resolve(videoId, onStage: _setStage);
+      res = await _resolver.resolve(
+        videoId,
+        // A stage from an abandoned chain must not re-label (or re-arm the
+        // watchdog of) the play the user is waiting on now.
+        onStage: (key) {
+          if (!stale()) _setStage(key);
+        },
+      );
     } catch (e) {
       debugPrint('[MediaEngine] Resolve failed: $e');
+      // Failing here would cancel the LIVE chain's watchdog and paint the
+      // current item with this abandoned chain's error.
+      if (stale()) return;
       _clearStage();
       _failPlayback(_short(e.toString()));
       return;
@@ -1451,11 +1484,15 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       errs.add('audio: ${_lastAudioError ?? "falló"}');
     }
 
-    if (res.manifest != null) {
+    // Last resort: the manifest is no longer on the critical path, so it
+    // may still be in flight. Only a chain that already failed every video
+    // and audio-URL candidate reaches here, so waiting costs nothing.
+    final manifest = res.manifest ?? await res.manifestAsync;
+    if (stale()) return;
+    if (manifest != null) {
       _setStage('playStageAudio');
-      if (stale()) return;
       final ok =
-          await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: res.manifest);
+          await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
       if (ok) {
         _clearStage();
         return;
@@ -1621,6 +1658,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       Duration startAt = Duration.zero,
       Duration? expectedDuration,
       MediaSourceKind? kind}) async {
+    // A newer play already owns the engine. Tearing down here would dispose
+    // (and null) the controller the NEW chain just installed, killing a
+    // perfectly good play from a chain the user already abandoned.
+    if (playToken != null && playToken != _playToken) return false;
     await _stopCurrentSilent();
     // The relay merge streams without a declared length (unknown duration).
     // Keep the metadata (or analyze-provided) duration as the expected one
@@ -1663,7 +1704,32 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     notifyListeners();
   }
 
-  Future<StreamUrls?> _fetchStreamUrls(String videoId) async {
+  /// In-flight stream-URL requests by videoId.
+  ///
+  /// The detail view asks for the metadata that the SAME response carries
+  /// (channel avatar, comment count, description) at the very moment the
+  /// playback resolve asks for the stream URLs. Without single-flight the
+  /// app issued two parallel requests to /api/explore/stream-url for the
+  /// same video against a backend that may still be waking up (~40s).
+  final Map<String, Future<StreamUrls?>> _streamUrlFutures = {};
+
+  /// Server metadata for [videoId], sharing the single in-flight request
+  /// with the playback resolve of the same video.
+  Future<StreamUrls?> fetchMeta(String videoId) =>
+      _fetchStreamUrls(videoId);
+
+  Future<StreamUrls?> _fetchStreamUrls(String videoId) => _streamUrlFutures
+      .putIfAbsent(videoId, () => _fetchStreamUrlsOnce(videoId));
+
+  Future<StreamUrls?> _fetchStreamUrlsOnce(String videoId) async {
+    try {
+      return await _fetchStreamUrlsBody(videoId);
+    } finally {
+      _streamUrlFutures.remove(videoId);
+    }
+  }
+
+  Future<StreamUrls?> _fetchStreamUrlsBody(String videoId) async {
     _lastStreamError = null;
     // Slow networks need patience, not more routes: one generous attempt
     // plus a single backoff retry (covers a waking backend). Short
@@ -1793,6 +1859,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         await controller.seekTo(startAt);
       }
 
+      _lastTickNotify = DateTime.fromMillisecondsSinceEpoch(0);
       controller.addListener(() {
         if (!identical(_videoController, controller)) return;
         if (!controller.value.isInitialized) return;
@@ -1828,7 +1895,16 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
             !controller.value.isPlaying) {
           _completionHandled = true;
           _handlePlaybackComplete();
+          notifyListeners();
+          return;
         }
+        // Coalesce the rebuilds: the player ticks ~10/s and each tick used
+        // to rebuild every Consumer<MediaEngine> in the app (mini player,
+        // Shorts pages, detail player) for a progress bar that moves a few
+        // pixels. 200ms is several times smoother than that needs.
+        final now = DateTime.now();
+        if (now.difference(_lastTickNotify) < _tickNotifyInterval) return;
+        _lastTickNotify = now;
         notifyListeners();
       });
 
@@ -1839,6 +1915,15 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           : (posOffset > Duration.zero && !_durationLooksUnknown(rawInit)
               ? rawInit + posOffset
               : rawInit);
+      // A newer play started while we initialized: abandon instead of
+      // hijacking it. The check has to come BEFORE the state write —
+      // writing first let a stale chain paint the live item's state, hide
+      // its spinner and disarm its stall watchdog before bailing out.
+      if (playToken != null && playToken != _playToken) {
+        await controller.dispose();
+        if (identical(_videoController, controller)) _videoController = null;
+        return false;
+      }
       _state = _state.copyWith(
         status: MediaStatus.playing,
         position: posOffset > Duration.zero ? posOffset : startAt,
@@ -1850,13 +1935,6 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       );
       _syncPlaybackStateToHandler();
       notifyListeners();
-      // A newer play started while we initialized: abandon instead of
-      // hijacking it.
-      if (playToken != null && playToken != _playToken) {
-        await controller.dispose();
-        if (identical(_videoController, controller)) _videoController = null;
-        return false;
-      }
       await controller.play();
       // Keep the freshest stream URL for the background handoff and relay
       // seeks (a reconnect writes its own `?t=` variant here).
@@ -2703,6 +2781,18 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   @override
   Future<void> resume() async {
+    // A resolution chain is already running for the item the user picked.
+    // It ends in play() by itself (_startNetworkVideo), so the play intent
+    // is already queued and there is nothing to restart. Calling play() on
+    // a player with no source is not merely useless: in just_audio a play
+    // request with no audio source never completes, so the await hangs
+    // forever, `status` is never updated and the user has to press again
+    // once the stall watchdog has failed the play (~30-45s later). That is
+    // exactly the "have to press Play twice" bug.
+    if (_state.status == MediaStatus.loading ||
+        _state.status == MediaStatus.buffering) {
+      return;
+    }
     // Idle/completed means there is NO live source (e.g. after a failed
     // video play): re-play the current queue item from scratch so state
     // (thumbnail, duration, subscriptions, handler) is fully rebuilt.
@@ -2730,8 +2820,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     }
     if (_videoController != null) {
       await _videoController!.play();
-    } else {
+    } else if (_player.audioSource != null) {
       await _player.play();
+    } else {
+      // No source at all: there is nothing to resume. Forcing `playing`
+      // here would hide the spinner and disarm the stall watchdog on a
+      // chain that has not produced a player yet.
+      return;
     }
     _state = _state.copyWith(status: MediaStatus.playing);
     _syncPlaybackStateToHandler();
@@ -2750,13 +2845,22 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<void> _stopCurrentSilent() async {
     _completionDebounce?.cancel();
+    // Every resolution candidate used to run a FULL teardown, even though
+    // _playQueueItemVideo had already stopped the previous item: that
+    // re-stopped the player and re-wrote the resume position once per
+    // candidate for nothing. Only tear down when something is actually live.
+    final live = _videoController != null ||
+        _posSub != null ||
+        _durSub != null ||
+        _isAudioBackgroundActive;
+    if (!live) return;
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();
     _expectedDuration = null;
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
-      await _savePosition(_state.mediaId!, _state.position);
+      await _savePosition(_state.mediaId!, _state.position, force: true);
     }
 
     try {
@@ -2776,7 +2880,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _expectedDuration = null;
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
-      await _savePosition(_state.mediaId!, _state.position);
+      // force: this is the last write for this item, throttling must not
+      // drop the resume point.
+      await _savePosition(_state.mediaId!, _state.position, force: true);
     }
 
     try {

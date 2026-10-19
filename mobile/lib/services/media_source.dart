@@ -49,9 +49,17 @@ class MediaResolution {
   /// Server-forwarded audio fallback (full player state).
   final Uri? audioUri;
 
-  /// Device manifest when it could be fetched (device audio fallback +
-  /// quality list). Null when the manifest is bot-blocked.
+  /// Device manifest when it was already available at resolve time
+  /// (device audio fallback + quality list). Null while the background
+  /// fetch is still running or when the source is bot-blocked.
   final StreamManifest? manifest;
+
+  /// Background manifest fetch, null when [manifest] was already final.
+  ///
+  /// Resolution deliberately does NOT wait for this: the manifest used to
+  /// be awaited next to the server payload, which put a second network leg
+  /// of up to 25s in front of the first frame of every video.
+  final Future<StreamManifest?>? manifestAsync;
 
   /// Why the server fetch failed (for error reports), null on success.
   final String? fetchError;
@@ -63,6 +71,7 @@ class MediaResolution {
     this.video = const [],
     this.audioUri,
     this.manifest,
+    this.manifestAsync,
     this.fetchError,
     this.qualities = const [],
   });

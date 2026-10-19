@@ -97,6 +97,15 @@
   "audioDownloaded": "Audio downloaded",
   "errorDownloadingAudio": "Error downloading audio",
   "downloadsTitle": "Downloads",
+  "viewDownloads": "View downloads",
+  "downloadQueueMore": "+{count} more",
+  "@downloadQueueMore": {
+    "placeholders": {
+      "count": {
+        "type": "String"
+      }
+    }
+  },
   "clearCompleted": "Clear completed",
   "noDownloads": "No downloads yet",
   "noDownloadsHint": "Analyze a URL and tap a format to download",
@@ -281,7 +290,15 @@
   "shareVideo": "Video",
   "shareAudio": "Music",
   "shareImage": "Image",
-  "imageCover": "Cover (JPG)",
+  "downloadImageAction": "Save image",
+  "imageCover": "Cover ({ext})",
+  "@imageCover": {
+    "placeholders": {
+      "ext": {
+        "type": "String"
+      }
+    }
+  },
   "downloadFormats": "Download formats",
   "shareDownload": "Download",
   "shareCancel": "Cancel",

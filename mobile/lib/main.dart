@@ -23,6 +23,7 @@ import 'services/trash_service.dart';
 import 'services/api_service.dart';
 import 'features/analyzer/controllers/analyze_controller.dart';
 import 'features/downloads/controllers/downloads_controller.dart';
+import 'features/downloads/widgets/download_queue_panel.dart';
 import 'features/explore/controllers/explore_controller.dart';
 import 'features/library/controllers/library_controller.dart';
 import 'features/settings/controllers/settings_controller.dart';
@@ -327,15 +328,33 @@ context.read<MediaEngine>().initAudioService().then((_) {
       body: Column(
         children: [
           Expanded(
-            child: IndexedStack(
-              index: _currentIndex,
+            child: Stack(
               children: [
-                const ExploreView(),
-                const BrowserView(),
-                const AnalyzerView(),
-                DownloadsView(onNavigateToAnalyze: () => _navigateToTab(2)),
-                const LibraryView(),
-                const SettingsView(),
+                IndexedStack(
+                  index: _currentIndex,
+                  children: [
+                    const ExploreView(),
+                    const BrowserView(),
+                    const AnalyzerView(),
+                    DownloadsView(onNavigateToAnalyze: () => _navigateToTab(2)),
+                    const LibraryView(),
+                    const SettingsView(),
+                  ],
+                ),
+                // Compact download progress: floats over the tab content and
+                // above the mini player, so a download started from the
+                // format sheet keeps being reported after that sheet is
+                // dismissed. Closing it only hides this view, the queue in
+                // DownloadsController keeps running.
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: DownloadQueuePanel(
+                    visible: _currentIndex != 3,
+                    onOpenDownloads: () => _navigateToTab(3),
+                  ),
+                ),
               ],
             ),
           ),

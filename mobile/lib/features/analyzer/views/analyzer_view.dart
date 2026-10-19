@@ -40,7 +40,6 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
       setState(() => _isFocused = _focusNode.hasFocus);
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _syncPendingUrl();
       _loadRecentUrls();
       _loadQualityPref();
     });
@@ -52,15 +51,6 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
     setState(() {
       _qualityPref = prefs.getString(AppSettingKeys.defaultQuality) ?? '720p';
     });
-  }
-
-  void _syncPendingUrl() {
-    final controller = context.read<AnalyzeController>();
-    final pending = controller.pendingSharedUrl;
-    if (pending != null && _urlController.text != pending) {
-      _urlController.text = pending;
-      controller.consumePendingUrl();
-    }
   }
 
   Future<void> _loadRecentUrls() async {

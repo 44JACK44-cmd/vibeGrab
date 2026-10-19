@@ -56,7 +56,20 @@ class SharedDownloadController extends ChangeNotifier {
   bool get isContentUnavailable => _error == 'content_unavailable';
   bool get isNoInternet => _error == 'no_internet';
 
-  Completer<void>? _cancelCompleter;
+  /// Analysis results are cached per URL: re-analysing the same link
+  /// (retry button, reopening the sheet, sharing the same video twice)
+  /// used to re-run the whole device-vs-backend race from scratch every
+  /// time.
+  static const _analyzeCacheTtl = Duration(minutes: 10);
+  final Map<String, _CachedAnalyze> _analyzeCache = {};
+
+  /// Analysis already running for a URL, so a double tap cannot stack two
+  /// device+backend races on top of each other.
+  final Map<String, Future<AnalyzeResponse>> _analyzeInFlight = {};
+
+  /// Bumped on every new analysis. A slow response for an older URL must
+  /// never overwrite the one the user is looking at now.
+  int _analyzeSeq = 0;
 
   List<FormatOption> get allFormats => [..._audioFormats, ..._videoFormats];
 
@@ -76,45 +89,83 @@ class SharedDownloadController extends ChangeNotifier {
       return;
     }
 
+    final seq = ++_analyzeSeq;
+    bool stale() => seq != _analyzeSeq;
+
+    final cached = _analyzeCache[sanitized];
+    if (cached != null &&
+        DateTime.now().difference(cached.at) < _analyzeCacheTtl) {
+      await _applyResult(sanitized, cached.result);
+      notifyListeners();
+      return;
+    }
+
     _url = sanitized;
     _platform = LocalExtractionService.detectPlatform(sanitized);
     _status = SharedSheetStatus.analyzing;
     _error = null;
     _result = null;
     _selectedFormat = null;
-    _cancelCompleter = Completer<void>();
     notifyListeners();
 
     try {
-      if (LocalExtractionService.supportsPlatform(sanitized)) {
-        _result = await _firstSuccess<AnalyzeResponse>([
-          _extraction.extractMedia(sanitized).timeout(const Duration(seconds: 25)),
-          _api.analyze(sanitized),
-        ]);
-        if (_result!.media.source.isNotEmpty) {
-          _platform = _result!.media.source;
-        }
-      } else {
-        _result = await _api.analyze(sanitized);
-        _platform = _result!.media.source;
-      }
-      _audioFormats = _result!.formats.where((f) => f.type == 'audio').toList();
-      _videoFormats = _result!.formats.where((f) => f.type == 'video').toList();
-      await _selectDefaultFormat();
+      final response = await _analyzeUncached(sanitized);
+      // A newer analysis owns the sheet now: keep its state instead of
+      // painting this stale result over it.
+      if (stale()) return;
+      _analyzeCache[sanitized] = _CachedAnalyze(response, DateTime.now());
+      await _applyResult(sanitized, response);
+      if (stale()) return;
       _status = SharedSheetStatus.ready;
     } on NetworkException catch (e) {
+      if (stale()) return;
       _error = (e.type == 'connection' || e.type == 'timeout')
           ? 'server_unreachable'
           : e.message;
       _status = SharedSheetStatus.error;
     } catch (e) {
+      if (stale()) return;
       _error = LocalExtractionService.friendlyError(e);
       _status = SharedSheetStatus.error;
     } finally {
-      _cancelCompleter?.complete();
-      _cancelCompleter = null;
       notifyListeners();
     }
+  }
+
+  /// One analysis per URL: concurrent callers share the same future.
+  Future<AnalyzeResponse> _analyzeUncached(String sanitized) {
+    final running = _analyzeInFlight[sanitized];
+    if (running != null) return running;
+    final future = () async {
+      if (LocalExtractionService.supportsPlatform(sanitized)) {
+        return _firstSuccess<AnalyzeResponse>([
+          _extraction
+              .extractMedia(sanitized)
+              .timeout(const Duration(seconds: 25)),
+          _api.analyze(sanitized),
+        ]);
+      }
+      return _api.analyze(sanitized);
+    }();
+    _analyzeInFlight[sanitized] = future;
+    future.whenComplete(() {
+      if (identical(_analyzeInFlight[sanitized], future)) {
+        _analyzeInFlight.remove(sanitized);
+      }
+    });
+    return future;
+  }
+
+  Future<void> _applyResult(String sanitized, AnalyzeResponse response) async {
+    _url = sanitized;
+    _result = response;
+    if (response.media.source.isNotEmpty) {
+      _platform = response.media.source;
+    }
+    _audioFormats = response.formats.where((f) => f.type == 'audio').toList();
+    _videoFormats = response.formats.where((f) => f.type == 'video').toList();
+    await _selectDefaultFormat();
+    _error = null;
   }
 
   Future<T> _firstSuccess<T>(List<Future<T>> futures) {
@@ -137,13 +188,14 @@ class SharedDownloadController extends ChangeNotifier {
     return completer.future;
   }
 
+  /// Abandons the analysis in flight: its result is discarded instead of
+  /// landing on a sheet the user already dismissed or pointed elsewhere.
   void cancelAnalysis() {
-    if (_cancelCompleter != null && !_cancelCompleter!.isCompleted) {
-      _status = SharedSheetStatus.idle;
-      _error = null;
-      _result = null;
-      notifyListeners();
-    }
+    _analyzeSeq++;
+    _status = SharedSheetStatus.idle;
+    _error = null;
+    _result = null;
+    notifyListeners();
   }
 
   void selectFormat(FormatOption format) {
@@ -175,7 +227,6 @@ class SharedDownloadController extends ChangeNotifier {
     _selectedFormat = null;
     _error = null;
     _isDownloading = false;
-    _cancelCompleter = null;
     notifyListeners();
   }
 
@@ -200,4 +251,10 @@ class SharedDownloadController extends ChangeNotifier {
   void dismiss() {
     reset();
   }
+}
+
+class _CachedAnalyze {
+  final AnalyzeResponse result;
+  final DateTime at;
+  const _CachedAnalyze(this.result, this.at);
 }
