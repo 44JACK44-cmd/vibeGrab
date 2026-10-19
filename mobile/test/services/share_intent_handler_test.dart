@@ -10,14 +10,14 @@ void main() {
     });
 
     test('extracts URL embedded in text using regex', () {
-      final text = 'Mira esto: https://youtube.com/watch?v=abc123';
+      const text = 'Mira esto: https://youtube.com/watch?v=abc123';
       final match = RegExp(r'https?://[^\s<>\"{}|\\^`\[\]]+', caseSensitive: false)
           .firstMatch(text);
       expect(match?.group(0), 'https://youtube.com/watch?v=abc123');
     });
 
     test('extracts youtu.be URL', () {
-      final text = 'https://youtu.be/abc123';
+      const text = 'https://youtu.be/abc123';
       final match = RegExp(r'https?://[^\s<>\"{}|\\^`\[\]]+', caseSensitive: false)
           .firstMatch(text);
       expect(match?.group(0), 'https://youtu.be/abc123');

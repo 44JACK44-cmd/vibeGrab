@@ -602,7 +602,7 @@ class _LibraryViewState extends State<LibraryView> {
                 color: AppColors.error.withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
-              child: Icon(Icons.error_outline, size: 36, color: AppColors.error),
+              child: const Icon(Icons.error_outline, size: 36, color: AppColors.error),
             ),
             const SizedBox(height: 20),
             Text(

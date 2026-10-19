@@ -123,7 +123,7 @@ class EqualizerSheet extends StatelessWidget {
                         return Column(
                           children: [
                             Text(
-                              '${(level / 100).toStringAsFixed(1)}',
+                              (level / 100).toStringAsFixed(1),
                               style: TextStyle(
                                   color: cs.primary,
                                   fontSize: 11,

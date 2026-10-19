@@ -1,0 +1,14 @@
+# Catalogo de versiones de Gradle (version catalog).
+# Centraliza las versiones de las dependencias para no hardcodearlas en los
+# build.gradle.kts (SonarCloud: kotlin:S6624).
+[versions]
+desugarJdkLibs = "2.1.4"
+androidxDocumentfile = "1.0.1"
+androidxMedia = "1.7.0"
+androidxCore = "1.13.1"
+
+[libraries]
+desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugarJdkLibs" }
+androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "androidxDocumentfile" }
+androidx-media = { module = "androidx.media:media", version.ref = "androidxMedia" }
+androidx-core = { module = "androidx.core:core", version.ref = "androidxCore" }

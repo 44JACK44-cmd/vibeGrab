@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../services/media_engine.dart';
 import '../../../data/models/library_file.dart';
-import '../../../data/models/media_state.dart';
 import '../widgets/equalizer_sheet.dart';
 import '../widgets/lyrics_sheet.dart';
 import '../widgets/play_mode_button.dart';

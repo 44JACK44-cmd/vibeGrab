@@ -15,6 +15,7 @@ same UA (ANTUBIS_UA) and come from the same host (our server).
 """
 
 import hashlib
+import io
 import json
 import re
 import threading
@@ -24,6 +25,7 @@ import urllib.parse
 import urllib.request
 import urllib.response
 
+from app.core.config import settings
 from app.core.logging import logger
 
 ANTUBIS_UA = (
@@ -31,9 +33,10 @@ ANTUBIS_UA = (
     "(KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
 )
 
-_CHALLENGE_RE = re.compile(
-    r'<script[^>]*id="anubis_challenge"[^>]*>(.*?)</script>', re.S
-)
+# Opening <script id="anubis_challenge"> tag; its JSON body is delimited by
+# the following </script> (located with str.find, avoiding a backtracking
+# regex with a DOTALL lazy quantifier).
+_CHALLENGE_TAG_RE = re.compile(r'<script[^>]*id="anubis_challenge"[^>]*>')
 
 _lock = threading.Lock()
 _cookies: dict[str, str] = {}
@@ -48,23 +51,38 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_NoRedirect)
 
 
-def _store_cookies(header, origin: str) -> None:
-    """Apply every Set-Cookie of a response (empty value / Max-Age=0 deletes)."""
-    global _cookies, _cookie_origin
-    if header is None:
-        return
-    raw = header.get_all("Set-Cookie") if hasattr(header, "get_all") else None
-    if not raw:
-        single = header.get("Set-Cookie")
-        raw = [single] if single else []
+def _is_allowed_url(url: str) -> bool:
+    """SSRF guard: only http(s) URLs whose host is on the relay allowlist."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = (parts.hostname or "").lower()
+    if not host:
+        return False
+    return any(
+        host == suffix or host.endswith("." + suffix)
+        for suffix in settings.relay_allowed_hosts_list
+    )
+
+
+def _split_cookie(item: str) -> tuple[str, str] | None:
+    """Split a Set-Cookie header into (name, value), or None if malformed."""
+    first = item.split(";", 1)[0].strip()
+    if "=" not in first:
+        return None
+    name, value = first.split("=", 1)
+    return name.strip(), value.strip()
+
+
+def _apply_cookies(raw: list[str]) -> bool:
+    """Merge Set-Cookie values into the shared jar; return True if it changed."""
+    global _cookies
     changed = False
     for item in raw:
-        first = item.split(";", 1)[0].strip()
-        if "=" not in first:
+        parsed = _split_cookie(item)
+        if parsed is None:
             continue
-        name, value = first.split("=", 1)
-        name = name.strip()
-        value = value.strip()
+        name, value = parsed
         if not value or "Max-Age=0" in item:
             if name in _cookies:
                 del _cookies[name]
@@ -72,6 +90,19 @@ def _store_cookies(header, origin: str) -> None:
         else:
             _cookies[name] = value
             changed = True
+    return changed
+
+
+def _store_cookies(header, origin: str) -> None:
+    """Apply every Set-Cookie of a response (empty value / Max-Age=0 deletes)."""
+    global _cookie_origin
+    if header is None:
+        return
+    raw = header.get_all("Set-Cookie") if hasattr(header, "get_all") else None
+    if not raw:
+        single = header.get("Set-Cookie")
+        raw = [single] if single else []
+    changed = _apply_cookies(raw)
     if changed and raw:
         _cookie_origin = origin
 
@@ -92,28 +123,41 @@ def _headers(extra: dict | None = None) -> dict:
     return h
 
 
-def _solve(challenge_html: bytes, original_url: str) -> None:
-    m = _CHALLENGE_RE.search(challenge_html.decode(errors="replace"))
+def _challenge_payload(challenge_html: bytes) -> dict:
+    """Extract and parse the JSON body of the anubis challenge script tag."""
+    text = challenge_html.decode(errors="replace")
+    m = _CHALLENGE_TAG_RE.search(text)
     if not m:
         raise RuntimeError("anubis challenge not found in page")
-    payload = json.loads(m.group(1))
+    end = text.find("</script>", m.end())
+    if end == -1:
+        raise RuntimeError("anubis challenge not found in page")
+    return json.loads(text[m.end():end])
+
+
+def _solve_pow(data: str, difficulty: int) -> tuple[int, str]:
+    """Find a nonce whose sha256(data+nonce) starts with `difficulty` zeros."""
+    target = "0" * difficulty
+    nonce = 0
+    while True:
+        digest_hex = hashlib.sha256(f"{data}{nonce}".encode()).hexdigest()
+        if digest_hex.startswith(target):
+            return nonce, digest_hex
+        nonce += 1
+        if nonce > 50_000_000:
+            raise RuntimeError("anubis pow did not converge")
+
+
+def _solve(challenge_html: bytes, original_url: str) -> None:
+    payload = _challenge_payload(challenge_html)
     rules = payload.get("rules") or {}
     ch = payload.get("challenge") or {}
     difficulty = int(ch.get("difficulty") or rules.get("difficulty") or 4)
     data = ch.get("randomData") or ""
     ch_id = ch.get("id") or ""
 
-    target = "0" * difficulty
     started = time.time()
-    nonce = 0
-    digest_hex = ""
-    while True:
-        digest_hex = hashlib.sha256(f"{data}{nonce}".encode()).hexdigest()
-        if digest_hex.startswith(target):
-            break
-        nonce += 1
-        if nonce > 50_000_000:
-            raise RuntimeError("anubis pow did not converge")
+    nonce, digest_hex = _solve_pow(data, difficulty)
     elapsed_ms = max(1, int((time.time() - started) * 1000))
 
     base = urllib.parse.urlsplit(original_url)
@@ -132,6 +176,9 @@ def _solve(challenge_html: bytes, original_url: str) -> None:
         f"Anubis solving: difficulty={difficulty} nonce={nonce} "
         f"elapsed={elapsed_ms}ms"
     )
+    # SSRF guard: never solve against a host outside the relay allowlist.
+    if not _is_allowed_url(pass_url):
+        raise RuntimeError("anubis pass-challenge host not allowed")
     try:
         resp = _opener.open(
             urllib.request.Request(pass_url, headers=_headers()),
@@ -151,50 +198,57 @@ def _solve(challenge_html: bytes, original_url: str) -> None:
         raise RuntimeError("pass-challenge set no cookie")
 
 
+def _handle_stream_error(e: urllib.error.HTTPError, url: str) -> bool:
+    """Handle a streaming HTTP error. Return True when the caller should retry."""
+    global _cookies, _cookie_origin
+    if 300 <= e.code < 400:
+        _store_cookies(e.headers, _origin(url))
+        e.close()
+        return True
+    if e.code in (403, 429, 401) and _cookies:
+        # stale cookie: drop and retry
+        logger.info(f"Anubis cookie rejected (HTTP {e.code})")
+        _cookies = {}
+        _cookie_origin = None
+        e.close()
+        return True
+    return False
+
+
 def open_stream(url: str, extra_headers: dict | None = None, timeout: int = 30):
     """Open a (possibly challenge-protected) URL and return a streaming
     response. Solves Anubis transparently. Caller must close()."""
-    global _cookies, _cookie_origin
+    if not _is_allowed_url(url):
+        raise ValueError("Anubis stream host not allowed")
     with _lock:
         last_err: Exception | None = None
-        for attempt in range(3):
+        for _ in range(3):
             try:
                 resp = _opener.open(
                     urllib.request.Request(url, headers=_headers(extra_headers)),
                     timeout=timeout,
                 )
             except urllib.error.HTTPError as e:
-                if 300 <= e.code < 400:
-                    _store_cookies(e.headers, _origin(url))
-                    e.close()
-                    last_err = None
-                    continue
-                if e.code in (403, 429, 401) and _cookies:
-                    # stale cookie: drop and retry
-                    logger.info(f"Anubis cookie rejected (HTTP {e.code})")
-                    _cookies = {}
-                    _cookie_origin = None
-                    e.close()
-                    last_err = None
-                    continue
-                raise
+                if not _handle_stream_error(e, url):
+                    raise
+                last_err = None
+                continue
 
             ctype = (resp.headers.get("Content-Type") or "").lower()
-            if "text/html" in ctype:
-                _store_cookies(resp.headers, _origin(url))
-                body = resp.read()
-                resp.close()
-                if b"anubis_challenge" in body:
-                    _solve(body, url)
-                    last_err = None
-                    continue
-                # plain html (error page): return as-is via in-memory stream
-                import io
+            if "text/html" not in ctype:
+                return resp
 
-                return urllib.response.addinfourl(
-                    io.BytesIO(body), resp.headers, url, 200
-                )
-            return resp
+            _store_cookies(resp.headers, _origin(url))
+            body = resp.read()
+            resp.close()
+            if b"anubis_challenge" in body:
+                _solve(body, url)
+                last_err = None
+                continue
+            # plain html (error page): return as-is via in-memory stream
+            return urllib.response.addinfourl(
+                io.BytesIO(body), resp.headers, url, 200
+            )
         raise last_err or RuntimeError("anubis: could not get a clean response")
 
 

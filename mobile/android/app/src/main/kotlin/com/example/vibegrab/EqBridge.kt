@@ -50,10 +50,12 @@ object EqBridge {
             try {
                 bass = BassBoost(0, sid)
             } catch (_: Exception) {
+                // no-op: BassBoost is optional, not every device exposes it.
             }
             try {
                 loud = LoudnessEnhancer(sid)
             } catch (_: Exception) {
+                // no-op: LoudnessEnhancer is optional, not every device exposes it.
             }
             true
         } catch (e: Exception) {
@@ -67,6 +69,7 @@ object EqBridge {
         try {
             eq?.enabled = v
         } catch (_: Exception) {
+            // no-op: the effect may be gone if the audio session was torn down.
         }
     }
 
@@ -77,6 +80,7 @@ object EqBridge {
             if (band < 0 || band >= e.numberOfBands) return
             e.setBandLevel(band.toShort(), levelMb.toShort())
         } catch (_: Exception) {
+            // no-op: the band or the effect is no longer available.
         }
     }
 
@@ -85,6 +89,7 @@ object EqBridge {
         try {
             eq?.usePreset(i.toShort())
         } catch (_: Exception) {
+            // no-op: the preset or the effect is no longer available.
         }
     }
 
@@ -93,6 +98,7 @@ object EqBridge {
         try {
             bass?.setStrength(s.coerceIn(0, 1000).toShort())
         } catch (_: Exception) {
+            // no-op: BassBoost is unsupported by this device.
         }
     }
 
@@ -101,6 +107,7 @@ object EqBridge {
         try {
             loud?.setTargetGain(mb)
         } catch (_: Exception) {
+            // no-op: LoudnessEnhancer is unsupported by this device.
         }
     }
 
@@ -109,14 +116,17 @@ object EqBridge {
         try {
             eq?.release()
         } catch (_: Exception) {
+            // no-op: the effect could already be released or invalid.
         }
         try {
             bass?.release()
         } catch (_: Exception) {
+            // no-op: BassBoost is optional and may never have been created.
         }
         try {
             loud?.release()
         } catch (_: Exception) {
+            // no-op: LoudnessEnhancer is optional and may never have been created.
         }
         eq = null
         bass = null

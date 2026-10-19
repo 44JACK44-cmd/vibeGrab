@@ -1,3 +1,5 @@
+import 'image_asset.dart';
+
 class MediaInfo {
   final String id;
   final String title;
@@ -28,6 +30,15 @@ class MediaInfo {
       platform: json['platform'],
     );
   }
+
+  /// True when [thumbnail] is an image the user can actually save: decided
+  /// from the URL in [ImageAsset], in one place, and shared by every model
+  /// that exposes a cover.
+  bool get hasDownloadableImage => ImageAsset.isDownloadable(thumbnail);
+
+  /// File extension to save [thumbnail] under, so the label matches what
+  /// actually gets written.
+  String get imageExtension => ImageAsset.extensionOf(thumbnail);
 
   String get durationFormatted {
     if (duration == null) return '';

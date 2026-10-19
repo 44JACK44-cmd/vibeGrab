@@ -21,7 +21,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
+import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.text.SimpleDateFormat
@@ -93,8 +95,23 @@ class MainActivity : AudioServiceActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        val messenger = flutterEngine.dartExecutor.binaryMessenger
 
-        shareChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SHARE_CHANNEL)
+        setupShareChannel(messenger)
+        setupDownloadChannel(messenger)
+        setupStorageChannel(messenger)
+        setupLocalMediaChannel(messenger)
+        setupPipChannel(messenger)
+        setupStatusChannel(messenger)
+        setupAppChannel(messenger)
+        setupEqChannel(messenger)
+        setupMediaDiagChannel(messenger)
+
+        handleIntent(intent)
+    }
+
+    private fun setupShareChannel(messenger: BinaryMessenger) {
+        shareChannel = MethodChannel(messenger, SHARE_CHANNEL)
         shareChannel?.setMethodCallHandler { call, result ->
             if (call.method == "getInitialShareInfo") {
                 result.success(mapOf(
@@ -107,8 +124,10 @@ class MainActivity : AudioServiceActivity() {
                 result.notImplemented()
             }
         }
+    }
 
-        downloadChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DOWNLOAD_CHANNEL)
+    private fun setupDownloadChannel(messenger: BinaryMessenger) {
+        downloadChannel = MethodChannel(messenger, DOWNLOAD_CHANNEL)
         downloadChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "startService" -> {
@@ -167,9 +186,11 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
 
-        storageChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL)
-                storageChannel?.setMethodCallHandler { call, result ->
+    private fun setupStorageChannel(messenger: BinaryMessenger) {
+        storageChannel = MethodChannel(messenger, STORAGE_CHANNEL)
+        storageChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "pickDirectory" -> {
                     pendingPickResult = result
@@ -191,8 +212,10 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
 
-        localMediaChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, LOCAL_MEDIA_CHANNEL)
+    private fun setupLocalMediaChannel(messenger: BinaryMessenger) {
+        localMediaChannel = MethodChannel(messenger, LOCAL_MEDIA_CHANNEL)
         localMediaChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getDeviceMedia" -> {
@@ -223,8 +246,10 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
 
-        pipChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PIP_CHANNEL)
+    private fun setupPipChannel(messenger: BinaryMessenger) {
+        pipChannel = MethodChannel(messenger, PIP_CHANNEL)
         pipChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "isPipAvailable" -> {
@@ -253,230 +278,260 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
 
-        statusChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STATUS_CHANNEL)
+    private fun setupStatusChannel(messenger: BinaryMessenger) {
+        statusChannel = MethodChannel(messenger, STATUS_CHANNEL)
         statusChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
-                "checkAccess" -> {
-                    try {
-                        result.success(checkStatusAccess())
-                    } catch (e: Exception) {
-                        result.error("STATUS_ERROR", e.message, null)
-                    }
-                }
-                "openAllFilesSettings" -> {
-                    try {
-                        if (Build.VERSION.SDK_INT >= 30) {
-                            val intent = Intent(
-                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                Uri.parse("package:$packageName")
-                            )
-                            startActivity(intent)
-                        } else {
-                            val intent = Intent(
-                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                Uri.parse("package:$packageName")
-                            )
-                            startActivity(intent)
-                        }
-                        result.success(true)
-                    } catch (e: Exception) {
-                        try {
-                            val intent = Intent(
-                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                Uri.parse("package:$packageName")
-                            )
-                            startActivity(intent)
-                            result.success(true)
-                        } catch (e2: Exception) {
-                            result.success(false)
-                        }
-                    }
-                }
-                "saveToGallery" -> {
-                    val args = call.arguments as? Map<*, *>
-                    val path = args?.get("path") as? String
-                    val name = args?.get("name") as? String
-                    val mime = args?.get("mime") as? String ?: "*/*"
-                    if (path == null || name == null) {
-                        result.error("INVALID_ARGS", "path and name required", null)
-                    } else {
-                        try {
-                            result.success(saveToGallery(path, name, mime))
-                        } catch (e: Exception) {
-                            android.util.Log.w("VibeGrab", "saveToGallery failed: ${e.message}")
-                            result.success(false)
-                        }
-                    }
-                }
+                "checkAccess" -> handleCheckAccess(result)
+                "openAllFilesSettings" -> handleOpenAllFilesSettings(result)
+                "saveToGallery" -> handleSaveToGallery(call, result)
                 // Shares a file (WhatsApp statuses) through the system sheet.
-                "shareFile" -> {
-                    val args = call.arguments as? Map<*, *>
-                    val path = args?.get("path") as? String
-                    val name = args?.get("name") as? String
-                    val mime = args?.get("mime") as? String ?: "*/*"
-                    if (path == null || name == null) {
-                        result.error("INVALID_ARGS", "path and name required", null)
-                    } else {
-                        try {
-                            val uri = androidx.core.content.FileProvider.getUriForFile(
-                                this, "$packageName.fileprovider", File(path)
-                            )
-                            val send = Intent(Intent.ACTION_SEND).apply {
-                                type = mime
-                                putExtra(Intent.EXTRA_STREAM, uri)
-                                putExtra(Intent.EXTRA_SUBJECT, name)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            startActivity(Intent.createChooser(send, name))
-                            result.success(true)
-                        } catch (e: Exception) {
-                            android.util.Log.w("VibeGrab", "shareFile failed: ${e.message}")
-                            result.success(false)
-                        }
-                    }
-                }
+                "shareFile" -> handleShareFile(call, result)
                 else -> result.notImplemented()
             }
         }
+    }
 
-        appChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APP_CHANNEL)
+    private fun handleCheckAccess(result: MethodChannel.Result) {
+        try {
+            result.success(checkStatusAccess())
+        } catch (e: Exception) {
+            result.error("STATUS_ERROR", e.message, null)
+        }
+    }
+
+    private fun handleOpenAllFilesSettings(result: MethodChannel.Result) {
+        try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+            } else {
+                val intent = Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+            }
+            result.success(true)
+        } catch (e: Exception) {
+            try {
+                val intent = Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+                result.success(true)
+            } catch (e2: Exception) {
+                result.success(false)
+            }
+        }
+    }
+
+    private fun handleSaveToGallery(call: MethodCall, result: MethodChannel.Result) {
+        val args = call.arguments as? Map<*, *>
+        val path = args?.get("path") as? String
+        val name = args?.get("name") as? String
+        val mime = args?.get("mime") as? String ?: "*/*"
+        if (path == null || name == null) {
+            result.error("INVALID_ARGS", "path and name required", null)
+        } else {
+            try {
+                result.success(saveToGallery(path, name, mime))
+            } catch (e: Exception) {
+                android.util.Log.w("VibeGrab", "saveToGallery failed: ${e.message}")
+                result.success(false)
+            }
+        }
+    }
+
+    private fun handleShareFile(call: MethodCall, result: MethodChannel.Result) {
+        val args = call.arguments as? Map<*, *>
+        val path = args?.get("path") as? String
+        val name = args?.get("name") as? String
+        val mime = args?.get("mime") as? String ?: "*/*"
+        if (path == null || name == null) {
+            result.error("INVALID_ARGS", "path and name required", null)
+        } else {
+            try {
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, "$packageName.fileprovider", File(path)
+                )
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = mime
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, name)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(send, name))
+                result.success(true)
+            } catch (e: Exception) {
+                android.util.Log.w("VibeGrab", "shareFile failed: ${e.message}")
+                result.success(false)
+            }
+        }
+    }
+
+    private fun setupAppChannel(messenger: BinaryMessenger) {
+        appChannel = MethodChannel(messenger, APP_CHANNEL)
         appChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
-                "getVersion" -> {
-                    try {
-                        val pInfo = packageManager.getPackageInfo(packageName, 0)
-                        val build = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            pInfo.longVersionCode.toInt()
-                        } else {
-                            @Suppress("DEPRECATION")
-                            pInfo.versionCode
-                        }
-                        result.success(mapOf(
-                            "version" to (pInfo.versionName ?: "0"),
-                            "build" to build
-                        ))
-                    } catch (e: Exception) {
-                        result.error("VERSION_ERROR", e.message, null)
-                    }
-                }
-                "installApk" -> {
-                    val path = call.argument<String>("path")
-                    val file = if (path != null) File(path) else null
-                    if (file == null || !file.exists()) {
-                        result.error("ENOENT", "APK file not found", null)
-                    } else {
-                        try {
-                            val uri = androidx.core.content.FileProvider.getUriForFile(
-                                this, "$packageName.fileprovider", file
-                            )
-                            val intent = Intent(Intent.ACTION_VIEW).apply {
-                                setDataAndType(uri, "application/vnd.android.package-archive")
-                                addFlags(
-                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                                        Intent.FLAG_ACTIVITY_NEW_TASK
-                                )
-                            }
-                            startActivity(intent)
-                            result.success(true)
-                        } catch (e: Exception) {
-                            result.error("INSTALL_ERROR", e.message, null)
-                        }
-                    }
-                }
-                "closeActivity" -> {
-                    runOnUiThread {
-                        finish()
-                        result.success(true)
-                    }
-                }
+                "getVersion" -> handleGetVersion(result)
+                "installApk" -> handleInstallApk(call, result)
+                "closeActivity" -> handleCloseActivity(result)
                 // Opens a downloaded file with the system viewer.
-                "openFile" -> {
-                    val path = call.argument<String>("path")
-                    val mime = call.argument<String>("mime") ?: "*/*"
-                    val file = if (path != null) File(path) else null
-                    if (file == null || !file.exists()) {
-                        result.error("ENOENT", "File not found", null)
-                    } else {
-                        try {
-                            val uri = androidx.core.content.FileProvider.getUriForFile(
-                                this, "$packageName.fileprovider", file
-                            )
-                            val intent = Intent(Intent.ACTION_VIEW).apply {
-                                setDataAndType(uri, mime)
-                                addFlags(
-                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                                        Intent.FLAG_ACTIVITY_NEW_TASK
-                                )
-                            }
-                            startActivity(intent)
-                            result.success(true)
-                        } catch (e: Exception) {
-                            android.util.Log.w("VibeGrab", "openFile failed: ${e.message}")
-                            result.success(false)
-                        }
-                    }
-                }
-                "backgroundOverlay" -> {
-                    runOnUiThread {
-                        try {
-                            window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                            window.setBackgroundDrawableResource(android.R.color.black)
-                        } catch (e: Exception) {
-                            android.util.Log.w("VibeGrab", "backgroundOverlay cleanup failed: ${e.message}")
-                        }
-                        moveTaskToBack(true)
-                        result.success(true)
-                    }
-                }
-                "scanMedia" -> {
-                    val paths = call.argument<List<String>>("paths")
-                    try {
-                        if (paths != null && paths.isNotEmpty()) {
-                            android.media.MediaScannerConnection.scanFile(
-                                this,
-                                paths.toTypedArray(),
-                                paths.map { p ->
-                                    android.webkit.MimeTypeMap.getSingleton()
-                                        .getMimeTypeFromExtension(p.substringAfterLast('.', ""))
-                                        ?: "*/*"
-                                }.toTypedArray(),
-                                null
-                            )
-                        }
-                        result.success(true)
-                    } catch (e: Exception) {
-                        android.util.Log.w("VibeGrab", "scanMedia failed: ${e.message}")
-                        result.success(false)
-                    }
-                }
+                "openFile" -> handleOpenFile(call, result)
+                "backgroundOverlay" -> handleBackgroundOverlay(result)
+                "scanMedia" -> handleScanMedia(call, result)
                 // Screen brightness for the video player (window attribute).
-                "setBrightness" -> {
-                    try {
-                        val v = (call.argument<Number>("value")?.toFloat()) ?: -1f
-                        runOnUiThread {
-                            val lp = window.attributes
-                            lp.screenBrightness = v.coerceIn(-1f, 1f)
-                            window.attributes = lp
-                        }
-                        result.success(true)
-                    } catch (e: Exception) {
-                        result.success(false)
-                    }
-                }
-                "getBrightness" -> {
-                    try {
-                        result.success(window.attributes.screenBrightness)
-                    } catch (e: Exception) {
-                        result.success(-1.0)
-                    }
-                }
+                "setBrightness" -> handleSetBrightness(call, result)
+                "getBrightness" -> handleGetBrightness(result)
                 else -> result.notImplemented()
             }
         }
+    }
 
+    private fun handleGetVersion(result: MethodChannel.Result) {
+        try {
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            val build = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pInfo.longVersionCode.toInt()
+            } else {
+                @Suppress("DEPRECATION")
+                pInfo.versionCode
+            }
+            result.success(mapOf(
+                "version" to (pInfo.versionName ?: "0"),
+                "build" to build
+            ))
+        } catch (e: Exception) {
+            result.error("VERSION_ERROR", e.message, null)
+        }
+    }
+
+    private fun handleInstallApk(call: MethodCall, result: MethodChannel.Result) {
+        val path = call.argument<String>("path")
+        val file = if (path != null) File(path) else null
+        if (file == null || !file.exists()) {
+            result.error("ENOENT", "APK file not found", null)
+        } else {
+            try {
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, "$packageName.fileprovider", file
+                )
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_ACTIVITY_NEW_TASK
+                    )
+                }
+                startActivity(intent)
+                result.success(true)
+            } catch (e: Exception) {
+                result.error("INSTALL_ERROR", e.message, null)
+            }
+        }
+    }
+
+    private fun handleCloseActivity(result: MethodChannel.Result) {
+        runOnUiThread {
+            finish()
+            result.success(true)
+        }
+    }
+
+    private fun handleOpenFile(call: MethodCall, result: MethodChannel.Result) {
+        val path = call.argument<String>("path")
+        val mime = call.argument<String>("mime") ?: "*/*"
+        val file = if (path != null) File(path) else null
+        if (file == null || !file.exists()) {
+            result.error("ENOENT", "File not found", null)
+        } else {
+            try {
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, "$packageName.fileprovider", file
+                )
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, mime)
+                    addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_ACTIVITY_NEW_TASK
+                    )
+                }
+                startActivity(intent)
+                result.success(true)
+            } catch (e: Exception) {
+                android.util.Log.w("VibeGrab", "openFile failed: ${e.message}")
+                result.success(false)
+            }
+        }
+    }
+
+    private fun handleBackgroundOverlay(result: MethodChannel.Result) {
+        runOnUiThread {
+            try {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                window.setBackgroundDrawableResource(android.R.color.black)
+            } catch (e: Exception) {
+                android.util.Log.w("VibeGrab", "backgroundOverlay cleanup failed: ${e.message}")
+            }
+            moveTaskToBack(true)
+            result.success(true)
+        }
+    }
+
+    private fun handleScanMedia(call: MethodCall, result: MethodChannel.Result) {
+        val paths = call.argument<List<String>>("paths")
+        try {
+            if (paths != null && paths.isNotEmpty()) {
+                android.media.MediaScannerConnection.scanFile(
+                    this,
+                    paths.toTypedArray(),
+                    paths.map { p ->
+                        android.webkit.MimeTypeMap.getSingleton()
+                            .getMimeTypeFromExtension(p.substringAfterLast('.', ""))
+                            ?: "*/*"
+                    }.toTypedArray(),
+                    null
+                )
+            }
+            result.success(true)
+        } catch (e: Exception) {
+            android.util.Log.w("VibeGrab", "scanMedia failed: ${e.message}")
+            result.success(false)
+        }
+    }
+
+    private fun handleSetBrightness(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val v = (call.argument<Number>("value")?.toFloat()) ?: -1f
+            runOnUiThread {
+                val lp = window.attributes
+                lp.screenBrightness = v.coerceIn(-1f, 1f)
+                window.attributes = lp
+            }
+            result.success(true)
+        } catch (e: Exception) {
+            result.success(false)
+        }
+    }
+
+    private fun handleGetBrightness(result: MethodChannel.Result) {
+        try {
+            result.success(window.attributes.screenBrightness)
+        } catch (e: Exception) {
+            result.success(-1.0)
+        }
+    }
+
+    private fun setupEqChannel(messenger: BinaryMessenger) {
         // VibeGrab: hardware equalizer (DSP) bound to the audio session.
-        val eqChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.vibegrab/equalizer")
+        val eqChannel = MethodChannel(messenger, "com.example.vibegrab/equalizer")
         eqChannel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "init" -> {
@@ -511,8 +566,10 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
 
-        val mediaDiagChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "vibegrab/media_diag")
+    private fun setupMediaDiagChannel(messenger: BinaryMessenger) {
+        val mediaDiagChannel = MethodChannel(messenger, "vibegrab/media_diag")
         mediaDiagChannel.setMethodCallHandler { call, result ->
             when (call.method) {
                 // True only when the user can actually SEE notifications:
@@ -551,8 +608,6 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
-
-        handleIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -577,48 +632,51 @@ class MainActivity : AudioServiceActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == PICK_DIR_REQUEST) {
-            if (resultCode == RESULT_OK && data?.data != null) {
-                val treeUri = data.data!!
-                try {
-                    contentResolver.takePersistableUriPermission(
-                        treeUri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
-                } catch (e: Exception) {
-                    android.util.Log.w("VibeGrab", "takePersistableUriPermission failed: ${e.message}")
-                }
-                val docFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(this, treeUri)
-                val displayName = docFile?.name ?: "Download"
-
-                val directPath = "/storage/emulated/0/$displayName"
-                val directFile = java.io.File(directPath)
-                val canWriteDirect = try {
-                    directFile.exists() && directFile.canWrite()
-                } catch (e: Exception) {
-                    false
-                }
-
-                if (canWriteDirect) {
-                    pendingPickResult?.success(mapOf(
-                        "uri" to treeUri.toString(),
-                        "path" to directPath,
-                        "name" to displayName
-                    ))
-                } else {
-                    pendingPickResult?.success(mapOf(
-                        "uri" to treeUri.toString(),
-                        "path" to "",
-                        "name" to displayName
-                    ))
-                }
-            } else {
-                pendingPickResult?.success(null)
-            }
-            pendingPickResult = null
+            handlePickDirResult(resultCode, data)
         }
     }
 
+    private fun handlePickDirResult(resultCode: Int, data: Intent?) {
+        if (resultCode == RESULT_OK && data?.data != null) {
+            val treeUri = data.data!!
+            try {
+                contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                android.util.Log.w("VibeGrab", "takePersistableUriPermission failed: ${e.message}")
+            }
+            val docFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(this, treeUri)
+            val displayName = docFile?.name ?: "Download"
+            pendingPickResult?.success(buildPickDirResult(treeUri, displayName))
+        } else {
+            pendingPickResult?.success(null)
+        }
+        pendingPickResult = null
+    }
+
+    private fun buildPickDirResult(treeUri: Uri, displayName: String): Map<String, Any?> {
+        val directPath = "/storage/emulated/0/$displayName"
+        val directFile = java.io.File(directPath)
+        val canWriteDirect = try {
+            directFile.exists() && directFile.canWrite()
+        } catch (e: Exception) {
+            false
+        }
+        return mapOf(
+            "uri" to treeUri.toString(),
+            "path" to if (canWriteDirect) directPath else "",
+            "name" to displayName
+        )
+    }
+
     private fun handleIntent(intent: Intent?) {
+        handleSharedUrlIntent(intent)
+        handleNotificationActionIntent(intent)
+    }
+
+    private fun handleSharedUrlIntent(intent: Intent?) {
         if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
             val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
             if (sharedText != null) {
@@ -634,7 +692,9 @@ class MainActivity : AudioServiceActivity() {
                 }
             }
         }
+    }
 
+    private fun handleNotificationActionIntent(intent: Intent?) {
         if (intent?.action == "NOTIFICATION_ACTION") {
             val action = intent.getStringExtra("action")
             val taskId = intent.getStringExtra("taskId")
@@ -688,108 +748,137 @@ class MainActivity : AudioServiceActivity() {
 
         val cursor = contentResolver.query(contentUri, fullProjection, null, null, sortOrder)
 
-        cursor?.use {
-            val idColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-            val displayNameColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-            val titleColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.TITLE)
-            val dataColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
-            val sizeColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
-            val dateAddedColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
-            val durationColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION)
-
-            val albumColumn = if (mediaType == "audio") {
-                try { it.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM) } catch (e: Exception) { -1 }
-            } else { -1 }
-
-            val artistColumn = if (mediaType == "audio") {
-                try { it.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST) } catch (e: Exception) { -1 }
-            } else { -1 }
-
-            while (it.moveToNext()) {
-                val id = it.getLong(idColumn)
-                val displayName = it.getString(displayNameColumn) ?: ""
-                val title = it.getString(titleColumn) ?: ""
-                val data = it.getString(dataColumn) ?: ""
-                val size = if (sizeColumn >= 0) it.getLong(sizeColumn) else 0L
-                val dateAdded = if (dateAddedColumn >= 0) it.getLong(dateAddedColumn) else 0L
-                val duration = if (durationColumn >= 0) it.getLong(durationColumn) else 0L
-
-                val album = if (albumColumn >= 0) it.getString(albumColumn) ?: "" else ""
-                val artist = if (artistColumn >= 0) it.getString(artistColumn) ?: "" else ""
-
-                val uriString = when (mediaType) {
-                    "video" -> "content://media/external/video/media/$id"
-                    "audio" -> "content://media/external/audio/media/$id"
-                    else -> ""
-                }
-
-                val extension = if (displayName.contains(".")) {
-                    displayName.substringAfterLast(".")
-                } else {
-                    ""
-                }
-
-                val createdAt = if (dateAdded > 0) {
-                    val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
-                    sdf.timeZone = TimeZone.getTimeZone("UTC")
-                    sdf.format(Date(dateAdded * 1000))
-                } else {
-                    ""
-                }
-
-                val fileSizeFormatted = formatFileSize(size)
-
-                var thumbnailUrl: String? = null
-                try {
-                    val mediaUri = android.net.Uri.parse(uriString)
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                        val thumbBitmap = contentResolver.loadThumbnail(mediaUri, android.util.Size(320, 320), null)
-                        val thumbFile = java.io.File(cacheDir, "thumb_${mediaType}_${id}.jpg")
-                        thumbFile.outputStream().use { out ->
-                            thumbBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
-                        }
-                        thumbnailUrl = thumbFile.absolutePath
-                        thumbBitmap.recycle()
-                    } else {
-                        @Suppress("DEPRECATION")
-                        val thumbBitmap = MediaStore.Images.Thumbnails.getThumbnail(
-                            contentResolver, id,
-                            MediaStore.Images.Thumbnails.MINI_KIND, null
-                        )
-                        if (thumbBitmap != null) {
-                            val thumbFile = java.io.File(cacheDir, "thumb_${mediaType}_${id}.jpg")
-                            thumbFile.outputStream().use { out ->
-                                thumbBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
-                            }
-                            thumbnailUrl = thumbFile.absolutePath
-                            thumbBitmap.recycle()
-                        }
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.d("VibeGrab", "Thumbnail extraction failed for $displayName: ${e.message}")
-                }
-
-                val mediaItem = mapOf(
-                    "filename" to displayName,
-                    "title" to title,
-                    "filePath" to data,
-                    "fileSize" to size,
-                    "fileSizeFormatted" to fileSizeFormatted,
-                    "fileType" to mediaType,
-                    "extension" to extension,
-                    "createdAt" to createdAt,
-                    "source" to "device",
-                    "sourceType" to "local",
-                    "contentUri" to uriString,
-                    "album" to album,
-                    "artist" to artist,
-                    "duration" to duration,
-                    "thumbnailPath" to thumbnailUrl
-                )
-
-                mediaList.add(mediaItem)
+        cursor?.use { c ->
+            val columns = mediaRowColumns(c, mediaType)
+            while (c.moveToNext()) {
+                mediaList.add(readMediaRow(c, mediaType, columns))
             }
         }
+    }
+
+    private fun mediaRowColumns(cursor: android.database.Cursor, mediaType: String): MediaRowColumns =
+        MediaRowColumns().apply {
+            id = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            displayName = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+            title = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.TITLE)
+            data = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
+            size = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+            dateAdded = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
+            duration = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION)
+            album = optionalColumnIndex(cursor, mediaType == "audio", MediaStore.Audio.Media.ALBUM)
+            artist = optionalColumnIndex(cursor, mediaType == "audio", MediaStore.Audio.Media.ARTIST)
+        }
+
+    private fun optionalColumnIndex(
+        cursor: android.database.Cursor,
+        enabled: Boolean,
+        columnName: String
+    ): Int = if (enabled) {
+        try {
+            cursor.getColumnIndexOrThrow(columnName)
+        } catch (e: Exception) {
+            -1
+        }
+    } else {
+        -1
+    }
+
+    private fun readMediaRow(
+        cursor: android.database.Cursor,
+        mediaType: String,
+        columns: MediaRowColumns
+    ): Map<String, Any?> {
+        val id = cursor.getLong(columns.id)
+        val displayName = cursor.getString(columns.displayName) ?: ""
+        val title = cursor.getString(columns.title) ?: ""
+        val data = cursor.getString(columns.data) ?: ""
+        val size = if (columns.size >= 0) cursor.getLong(columns.size) else 0L
+        val dateAdded = if (columns.dateAdded >= 0) cursor.getLong(columns.dateAdded) else 0L
+        val duration = if (columns.duration >= 0) cursor.getLong(columns.duration) else 0L
+
+        val album = if (columns.album >= 0) cursor.getString(columns.album) ?: "" else ""
+        val artist = if (columns.artist >= 0) cursor.getString(columns.artist) ?: "" else ""
+
+        val uriString = when (mediaType) {
+            "video" -> "content://media/external/video/media/$id"
+            "audio" -> "content://media/external/audio/media/$id"
+            else -> ""
+        }
+
+        val extension = if (displayName.contains(".")) {
+            displayName.substringAfterLast(".")
+        } else {
+            ""
+        }
+
+        val createdAt = if (dateAdded > 0) {
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+            sdf.timeZone = TimeZone.getTimeZone("UTC")
+            sdf.format(Date(dateAdded * 1000))
+        } else {
+            ""
+        }
+
+        return mapOf(
+            "filename" to displayName,
+            "title" to title,
+            "filePath" to data,
+            "fileSize" to size,
+            "fileSizeFormatted" to formatFileSize(size),
+            "fileType" to mediaType,
+            "extension" to extension,
+            "createdAt" to createdAt,
+            "source" to "device",
+            "sourceType" to "local",
+            "contentUri" to uriString,
+            "album" to album,
+            "artist" to artist,
+            "duration" to duration,
+            "thumbnailPath" to extractThumbnail(uriString, mediaType, id, displayName)
+        )
+    }
+
+    private fun extractThumbnail(uriString: String, mediaType: String, id: Long, displayName: String): String? {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val thumbBitmap = contentResolver.loadThumbnail(
+                    android.net.Uri.parse(uriString), android.util.Size(320, 320), null
+                )
+                saveThumbnail(thumbBitmap, mediaType, id)
+            } else {
+                @Suppress("DEPRECATION")
+                val thumbBitmap = MediaStore.Images.Thumbnails.getThumbnail(
+                    contentResolver, id,
+                    MediaStore.Images.Thumbnails.MINI_KIND, null
+                )
+                if (thumbBitmap != null) saveThumbnail(thumbBitmap, mediaType, id) else null
+            }
+        } catch (e: Exception) {
+            android.util.Log.d("VibeGrab", "Thumbnail extraction failed for $displayName: ${e.message}")
+            null
+        }
+    }
+
+    private fun saveThumbnail(thumbBitmap: android.graphics.Bitmap, mediaType: String, id: Long): String {
+        val thumbFile = java.io.File(cacheDir, "thumb_${mediaType}_${id}.jpg")
+        thumbFile.outputStream().use { out ->
+            thumbBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+        }
+        val path = thumbFile.absolutePath
+        thumbBitmap.recycle()
+        return path
+    }
+
+    private class MediaRowColumns {
+        var id = -1
+        var displayName = -1
+        var title = -1
+        var data = -1
+        var size = -1
+        var dateAdded = -1
+        var duration = -1
+        var album = -1
+        var artist = -1
     }
 
     private fun hasMediaReadPermission(): Boolean {

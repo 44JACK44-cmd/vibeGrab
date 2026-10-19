@@ -143,7 +143,7 @@ class _FormatTile extends StatelessWidget {
                         const SizedBox(height: 2),
                         Text(
                           loc.noAudio,
-                          style: TextStyle(
+                          style: const TextStyle(
                             fontSize: 11,
                             color: AppColors.warning,
                             fontWeight: FontWeight.w500,
@@ -187,11 +187,11 @@ class _FormatTile extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.download_rounded, color: Colors.white, size: 16),
+                      const Icon(Icons.download_rounded, color: Colors.white, size: 16),
                       const SizedBox(width: 6),
                       Text(
                         actionLabel,
-                        style: TextStyle(
+                        style: const TextStyle(
                           color: Colors.white,
                           fontSize: 12,
                           fontWeight: FontWeight.w600,

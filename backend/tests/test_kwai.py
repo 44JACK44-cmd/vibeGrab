@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services.extractor_service import (
@@ -89,11 +91,10 @@ def test_parse_kwai_page_fixture():
 
 
 def test_parse_kwai_page_no_video_raises():
-    try:
-        parse_kwai_page("<html><body>nothing</body></html>", "https://www.kwai.com/x/video/1")
-        assert False, "should raise"
-    except Exception as e:
-        assert "No video URL" in str(e)
+    with pytest.raises(Exception, match="No video URL"):
+        parse_kwai_page(
+            "<html><body>nothing</body></html>", "https://www.kwai.com/x/video/1"
+        )
 
 
 def test_parse_kwai_fallback_title():

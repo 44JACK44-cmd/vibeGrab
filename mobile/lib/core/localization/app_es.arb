@@ -97,6 +97,15 @@
   "audioDownloaded": "Audio descargado",
   "errorDownloadingAudio": "Error al descargar el audio",
   "downloadsTitle": "Descargas",
+  "viewDownloads": "Ver descargas",
+  "downloadQueueMore": "+{count} más",
+  "@downloadQueueMore": {
+    "placeholders": {
+      "count": {
+        "type": "String"
+      }
+    }
+  },
   "clearCompleted": "Limpiar completados",
   "noDownloads": "No hay descargas todavía",
   "noDownloadsHint": "Analiza una URL y toca un formato para descargar",
@@ -196,7 +205,7 @@
   "preferBestQualityHint": "Seleccionar automáticamente el mejor formato",
   "saveMetadata": "Guardar metadatos",
   "saveMetadataHint": "Conservar título, miniatura y fuente",
-  "appVersion": "v1.1.35",
+  "appVersion": "v1.1.36",
   "mediaSessionLabel": "Sesión multimedia",
   "backendUrl": "URL del backend",
   "backendUrlHint": "URL del servidor backend de VibeGrab. Usa http://10.0.2.2:8000 para el emulador, o la IP local de tu PC para un dispositivo real.",
@@ -281,7 +290,15 @@
   "shareVideo": "Video",
   "shareAudio": "Música",
   "shareImage": "Imagen",
-  "imageCover": "Miniatura (JPG)",
+  "downloadImageAction": "Guardar imagen",
+  "imageCover": "Miniatura ({ext})",
+  "@imageCover": {
+    "placeholders": {
+      "ext": {
+        "type": "String"
+      }
+    }
+  },
   "downloadFormats": "Formatos de descarga",
   "shareDownload": "Descargar",
   "shareCancel": "Cancelar",

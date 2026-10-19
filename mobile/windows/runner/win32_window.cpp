@@ -27,7 +27,7 @@ constexpr const wchar_t kGetPreferredBrightnessRegKey[] =
 constexpr const wchar_t kGetPreferredBrightnessRegValue[] = L"AppsUseLightTheme";
 
 // The number of Win32Window objects that currently exist.
-static int g_active_window_count = 0;
+int g_active_window_count = 0;  // NOSONAR: must stay mutable to track active windows.
 
 using EnableNonClientDpiScaling = BOOL __stdcall(HWND hwnd);
 
@@ -44,10 +44,9 @@ void EnableFullDpiSupportIfAvailable(HWND hwnd) {
   if (!user32_module) {
     return;
   }
-  auto enable_non_client_dpi_scaling =
-      reinterpret_cast<EnableNonClientDpiScaling*>(
-          GetProcAddress(user32_module, "EnableNonClientDpiScaling"));
-  if (enable_non_client_dpi_scaling != nullptr) {
+  if (auto enable_non_client_dpi_scaling =
+          reinterpret_cast<EnableNonClientDpiScaling*>(
+              GetProcAddress(user32_module, "EnableNonClientDpiScaling"))) {
     enable_non_client_dpi_scaling(hwnd);
   }
   FreeLibrary(user32_module);
@@ -63,9 +62,10 @@ class WindowClassRegistrar {
   // Returns the singleton registrar instance.
   static WindowClassRegistrar* GetInstance() {
     if (!instance_) {
-      instance_ = new WindowClassRegistrar();
+      instance_ = std::unique_ptr<WindowClassRegistrar>(
+          new WindowClassRegistrar());
     }
-    return instance_;
+    return instance_.get();
   }
 
   // Returns the name of the window class, registering the class if it hasn't
@@ -79,12 +79,12 @@ class WindowClassRegistrar {
  private:
   WindowClassRegistrar() = default;
 
-  static WindowClassRegistrar* instance_;
+  static std::unique_ptr<WindowClassRegistrar> instance_;
 
   bool class_registered_ = false;
 };
 
-WindowClassRegistrar* WindowClassRegistrar::instance_ = nullptr;
+std::unique_ptr<WindowClassRegistrar> WindowClassRegistrar::instance_;
 
 const wchar_t* WindowClassRegistrar::GetWindowClass() {
   if (!class_registered_) {
@@ -97,7 +97,7 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
     window_class.hInstance = GetModuleHandle(nullptr);
     window_class.hIcon =
         LoadIcon(window_class.hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
-    window_class.hbrBackground = 0;
+    window_class.hbrBackground = nullptr;
     window_class.lpszMenuName = nullptr;
     window_class.lpfnWndProc = Win32Window::WndProc;
     RegisterClass(&window_class);
@@ -117,7 +117,7 @@ Win32Window::Win32Window() {
 
 Win32Window::~Win32Window() {
   --g_active_window_count;
-  Destroy();
+  DestroyInternal();
 }
 
 bool Win32Window::Create(const std::wstring& title,
@@ -223,7 +223,10 @@ Win32Window::MessageHandler(HWND hwnd,
 
 void Win32Window::Destroy() {
   OnDestroy();
+  DestroyInternal();
+}
 
+void Win32Window::DestroyInternal() {
   if (window_handle_) {
     DestroyWindow(window_handle_);
     window_handle_ = nullptr;

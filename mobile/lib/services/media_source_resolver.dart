@@ -45,6 +45,10 @@ class MediaSourceResolver {
   /// videoId -> device manifest (qualities + audio fallback).
   final Map<String, StreamManifest> _manifestCache = {};
 
+  /// videoId -> manifest fetch already in flight (concurrent resolves for
+  /// the same video share one request instead of stacking up).
+  final Map<String, Future<StreamManifest?>> _manifestPending = {};
+
   static const _urlCacheTtl = Duration(hours: 4);
 
   /// Safety margin before the exact URL expiry.
@@ -83,16 +87,18 @@ class MediaSourceResolver {
     String videoId, {
     required void Function(String stageKey) onStage,
   }) async {
-    // Server payload AND device manifest concurrently: on slow networks
-    // each leg can take 10-25s, and running them back-to-back doubles the
-    // wait. Attempts stay sequential (ranked), resolution goes parallel.
+    // The server payload is the ONLY thing playback needs. The device
+    // manifest (qualities, the device-muxed candidate and the audio
+    // fallback) used to be awaited right here too: a second network leg of
+    // up to 25s in front of the first frame of every single video. It is
+    // now requested in the background and only read from cache, so a cold
+    // resolve plays the server candidates immediately and the quality list
+    // / audio fallback pick the manifest up as soon as it lands.
     onStage('playStageServer');
     onStage('playStageDirect');
-    final payloadFuture = _payloadFor(videoId);
-    final manifestFuture = _manifestFor(videoId);
-    final results = await Future.wait([payloadFuture, manifestFuture]);
-    final payload = results[0] as StreamUrlsPayload?;
-    final manifest = results[1] as StreamManifest?;
+    final cachedManifest = _manifestCache[videoId];
+    final manifestAsync = _manifestFor(videoId);
+    final payload = await _payloadFor(videoId);
     final fetchError = payload == null ? 'sin url' : null;
 
     final candidates = <MediaSource>[];
@@ -128,15 +134,15 @@ class MediaSourceResolver {
     ));
 
     List<MediaQuality> qualities = const [];
-    if (manifest != null) {
-      final heights = manifest.muxed
+    if (cachedManifest != null) {
+      final heights = cachedManifest.muxed
           .map((s) => s.videoResolution.height)
           .where((h) => h > 0)
           .toSet()
           .toList()
         ..sort();
       qualities = heights.map((h) => MediaQuality(h)).toList();
-      final best = _bestMuxed(manifest);
+      final best = _bestMuxed(cachedManifest);
       if (best != null) {
         candidates.add(MediaSource(
           kind: MediaSourceKind.deviceMuxed,
@@ -150,7 +156,8 @@ class MediaSourceResolver {
     return MediaResolution(
       video: candidates,
       audioUri: audioUri,
-      manifest: manifest,
+      manifest: cachedManifest,
+      manifestAsync: manifestAsync,
       fetchError: fetchError,
       qualities: qualities,
     );
@@ -176,17 +183,28 @@ class MediaSourceResolver {
     return payload;
   }
 
-  Future<StreamManifest?> _manifestFor(String videoId) async {
+  /// Fetches the device manifest, sharing a single in-flight request
+  /// between concurrent resolves of the same video. Always completes (the
+  /// error path returns null) so callers can await it as a last resort.
+  Future<StreamManifest?> _manifestFor(String videoId) {
     final hit = _manifestCache[videoId];
-    if (hit != null) return hit;
-    try {
-      final manifest = await fetchManifest(videoId);
-      if (manifest != null) _manifestCache[videoId] = manifest;
-      return manifest;
-    } catch (e) {
-      debugPrint('[Resolver] manifest failed: $e');
-      return null;
-    }
+    if (hit != null) return Future.value(hit);
+    final pending = _manifestPending[videoId];
+    if (pending != null) return pending;
+    final future = () async {
+      try {
+        final manifest = await fetchManifest(videoId);
+        if (manifest != null) _manifestCache[videoId] = manifest;
+        return manifest;
+      } catch (e) {
+        debugPrint('[Resolver] manifest failed: $e');
+        return null;
+      } finally {
+        _manifestPending.remove(videoId);
+      }
+    }();
+    _manifestPending[videoId] = future;
+    return future;
   }
 
   /// Muxed URL for an exact height (quality switch), closest-lower fallback.

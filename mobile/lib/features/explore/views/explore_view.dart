@@ -1051,8 +1051,8 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
     return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       itemCount: 4,
-      itemBuilder: (_, __) => Padding(
-        padding: const EdgeInsets.only(bottom: 12),
+      itemBuilder: (_, __) => const Padding(
+        padding: EdgeInsets.only(bottom: 12),
         child: Card(
           clipBehavior: Clip.antiAlias,
           child: Column(
@@ -1060,12 +1060,12 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
             children: [
               ShimmerLoading(width: double.infinity, height: 200, borderRadius: 0),
               Padding(
-                padding: const EdgeInsets.all(12),
+                padding: EdgeInsets.all(12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     ShimmerLoading(width: double.infinity, height: 16, borderRadius: 4),
-                    const SizedBox(height: 8),
+                    SizedBox(height: 8),
                     ShimmerLoading(width: 180, height: 12, borderRadius: 4),
                   ],
                 ),
@@ -1195,10 +1195,12 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
   Future<void> _pasteLinkSheet() async {
     final loc = AppLocalizations.of(context);
     final cs = Theme.of(context).colorScheme;
+    final messenger = ScaffoldMessenger.of(context);
+    final controller = context.read<ExploreController>();
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim() ?? '';
     if (text.isEmpty || !MediaProviderResolver.looksLikeLink(text)) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         SnackBar(
           content: Text(loc.shareInvalidUrl),
           behavior: SnackBarBehavior.floating,
@@ -1208,7 +1210,6 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
       return;
     }
 
-    final controller = context.read<ExploreController>();
     final future = controller.resolveLink(text);
     if (!mounted) return;
     await showModalBottomSheet<void>(

@@ -55,10 +55,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   MediaState _state = MediaState();
   MediaState get state => _state;
   bool get hasMedia => _state.hasMedia;
+  @override
   bool get isPlaying => _state.isPlaying;
   bool get isVideo => _state.mediaType == MediaType.video;
   bool get hasVideoController => _videoController != null;
   VideoPlayerController? get videoController => _videoController;
+  @override
   AudioPlayer get audioPlayer => _player;
   Duration get position => _state.position;
   Duration get duration => _state.duration;
@@ -113,6 +115,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _pausedByInterruption = false;
     _audioSession?.setActive(false).catchError((e) {
       debugPrint('[MediaEngine] AudioSession deactivate error: $e');
+      return false;
     });
   }
 
@@ -241,25 +244,43 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   Future<void> _loadPosition(String mediaId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final ms = prefs.getInt('${_prefix}${mediaId}_pos') ?? 0;
+      final ms = prefs.getInt('$_prefix${mediaId}_pos') ?? 0;
       _state = _state.copyWith(position: Duration(milliseconds: ms));
     } catch (_) {}
   }
+
+  /// Resume-position writes are throttled. The player emits position at
+  /// ~10Hz and every tick used to be a SharedPreferences platform-channel
+  /// round trip (a real write to disk) for a value that only matters every
+  /// few seconds. [force] (stop / seek / handoff) always writes at once.
+  static const _positionSaveInterval = Duration(seconds: 2);
+  String? _pendingPositionId;
+  Duration _pendingPosition = Duration.zero;
+  DateTime _lastPositionSave = DateTime.fromMillisecondsSinceEpoch(0);
 
   Future<void> _savePosition(String mediaId, Duration position,
       {bool force = false}) async {
     // A player stop/reconnect emits a ~0 blip; persisting it would
     // clobber a valid resume point. Explicit seeks bypass this.
     if (!force && position < const Duration(milliseconds: 500)) return;
+    _pendingPositionId = mediaId;
+    _pendingPosition = position;
+    final now = DateTime.now();
+    if (!force && now.difference(_lastPositionSave) < _positionSaveInterval) {
+      return;
+    }
+    _lastPositionSave = now;
+    final id = _pendingPositionId!;
+    final ms = _pendingPosition.inMilliseconds;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('${_prefix}${mediaId}_pos', position.inMilliseconds);
+      await prefs.setInt('$_prefix${id}_pos', ms);
     } catch (_) {}
   }
 
   Future<void> clearResumePosition(String mediaId) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('${_prefix}${mediaId}_pos');
+    await prefs.remove('$_prefix${mediaId}_pos');
   }
 
   Uri? _resolvePlaybackUri(LibraryFile file) {
@@ -815,6 +836,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   /// Applies a repeat+shuffle combination and persists it.
+  @override
   void setPlayMode(PlayerRepeatMode mode, bool shuffle) {
     _state = _state.copyWith(repeatMode: mode, isShuffle: shuffle);
     // Engine-level shuffle owns the order; just_audio's internal shuffle
@@ -834,6 +856,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   /// The mode button cycle: normal -> all -> one -> shuffle -> normal.
+  @override
   void cyclePlayMode() {
     if (_state.repeatMode == PlayerRepeatMode.none && !_state.isShuffle) {
       setPlayMode(PlayerRepeatMode.all, false);
@@ -931,6 +954,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   /// Toggles favorite for whatever is playing. Local files use the
   /// filename flag (Library "Favoritos"); remote Explorer/YouTube items use
   /// the liked-videos store (songs + "Videos que me gustan").
+  @override
   Future<void> toggleFavoriteCurrent() async {
     final key = _favoriteKey;
     if (key == null) return;
@@ -1012,6 +1036,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   // --- Navigation ---
 
+  @override
   Future<void> skipToNext() async {
     if (_queue.isEmpty) return;
     if (_state.isShuffle) {
@@ -1030,6 +1055,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     }
   }
 
+  @override
   Future<void> skipToPrevious() async {
     if (_queue.isEmpty) return;
     if (_state.position.inSeconds > 3) {
@@ -1263,7 +1289,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       {Duration? duration}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final ms = prefs.getInt('${_prefix}${mediaId}_pos') ?? 0;
+      final ms = prefs.getInt('$_prefix${mediaId}_pos') ?? 0;
       if (ms < 10000) return Duration.zero;
       final durMs = duration?.inMilliseconds ?? 0;
       if (durMs > 0 && ms / durMs >= 0.95) return Duration.zero;
@@ -1300,22 +1326,16 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   /// Kind of the active stream (relay merge needs `?t=` reconnects to seek).
   MediaSourceKind? _activeKind;
 
+  /// Coalescing window for the position-tick notifications (the player
+  /// emits ~10/s; see the controller listener in _startNetworkVideo).
+  static const _tickNotifyInterval = Duration(milliseconds: 200);
+  DateTime _lastTickNotify = DateTime.fromMillisecondsSinceEpoch(0);
+
   /// True when the controller reports no usable timeline: 0, the ~1ms
   /// wrap of ExoPlayer's C.TIME_UNSET, or absurd values (>24h).
   static bool _durationLooksUnknown(Duration d) =>
       d < const Duration(seconds: 1) || d > const Duration(hours: 24);
 
-  /// Adaptive shortcut: carriers that block googlevideo fail the direct
-  /// attempt every time. After 2 consecutive direct failures we skip it
-  /// for 10 minutes and go straight to the server paths.
-  int _directFails = 0;
-  DateTime? _directSkipUntil;
-
-  bool get _shouldTryDirect {
-    final until = _directSkipUntil;
-    if (until != null && DateTime.now().isBefore(until)) return false;
-    return true;
-  }
   String? _watchdogMedia;
 
   void _setStage(String? key) {
@@ -1405,9 +1425,19 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final errs = <String>[];
     late final MediaResolution res;
     try {
-      res = await _resolver.resolve(videoId, onStage: _setStage);
+      res = await _resolver.resolve(
+        videoId,
+        // A stage from an abandoned chain must not re-label (or re-arm the
+        // watchdog of) the play the user is waiting on now.
+        onStage: (key) {
+          if (!stale()) _setStage(key);
+        },
+      );
     } catch (e) {
       debugPrint('[MediaEngine] Resolve failed: $e');
+      // Failing here would cancel the LIVE chain's watchdog and paint the
+      // current item with this abandoned chain's error.
+      if (stale()) return;
       _clearStage();
       _failPlayback(_short(e.toString()));
       return;
@@ -1454,11 +1484,15 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       errs.add('audio: ${_lastAudioError ?? "falló"}');
     }
 
-    if (res.manifest != null) {
+    // Last resort: the manifest is no longer on the critical path, so it
+    // may still be in flight. Only a chain that already failed every video
+    // and audio-URL candidate reaches here, so waiting costs nothing.
+    final manifest = res.manifest ?? await res.manifestAsync;
+    if (stale()) return;
+    if (manifest != null) {
       _setStage('playStageAudio');
-      if (stale()) return;
       final ok =
-          await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: res.manifest);
+          await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
       if (ok) {
         _clearStage();
         return;
@@ -1471,7 +1505,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final detail = errs.join(' · ');
     _failPlayback(detail.isEmpty
         ? 'no reproducible'
-        : '${detail.length > 280 ? '${detail.substring(0, 280)}…' : detail}');
+        : detail.length > 280 ? '${detail.substring(0, 280)}…' : detail);
   }
 
   /// Non-YouTube links (TikTok, Instagram, Facebook, ...): ask the backend
@@ -1624,6 +1658,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       Duration startAt = Duration.zero,
       Duration? expectedDuration,
       MediaSourceKind? kind}) async {
+    // A newer play already owns the engine. Tearing down here would dispose
+    // (and null) the controller the NEW chain just installed, killing a
+    // perfectly good play from a chain the user already abandoned.
+    if (playToken != null && playToken != _playToken) return false;
     await _stopCurrentSilent();
     // The relay merge streams without a declared length (unknown duration).
     // Keep the metadata (or analyze-provided) duration as the expected one
@@ -1666,7 +1704,32 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     notifyListeners();
   }
 
-  Future<StreamUrls?> _fetchStreamUrls(String videoId) async {
+  /// In-flight stream-URL requests by videoId.
+  ///
+  /// The detail view asks for the metadata that the SAME response carries
+  /// (channel avatar, comment count, description) at the very moment the
+  /// playback resolve asks for the stream URLs. Without single-flight the
+  /// app issued two parallel requests to /api/explore/stream-url for the
+  /// same video against a backend that may still be waking up (~40s).
+  final Map<String, Future<StreamUrls?>> _streamUrlFutures = {};
+
+  /// Server metadata for [videoId], sharing the single in-flight request
+  /// with the playback resolve of the same video.
+  Future<StreamUrls?> fetchMeta(String videoId) =>
+      _fetchStreamUrls(videoId);
+
+  Future<StreamUrls?> _fetchStreamUrls(String videoId) => _streamUrlFutures
+      .putIfAbsent(videoId, () => _fetchStreamUrlsOnce(videoId));
+
+  Future<StreamUrls?> _fetchStreamUrlsOnce(String videoId) async {
+    try {
+      return await _fetchStreamUrlsBody(videoId);
+    } finally {
+      _streamUrlFutures.remove(videoId);
+    }
+  }
+
+  Future<StreamUrls?> _fetchStreamUrlsBody(String videoId) async {
     _lastStreamError = null;
     // Slow networks need patience, not more routes: one generous attempt
     // plus a single backoff retry (covers a waking backend). Short
@@ -1796,6 +1859,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         await controller.seekTo(startAt);
       }
 
+      _lastTickNotify = DateTime.fromMillisecondsSinceEpoch(0);
       controller.addListener(() {
         if (!identical(_videoController, controller)) return;
         if (!controller.value.isInitialized) return;
@@ -1831,7 +1895,16 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
             !controller.value.isPlaying) {
           _completionHandled = true;
           _handlePlaybackComplete();
+          notifyListeners();
+          return;
         }
+        // Coalesce the rebuilds: the player ticks ~10/s and each tick used
+        // to rebuild every Consumer<MediaEngine> in the app (mini player,
+        // Shorts pages, detail player) for a progress bar that moves a few
+        // pixels. 200ms is several times smoother than that needs.
+        final now = DateTime.now();
+        if (now.difference(_lastTickNotify) < _tickNotifyInterval) return;
+        _lastTickNotify = now;
         notifyListeners();
       });
 
@@ -1842,6 +1915,15 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           : (posOffset > Duration.zero && !_durationLooksUnknown(rawInit)
               ? rawInit + posOffset
               : rawInit);
+      // A newer play started while we initialized: abandon instead of
+      // hijacking it. The check has to come BEFORE the state write —
+      // writing first let a stale chain paint the live item's state, hide
+      // its spinner and disarm its stall watchdog before bailing out.
+      if (playToken != null && playToken != _playToken) {
+        await controller.dispose();
+        if (identical(_videoController, controller)) _videoController = null;
+        return false;
+      }
       _state = _state.copyWith(
         status: MediaStatus.playing,
         position: posOffset > Duration.zero ? posOffset : startAt,
@@ -1853,13 +1935,6 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       );
       _syncPlaybackStateToHandler();
       notifyListeners();
-      // A newer play started while we initialized: abandon instead of
-      // hijacking it.
-      if (playToken != null && playToken != _playToken) {
-        await controller.dispose();
-        if (identical(_videoController, controller)) _videoController = null;
-        return false;
-      }
       await controller.play();
       // Keep the freshest stream URL for the background handoff and relay
       // seeks (a reconnect writes its own `?t=` variant here).
@@ -2192,82 +2267,67 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     // on relay `?t=` streams, so the offset-aware state is the truth here.
     final savedPosition = _state.position;
     final savedDuration = _state.duration;
+    final videoBefore = _videoController;
 
-    await _videoController?.dispose();
-    _videoController = null;
-    _bgAudioOffset = Duration.zero;
-
-    // 1) Local or content:// source: plain file streaming, no URL expiry.
-    final uri = _resolvePlaybackUriById(mediaId);
-    if (uri != null) {
-      final item = _createMediaItemFromState();
-      try {
-        await _player.setAudioSource(AudioSource.uri(uri, tag: item));
-        await _player.seek(savedPosition);
-        await _player.play();
-        _wireAudioSubscriptions(mediaId);
-        _state = _state.copyWith(
-          status: MediaStatus.playing,
-          position: savedPosition,
-          duration: savedDuration,
-        );
-        _isAudioBackgroundActive = true;
-        _syncPlaybackStateToHandler();
-        notifyListeners();
-        return;
-      } catch (e) {
-        debugPrint('[MediaEngine] Screen off local audio error: $e');
-      }
-    }
-
-    // 2) YouTube: audio-only variant (saves data on long videos).
-    if (_parseVideoIdFromUrl(mediaId) != null &&
-        await _startBackgroundAudioForYouTube(savedPosition)) {
+    // The handoff used to DISPOSE THE VIDEO FIRST and only then go resolve
+    // the audio source, so the sound died for the whole resolution: the
+    // YouTube path alone waits on a network manifest for up to 10s. That is
+    // the audible pause when the screen goes off or the app is minimized.
+    // The other way around: resolve and BUFFER the audio while the video
+    // keeps playing, and swap only once the next source is ready. Failing
+    // anywhere leaves the video playing instead of leaving silence behind.
+    final source = await _prepareBackgroundAudio(mediaId, savedPosition);
+    if (source == null) {
+      _bgAudioOffset = Duration.zero;
+      debugPrint('[MediaEngine] No background audio source for $mediaId');
       return;
     }
 
-    // 3) Any direct stream (external mp4, proxy, relay merge): the last live
-    // URL. Merge streams have no index, so reconnect from `?t=` instead of
-    // seeking — and tell the position listener about the offset.
-    final last = _lastDirectUrl;
-    if (last != null && last.startsWith('http')) {
-      var streamUri = Uri.parse(last);
-      if (_activeKind == MediaSourceKind.relayMerge &&
-          savedPosition > Duration.zero) {
-        streamUri = _relayUriWithStart(streamUri, savedPosition);
-        _bgAudioOffset = savedPosition;
-      }
-      final item = _createMediaItemFromState();
-      try {
-        await _player.setAudioSource(
-          AudioSource.uri(
-            streamUri,
-            tag: item,
-            headers: ApiConfig.streamHeaders,
-          ),
-        );
-        await _player.seek(_bgAudioOffset > Duration.zero
-            ? Duration.zero
-            : savedPosition);
-        await _player.play();
-        _wireAudioSubscriptions(mediaId);
-        _state = _state.copyWith(
-          status: MediaStatus.playing,
-          position: savedPosition,
-          duration: savedDuration,
-        );
-        _isAudioBackgroundActive = true;
-        _syncPlaybackStateToHandler();
-        notifyListeners();
-        return;
-      } catch (e) {
-        debugPrint('[MediaEngine] Screen off stream audio error: $e');
-        _bgAudioOffset = Duration.zero;
-      }
+    try {
+      // Loading does not play: the audio player is idle during video
+      // playback, so this cannot double the sound.
+      await _player.setAudioSource(source);
+    } catch (e) {
+      debugPrint('[MediaEngine] Screen off audio load error: $e');
+      _bgAudioOffset = Duration.zero;
+      return;
     }
 
-    // Nothing left to stream: playback ends here with the screen off.
-    debugPrint('[MediaEngine] No background audio source for $mediaId');
+    // Resolving took time and the video never stopped, so start the audio
+    // where it is NOW, not where it was when the handoff began. Only the
+    // relay `?t=` stream starts elsewhere, and _bgAudioOffset carries that.
+    if (_state.mediaId != mediaId ||
+        !identical(_videoController, videoBefore) ||
+        _state.status == MediaStatus.paused) {
+      // The queue moved on (a short ended, another video was picked) or the
+      // user paused meanwhile: taking over here would hijack that playback.
+      _bgAudioOffset = Duration.zero;
+      return;
+    }
+    final logicalNow = _state.position;
+    final audioStart = logicalNow > _bgAudioOffset
+        ? logicalNow - _bgAudioOffset
+        : Duration.zero;
+
+    _completionDebounce?.cancel();
+    await _videoController?.dispose();
+    _videoController = null;
+
+    try {
+      await _player.seek(audioStart);
+      await _player.play();
+    } catch (e) {
+      debugPrint('[MediaEngine] Screen off audio play error: $e');
+    }
+    _wireAudioSubscriptions(mediaId);
+    _state = _state.copyWith(
+      status: MediaStatus.playing,
+      position: logicalNow,
+      duration: savedDuration,
+    );
+    _isAudioBackgroundActive = true;
+    _syncPlaybackStateToHandler();
+    notifyListeners();
   }
 
   Future<void> onScreenOn() async {
@@ -2277,82 +2337,76 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final savedPosition = _state.position;
     final mediaId = _state.mediaId;
 
-    // Detach the listeners BEFORE tearing the audio down: a last event must
-    // not persist an offset-less position over the real one.
-    _posSub?.cancel();
-    _durSub?.cancel();
-    _stateSub?.cancel();
-
     if (mediaId == null) {
-      try {
-        await _player.stop();
-      } catch (_) {}
-      _bgAudioOffset = Duration.zero;
-      _isAudioBackgroundActive = false;
+      await _stopBackgroundAudio();
       return;
     }
 
     final localFile = StorageService.instance.getFile(mediaId);
     if (localFile != null && localFile.existsSync()) {
-      try {
-        await _player.stop();
-      } catch (_) {}
-      _bgAudioOffset = Duration.zero;
-      _isAudioBackgroundActive = false;
-      _videoController = VideoPlayerController.file(localFile);
-      try {
-        await _videoController!.initialize();
-        await _videoController!.seekTo(savedPosition);
-        _videoController!.addListener(() {
-          if (_videoController == null ||
-              !_videoController!.value.isInitialized) {
-            return;
-          }
-          if (_videoController!.value.hasError) {
-            return;
-          }
-          final pos = _videoController!.value.position;
-          final dur = _videoController!.value.duration;
-          _state = _state.copyWith(position: pos, duration: dur);
-          _savePosition(_state.mediaId!, pos);
-          _syncPlaybackStateToHandler();
-          if (!_completionHandled && pos >= dur && dur > Duration.zero) {
-            _completionHandled = true;
-            _handlePlaybackComplete();
-          }
-          notifyListeners();
-        });
-        _state =
-            _state.copyWith(status: MediaStatus.playing, position: savedPosition);
-        _syncPlaybackStateToHandler();
-        notifyListeners();
-        await _videoController!.play();
-      } catch (e) {
-        debugPrint('[MediaEngine] Screen on video restore error: $e');
+      if (_state.mediaId != mediaId) {
+        // The queue moved on while the screen was off.
+        return;
       }
+      // A local file initializes in milliseconds: bring the video up FIRST
+      // and only then silence the audio, so the swap cannot be heard.
+      final restored = await _restoreLocalVideo(localFile, savedPosition);
+      if (!restored || !_isAudioBackgroundActive) return;
+      await _stopBackgroundAudio();
       return;
     }
 
-    // Network video: PAUSE (not stop) the background audio first. If the
-    // video restore fails we resume it again — never leave silence behind.
-    try {
-      await _player.pause();
-    } catch (_) {}
-
+    // Network video: the restore costs seconds of network init. The audio
+    // keeps PLAYING through it (it used to be paused up front, which is the
+    // freeze heard when the app comes back) and is only stopped once the
+    // video is live.
     final restored = await _restoreNetworkVideo(savedPosition);
+    if (!_isAudioBackgroundActive) return; // another play took over meanwhile
     if (restored) {
-      try {
-        await _player.stop();
-      } catch (_) {}
-      _bgAudioOffset = Duration.zero;
-      _isAudioBackgroundActive = false;
+      await _catchVideoUpToAudio();
+      await _stopBackgroundAudio();
     } else {
       debugPrint(
           '[MediaEngine] Screen on: video restore failed, audio keeps going');
-      try {
-        await _player.play();
-      } catch (_) {}
-      _wireAudioSubscriptions(mediaId);
+    }
+  }
+
+  /// Silences the background audio player once the video took over (or when
+  /// there is nothing left to play). Cancels the listeners FIRST: a last
+  /// event must not persist an offset-less position over the real one.
+  Future<void> _stopBackgroundAudio() async {
+    _posSub?.cancel();
+    _durSub?.cancel();
+    _stateSub?.cancel();
+    try {
+      await _player.stop();
+    } catch (_) {}
+    _bgAudioOffset = Duration.zero;
+    _isAudioBackgroundActive = false;
+  }
+
+  /// The video came back while the background audio kept playing, so the
+  /// audio is ahead of the position the restore started from. Pull the
+  /// video forward by that gap instead of rewinding the content the moment
+  /// the audio is stopped. Skipped on relay-merge streams, where an
+  /// in-player seek does nothing and a reconnect would re-resolve the URL.
+  Future<void> _catchVideoUpToAudio() async {
+    final c = _videoController;
+    if (c == null || !c.value.isInitialized) return;
+    final logicalNow = _player.position + _bgAudioOffset;
+    if (logicalNow - _state.position < const Duration(seconds: 2)) return;
+    if (_activeKind == MediaSourceKind.relayMerge) return;
+    final physical = logicalNow - _relayClockOffset;
+    if (physical < Duration.zero) return;
+    try {
+      await c.seekTo(physical);
+      _state = _state.copyWith(position: logicalNow);
+      final mid = _state.mediaId;
+      if (mid != null) _savePosition(mid, logicalNow, force: true);
+      _syncPlaybackStateToHandler();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[MediaEngine] Screen on seek catch-up failed: $e');
     }
   }
 
@@ -2397,32 +2451,95 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   /// Backgrounds the YouTube video as an audio-only stream (data saving).
   /// Returns true when the background player is live.
-  Future<bool> _startBackgroundAudioForYouTube(Duration savedPosition) async {
-    final mediaId = _state.mediaId;
-    if (mediaId == null) return false;
-    final videoId = _parseVideoIdFromUrl(mediaId);
-    if (videoId == null) return false;
-    try {
-      final manifest = await _ytc.videos.streamsClient
-          .getManifest(videoId)
-          .timeout(const Duration(seconds: 10));
-      final audioStreams = manifest.audioOnly.toList()
-        ..sort((a, b) =>
-            b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
-      if (audioStreams.isEmpty) return false;
+  /// Resolves the background audio source for [mediaId] WITHOUT touching the
+  /// video: the screen-off handoff must never open a hole in the sound.
+  /// Sets [_bgAudioOffset] to the position the returned URL already starts
+  /// at (only a relay `?t=` stream needs it) and returns null when there is
+  /// nothing to hand off to.
+  Future<AudioSource?> _prepareBackgroundAudio(
+    String mediaId,
+    Duration from,
+  ) async {
+    _bgAudioOffset = Duration.zero;
+    final item = _createMediaItemFromState();
 
-      final item = _createMediaItemFromState();
-      await _player.setAudioSource(
-          AudioSource.uri(audioStreams.first.url, tag: item));
-      await _player.seek(savedPosition);
-      await _player.play();
-      _wireAudioSubscriptions(mediaId);
-      _isAudioBackgroundActive = true;
+    // 1) Local or content:// source: plain file streaming, no URL expiry.
+    final uri = _resolvePlaybackUriById(mediaId);
+    if (uri != null) return AudioSource.uri(uri, tag: item);
+
+    // 2) YouTube: audio-only variant (saves data on long videos). This is
+    // where the resolution time used to be paid with the sound off.
+    final videoId = _parseVideoIdFromUrl(mediaId);
+    if (videoId != null) {
+      try {
+        final manifest = await _ytc.videos.streamsClient
+            .getManifest(videoId)
+            .timeout(const Duration(seconds: 10));
+        final audioStreams = manifest.audioOnly.toList()
+          ..sort((a, b) =>
+              b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+        if (audioStreams.isNotEmpty) {
+          return AudioSource.uri(audioStreams.first.url, tag: item);
+        }
+      } catch (e) {
+        debugPrint('[MediaEngine] Background audio resolve failed: $e');
+      }
+    }
+
+    // 3) Any direct stream (external mp4, proxy, relay merge): the last live
+    // URL. Merge streams have no index, so reconnect from `?t=` instead of
+    // seeking — and tell the position listener about the offset.
+    final last = _lastDirectUrl;
+    if (last != null && last.startsWith('http')) {
+      var streamUri = Uri.parse(last);
+      if (_activeKind == MediaSourceKind.relayMerge && from > Duration.zero) {
+        streamUri = _relayUriWithStart(streamUri, from);
+        _bgAudioOffset = from;
+      }
+      return AudioSource.uri(
+        streamUri,
+        tag: item,
+        headers: ApiConfig.streamHeaders,
+      );
+    }
+    return null;
+  }
+
+  /// Restores a local video after the screen came back on. Returns true when
+  /// the controller is live again. The background audio is left untouched:
+  /// the caller stops it once the video took over, so the swap is silent.
+  Future<bool> _restoreLocalVideo(File file, Duration savedPosition) async {
+    final controller = VideoPlayerController.file(file);
+    _videoController = controller;
+    try {
+      await controller.initialize();
+      await controller.seekTo(savedPosition);
+      controller.addListener(() {
+        if (!identical(_videoController, controller)) return;
+        if (!controller.value.isInitialized) return;
+        if (controller.value.hasError) return;
+        final pos = controller.value.position;
+        final dur = controller.value.duration;
+        _state = _state.copyWith(position: pos, duration: dur);
+        final mid = _state.mediaId;
+        if (mid != null) _savePosition(mid, pos);
+        _syncPlaybackStateToHandler();
+        if (!_completionHandled && pos >= dur && dur > Duration.zero) {
+          _completionHandled = true;
+          _handlePlaybackComplete();
+        }
+        notifyListeners();
+      });
+      _state =
+          _state.copyWith(status: MediaStatus.playing, position: savedPosition);
       _syncPlaybackStateToHandler();
       notifyListeners();
+      await controller.play();
       return true;
     } catch (e) {
-      debugPrint('[MediaEngine] YouTube background audio error: $e');
+      debugPrint('[MediaEngine] Screen on video restore error: $e');
+      await controller.dispose();
+      if (identical(_videoController, controller)) _videoController = null;
       return false;
     }
   }
@@ -2596,6 +2713,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     seek(target);
   }
 
+  @override
   Future<void> seek(Duration position) async {
     if (position < Duration.zero) position = Duration.zero;
     final mid = _state.mediaId;
@@ -2691,6 +2809,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     await seek(newPos < Duration.zero ? Duration.zero : newPos);
   }
 
+  @override
   Future<void> pause() async {
     if (_videoController != null) {
       await _videoController!.pause();
@@ -2702,7 +2821,20 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     notifyListeners();
   }
 
+  @override
   Future<void> resume() async {
+    // A resolution chain is already running for the item the user picked.
+    // It ends in play() by itself (_startNetworkVideo), so the play intent
+    // is already queued and there is nothing to restart. Calling play() on
+    // a player with no source is not merely useless: in just_audio a play
+    // request with no audio source never completes, so the await hangs
+    // forever, `status` is never updated and the user has to press again
+    // once the stall watchdog has failed the play (~30-45s later). That is
+    // exactly the "have to press Play twice" bug.
+    if (_state.status == MediaStatus.loading ||
+        _state.status == MediaStatus.buffering) {
+      return;
+    }
     // Idle/completed means there is NO live source (e.g. after a failed
     // video play): re-play the current queue item from scratch so state
     // (thumbnail, duration, subscriptions, handler) is fully rebuilt.
@@ -2730,8 +2862,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     }
     if (_videoController != null) {
       await _videoController!.play();
-    } else {
+    } else if (_player.audioSource != null) {
       await _player.play();
+    } else {
+      // No source at all: there is nothing to resume. Forcing `playing`
+      // here would hide the spinner and disarm the stall watchdog on a
+      // chain that has not produced a player yet.
+      return;
     }
     _state = _state.copyWith(status: MediaStatus.playing);
     _syncPlaybackStateToHandler();
@@ -2750,13 +2887,22 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   Future<void> _stopCurrentSilent() async {
     _completionDebounce?.cancel();
+    // Every resolution candidate used to run a FULL teardown, even though
+    // _playQueueItemVideo had already stopped the previous item: that
+    // re-stopped the player and re-wrote the resume position once per
+    // candidate for nothing. Only tear down when something is actually live.
+    final live = _videoController != null ||
+        _posSub != null ||
+        _durSub != null ||
+        _isAudioBackgroundActive;
+    if (!live) return;
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();
     _expectedDuration = null;
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
-      await _savePosition(_state.mediaId!, _state.position);
+      await _savePosition(_state.mediaId!, _state.position, force: true);
     }
 
     try {
@@ -2776,7 +2922,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _expectedDuration = null;
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
-      await _savePosition(_state.mediaId!, _state.position);
+      // force: this is the last write for this item, throttling must not
+      // drop the resume point.
+      await _savePosition(_state.mediaId!, _state.position, force: true);
     }
 
     try {
@@ -2788,6 +2936,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _isAudioBackgroundActive = false;
   }
 
+  @override
   Future<void> stop() async {
     _playToken++;
     await _stopCurrent();

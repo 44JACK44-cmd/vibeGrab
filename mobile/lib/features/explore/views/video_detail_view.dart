@@ -9,6 +9,7 @@ import '../../../data/models/explore_video.dart';
 import '../../../data/models/related_video.dart';
 import '../../../data/models/comment_item.dart';
 import '../../../data/models/format_option.dart';
+import '../../../data/models/image_asset.dart';
 import '../../../data/models/download_task.dart';
 import '../../../data/models/media_state.dart';
 import '../../../services/media_engine.dart';
@@ -225,13 +226,15 @@ Future<void> _toggleLike() async {
     }
     try {
       final items = await _api.fetchRelated(videoId);
-      if (!mounted) return;
+      // The user may have moved to another video while this landed: writing
+      // it now would replace the NEW video's related list with the old one's.
+      if (!mounted || videoId != _videoId) return;
       setState(() {
         _related = items;
         _relatedLoading = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || videoId != _videoId) return;
       setState(() => _relatedLoading = false);
     }
   }
@@ -259,7 +262,7 @@ Future<void> _toggleLike() async {
         videoId,
         token: loadMore ? _commentsToken : null,
       );
-      if (!mounted) return;
+      if (!mounted || videoId != _videoId) return;
       setState(() {
         if (loadMore) {
           _comments.addAll(page.items);
@@ -271,7 +274,7 @@ Future<void> _toggleLike() async {
         _commentsLoadingMore = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || videoId != _videoId) return;
       setState(() {
         _commentsLoading = false;
         _commentsLoadingMore = false;
@@ -284,12 +287,16 @@ Future<void> _toggleLike() async {
     final videoId = _videoId;
     if (videoId.isEmpty) return;
     try {
-      final s = await _api.fetchStreamUrls(videoId);
-      if (!mounted) return;
+      // Served by the engine, sharing the single in-flight request with the
+      // playback resolve: opening a video used to fire a SECOND
+      // /api/explore/stream-url in parallel with the one that resolves the
+      // stream URLs, doubling the load on a possibly-sleeping backend.
+      final s = await _engine!.fetchMeta(videoId);
+      if (!mounted || videoId != _videoId) return;
       setState(() {
-        _channelAvatar = s.channelAvatar;
-        _commentCount = s.commentCount;
-        final desc = s.description?.trim();
+        _channelAvatar = s?.channelAvatar;
+        _commentCount = s?.commentCount;
+        final desc = s?.description?.trim();
         _description = (desc == null || desc.isEmpty) ? null : desc;
       });
     } catch (_) {
@@ -658,7 +665,7 @@ Future<void> _toggleLike() async {
             onPressed: () async {
               final available = await engine.isPiPAvailable();
               final entered = available && await engine.enterPiP();
-              if (!entered && context.mounted) {
+              if (!entered && mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                   content: Text(loc.piPNotAvailable),
                   behavior: SnackBarBehavior.floating,
@@ -980,8 +987,9 @@ return Row(
                 _startDownload(format);
               },
             ),
-            if (_current.thumbnail != null &&
-                _current.thumbnail!.isNotEmpty) ...[
+            // Only when the source really offers the cover as its own
+            // downloadable asset (see ImageAsset.isDownloadable).
+            if (ImageAsset.isDownloadable(_current.thumbnail)) ...[
               const SizedBox(height: 12),
               Material(
                 color: cs.surfaceContainerHighest,
@@ -1010,7 +1018,8 @@ return Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'JPG',
+                                AppLocalizations.of(context)
+                                    .downloadImageAction,
                                 style: TextStyle(
                                   fontWeight: FontWeight.w600,
                                   fontSize: 13,
@@ -1019,7 +1028,9 @@ return Row(
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                AppLocalizations.of(context).imageCover,
+                                AppLocalizations.of(context).imageCover(
+                                    ImageAsset.extensionOf(
+                                        _current.thumbnail)),
                                 style: TextStyle(
                                   fontSize: 11,
                                   color: cs.onSurfaceVariant
@@ -1069,13 +1080,18 @@ return Row(
     }
   }
 
-  /// Saves the video cover as a JPG in the gallery and closes the panel.
+  /// Saves the video cover in the device gallery and closes the panel. The
+  /// file keeps the extension the source really serves, so the gallery mime
+  /// type matches the bytes written.
   Future<void> _startImageDownload() async {
     final thumb = _current.thumbnail;
-    if (thumb == null || thumb.isEmpty || !mounted) return;
-    context
-        .read<DownloadsController>()
-        .addImageDownload(imageUrl: thumb, title: _current.title);
+    if (thumb == null || !ImageAsset.isDownloadable(thumb) || !mounted) {
+      return;
+    }
+    context.read<DownloadsController>().addImageDownload(
+        imageUrl: thumb,
+        title: _current.title,
+        fileExt: ImageAsset.extensionOf(thumb));
     if (!mounted) return;
     setState(() => _showFormats = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(

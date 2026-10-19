@@ -121,14 +121,14 @@ class LibraryListTile extends StatelessWidget {
                     value: 'delete',
                     child: Text(AppLocalizations.of(context).delete,
                         style:
-                            TextStyle(color: AppColors.error, fontSize: 13)),
+                            const TextStyle(color: AppColors.error, fontSize: 13)),
                   ),
                   if (onDeleteForever != null)
                     PopupMenuItem(
                       value: 'deleteForever',
                       child: Text(
                         AppLocalizations.of(context).deleteForever,
-                        style: TextStyle(color: AppColors.error, fontSize: 13),
+                        style: const TextStyle(color: AppColors.error, fontSize: 13),
                       ),
                     ),
                 ],

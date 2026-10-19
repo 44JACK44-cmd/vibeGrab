@@ -195,17 +195,25 @@ class ExploreController extends ChangeNotifier {
   }) {
     final s = <String>{};
     if (continueWatching) {
-      for (final v in _continueWatching) s.add(_keyOf(v));
+      for (final v in _continueWatching) {
+        s.add(_keyOf(v));
+      }
     }
     if (trending) {
-      for (final v in _trending) s.add(_keyOf(v));
+      for (final v in _trending) {
+        s.add(_keyOf(v));
+      }
     }
     if (forYou) {
-      for (final v in _forYou) s.add(_keyOf(v));
+      for (final v in _forYou) {
+        s.add(_keyOf(v));
+      }
     }
     if (rails) {
       for (final list in _rails.values) {
-        for (final v in list) s.add(_keyOf(v));
+        for (final v in list) {
+          s.add(_keyOf(v));
+        }
       }
     }
     return s;
@@ -613,6 +621,9 @@ class ExploreController extends ChangeNotifier {
     }
   }
 
+  static const _shortsCacheKey = 'explore_shorts_cache_v1';
+  static const _shortsCacheTtl = Duration(hours: 6);
+
   Future<void> loadShorts() async {
     if (_shortsLoading) return;
     _shortsLoading = true;
@@ -623,6 +634,16 @@ class ExploreController extends ChangeNotifier {
         notifyListeners();
         return;
       }
+      // Restore from disk first: entering Shorts used to pay three on-device
+      // searches (plus their internal fallback searches) before a single
+      // video could be rendered, on every entry.
+      final cached = await _loadShortsCache();
+      if (cached.isNotEmpty) {
+        _shorts = cached;
+        _rememberShown(cached);
+        notifyListeners();
+      }
+
       final interests = _interestKeywords();
       final queries = <String>[
         if (interests.isNotEmpty) '${interests.first} shorts',
@@ -631,20 +652,87 @@ class ExploreController extends ChangeNotifier {
       ];
       final out = <ExploreVideo>[];
       final seen = <String>{};
-      for (final q in queries) {
-        if (out.length >= 15) break;
-        try {
-          final r = await _extraction.searchShorts(q, limit: 8);
-          for (final v in r) {
-            if (v.id.isNotEmpty && seen.add(v.id)) out.add(v);
+
+      bool merge(List<ExploreVideo> batch) {
+        var added = false;
+        for (final v in batch) {
+          if (v.id.isNotEmpty && seen.add(v.id)) {
+            out.add(v);
+            added = true;
           }
-        } catch (_) {}
+        }
+        return added;
       }
-      _shorts = _preferUnseen(out);
-      _rememberShown(_shorts);
+
+      void publish() {
+        // _preferUnseen falls back to the full list when everything was
+        // already shown, so this can never leave the feed empty.
+        _shorts = _preferUnseen(out);
+        _rememberShown(_shorts);
+        notifyListeners();
+      }
+
+      Future<List<ExploreVideo>> search(String q) async {
+        try {
+          return await _extraction.searchShorts(q, limit: 8);
+        } catch (_) {
+          return const [];
+        }
+      }
+
+      // The first query alone is enough to start playing, so it runs first
+      // and publishes straight away: the feed no longer stays on a spinner
+      // until every query has finished.
+      if (queries.isNotEmpty && merge(await search(queries.first))) {
+        publish();
+      }
+      // The remaining queries are independent, so they run together instead
+      // of one after another.
+      if (queries.length > 1) {
+        final rest = await Future.wait(queries.skip(1).map(search));
+        for (final batch in rest) {
+          merge(batch);
+        }
+        if (out.isNotEmpty) publish();
+      }
+      if (out.isNotEmpty) await _saveShortsCache(out);
     } finally {
       _shortsLoading = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> _saveShortsCache(List<ExploreVideo> shorts) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _shortsCacheKey,
+        jsonEncode({
+          'at': DateTime.now().millisecondsSinceEpoch,
+          'items': shorts.map((v) => v.toJson()).toList(),
+        }),
+      );
+    } catch (_) {}
+  }
+
+  /// Cached Shorts, empty when absent, unparsable or older than the TTL.
+  Future<List<ExploreVideo>> _loadShortsCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_shortsCacheKey);
+      if (raw == null || raw.isEmpty) return const [];
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final at = DateTime.fromMillisecondsSinceEpoch(
+          (data['at'] as num?)?.toInt() ?? 0);
+      // Resolved URLs expire like the rest of the feed: honour a TTL instead
+      // of resurrecting a list that may no longer play.
+      if (DateTime.now().difference(at) > _shortsCacheTtl) return const [];
+      return _dedupe(((data['items'] ?? const []) as List)
+          .whereType<Map<String, dynamic>>()
+          .map(ExploreVideo.fromJson)
+          .toList());
+    } catch (_) {
+      return const [];
     }
   }
 
@@ -701,6 +789,7 @@ class ExploreController extends ChangeNotifier {
     _categoryExhausted = false;
     _categoryPage = 1;
     _searchSeq++;
+    final seq = _searchSeq;
     notifyListeners();
 
     try {
@@ -710,19 +799,28 @@ class ExploreController extends ChangeNotifier {
         return;
       }
       final page = await _serverSearch(category, limit: 12, page: 1);
+      // A newer category was picked while this one was in flight: its
+      // response must not overwrite the results the user is now looking at.
+      if (seq != _searchSeq) return;
       if (page != null && page.results.isNotEmpty) {
         _categoryResults = _dedupe(page.results);
         _categoryExhausted = !page.hasMore;
       } else {
-        _categoryResults =
-            _dedupe(await _extraction.searchCategory(category, limit: 8));
+        final local = await _extraction.searchCategory(category, limit: 8);
+        if (seq != _searchSeq) return;
+        _categoryResults = _dedupe(local);
         _categoryExhausted = true;
       }
     } catch (_) {
+      if (seq != _searchSeq) return;
       _categoryResults = [];
     } finally {
-      _categoryLoading = false;
-      notifyListeners();
+      // Only the request that still owns the sequence clears the spinner;
+      // otherwise a stale one would hide it while the live one is running.
+      if (seq == _searchSeq) {
+        _categoryLoading = false;
+        notifyListeners();
+      }
     }
   }
 

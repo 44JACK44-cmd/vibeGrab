@@ -247,10 +247,15 @@ class DownloadsController extends ChangeNotifier {
     _enqueueDownload(task);
   }
 
-  /// Enqueues a plain image download (e.g. the video cover) saved as a JPG
-  /// and published to the device gallery on completion.
+  /// Enqueues a plain image download (e.g. the video cover) published to
+  /// the device gallery on completion. [fileExt] must match the real
+  /// format of the source image: the saved path drives both the gallery
+  /// mime type and the extension the file is written with.
   DownloadTask addImageDownload(
-      {required String imageUrl, required String title}) {
+      {required String imageUrl,
+      required String title,
+      String fileExt = 'jpg'}) {
+    final ext = fileExt.trim().isEmpty ? 'jpg' : fileExt.trim();
     final task = DownloadTask(
       id: 'dl_${DateTime.now().millisecondsSinceEpoch}',
       url: imageUrl,
@@ -260,7 +265,7 @@ class DownloadsController extends ChangeNotifier {
       hasVideo: false,
       hasAudio: false,
       directUrl: imageUrl,
-      fileExt: 'jpg',
+      fileExt: ext,
       createdAt: DateTime.now().toIso8601String(),
     );
     addTask(task);
@@ -600,9 +605,7 @@ class DownloadsController extends ChangeNotifier {
     // Deleting a download must also drop its favorite + history entries,
     // otherwise the Library keeps orphan cards that do nothing when tapped.
     final meta = MediaMetadataService();
-    final name = task.filePath != null
-        ? task.filePath!.split(Platform.pathSeparator).last
-        : null;
+    final name = task.filePath?.split(Platform.pathSeparator).last;
     if (name != null) {
       await meta.removeFileData(name);
     }

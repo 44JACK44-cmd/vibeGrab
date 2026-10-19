@@ -8,6 +8,14 @@ class AppLocalizations {
 
   AppLocalizations(this.locale);
 
+  /// Builds an instance from strings the caller already read (the ARB file
+  /// decoded by tooling or tests). The asset bundle only answers on the
+  /// engine's first read inside a test process, so anything that has to
+  /// build the widget tree without that engine round-trip uses this.
+  AppLocalizations.fromMap(this.locale, Map<String, String> strings) {
+    _strings = strings;
+  }
+
   static AppLocalizations of(BuildContext context) {
     return Localizations.of<AppLocalizations>(context, AppLocalizations)!;
   }
@@ -160,6 +168,9 @@ class AppLocalizations {
   String get downloadStepResolving => _get('downloadStepResolving');
 
   String get downloadsTitle => _get('downloadsTitle');
+  String get viewDownloads => _get('viewDownloads');
+  String downloadQueueMore(int count) =>
+      _get('downloadQueueMore', {'count': '$count'});
   String get clearCompleted => _get('clearCompleted');
   String get noDownloads => _get('noDownloads');
   String get noDownloadsHint => _get('noDownloadsHint');
@@ -356,7 +367,11 @@ class AppLocalizations {
   String get shareVideo => _get('shareVideo');
   String get shareAudio => _get('shareAudio');
   String get shareImage => _get('shareImage');
-  String get imageCover => _get('imageCover');
+  String get downloadImageAction => _get('downloadImageAction');
+  /// [ext] is the real file extension of the cover being saved (taken from
+  /// the URL by ImageAsset.extensionOf): the label must not promise a JPG
+  /// when the source offers another format.
+  String imageCover(String ext) => _get('imageCover', {'ext': ext});
   String get downloadFormats => _get('downloadFormats');
   String get shareDownload => _get('shareDownload');
   String get shareCancel => _get('shareCancel');

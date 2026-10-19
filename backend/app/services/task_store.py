@@ -30,7 +30,7 @@ def load_all() -> list[DownloadTask]:
                 raw = json.loads(_store_path.read_text(encoding="utf-8"))
                 _tasks = {tid: DownloadTask(**d) for tid, d in raw.items()}
                 logger.info(f"Loaded {len(_tasks)} tasks from disk")
-            except (json.JSONDecodeError, OSError, Exception) as e:
+            except Exception as e:
                 logger.error(f"Failed to load tasks: {e}")
                 _tasks = {}
         else:
@@ -99,10 +99,21 @@ def recover_interrupted() -> list[DownloadTask]:
     return recovered
 
 
+def _remove_file(path: Path, label: str, log_error: bool = True) -> None:
+    """Unlink a stale file, keeping the log message style of the callers."""
+    try:
+        path.unlink()
+        logger.info(f"{label}: {path.name}")
+    except OSError as e:
+        if log_error:
+            logger.error(f"Failed to clean {path.name}: {e}")
+
+
 def cleanup_task_files(task: DownloadTask):
     """Remove partial/temp files for a cancelled or failed task."""
     download_dir = settings.DOWNLOAD_DIR
     temp_dir = settings.TEMP_DIR
+    title_lower = task.title.lower()[:50]
 
     for d in [download_dir, temp_dir]:
         if not d.exists():
@@ -111,31 +122,16 @@ def cleanup_task_files(task: DownloadTask):
             if not f.is_file():
                 continue
             name_lower = f.name.lower()
-            title_lower = task.title.lower()[:50]
             if title_lower and title_lower in name_lower:
-                try:
-                    f.unlink()
-                    logger.info(f"Cleaned up: {f.name}")
-                except OSError as e:
-                    logger.error(f"Failed to clean {f.name}: {e}")
+                _remove_file(f, "Cleaned up")
             elif f.suffix in ('.part', '.temp', '.ytdl'):
-                try:
-                    f.unlink()
-                    logger.info(f"Cleaned temp: {f.name}")
-                except OSError:
-                    pass
+                _remove_file(f, "Cleaned temp", log_error=False)
 
 
 def cleanup_orphans():
     """Remove .part/.temp files with no active task on startup."""
     download_dir = settings.DOWNLOAD_DIR
     temp_dir = settings.TEMP_DIR
-
-    with _lock:
-        active_titles = {t.title.lower()[:50] for t in _tasks.values() if t.status in (
-            DownloadStatus.QUEUED, DownloadStatus.PREPARING,
-            DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING,
-        )}
 
     for d in [download_dir, temp_dir]:
         if not d.exists():

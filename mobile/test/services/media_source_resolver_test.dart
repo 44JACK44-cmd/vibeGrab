@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vibegrab/services/media_source.dart';
 import 'package:vibegrab/services/media_source_resolver.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 void main() {
   group('MediaSourceResolver', () {
@@ -130,6 +133,53 @@ void main() {
       final r = resolverWith();
       expect(r.muxedUrlFor('abc123abc12', 720), isNull);
       expect(r.qualitiesFor('abc123abc12'), isEmpty);
+    });
+
+    test('resolve does not wait for the device manifest', () async {
+      // A slow manifest used to sit on the critical path of every first
+      // frame (up to 25s). It is now returned for background use only.
+      final gate = Completer<StreamManifest?>();
+      var manifestCalls = 0;
+      final r = MediaSourceResolver(
+        fetchUrls: (_) async => const StreamUrlsPayload(
+          video: 'https://x.googlevideo.com/v?expire=9999999999',
+        ),
+        fetchManifest: (_) {
+          manifestCalls++;
+          return gate.future;
+        },
+      );
+      final res = await r
+          .resolve('abc123abc12', onStage: (_) {})
+          .timeout(const Duration(seconds: 1));
+      expect(res.manifest, isNull);
+      expect(res.manifestAsync, isNotNull);
+      // Only one manifest request even for concurrent resolves.
+      await r.resolve('abc123abc12', onStage: (_) {});
+      expect(manifestCalls, 1);
+      gate.complete(null);
+      expect(await res.manifestAsync, isNull);
+    });
+
+    test('a cached manifest is used without waiting on a new fetch', () async {
+      var calls = 0;
+      final r = MediaSourceResolver(
+        fetchUrls: (_) async => const StreamUrlsPayload(
+          video: 'https://x.googlevideo.com/v?expire=9999999999',
+        ),
+        fetchManifest: (_) async {
+          calls++;
+          return StreamManifest(const <StreamInfo>[]);
+        },
+      );
+      await r.resolve('abc123abc12', onStage: (_) {}).then((_) {});
+      // Let the background manifest land, then resolve again: the second
+      // resolve must expose it synchronously (manifest, not manifestAsync).
+      await Future<void>.delayed(Duration.zero);
+      final res = await r.resolve('abc123abc12', onStage: (_) {});
+      expect(calls, 1);
+      expect(res.manifest, isNotNull);
+      expect(res.manifestAsync, isNotNull);
     });
   });
 }

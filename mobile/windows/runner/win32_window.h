@@ -90,6 +90,11 @@ class Win32Window {
   // Update the window frame's theme to match the system theme.
   static void UpdateTheme(HWND const window);
 
+  // Releases the OS resources associated with the window without invoking the
+  // virtual |OnDestroy| hook. Called from the destructor, where virtual
+  // dispatch to subclasses would be ill-defined.
+  void DestroyInternal();
+
   bool quit_on_close_ = false;
 
   // window handle for top level window.

@@ -23,6 +23,104 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.36
+    WhatsNewEntry(
+      id: 'wn-1136-queue-progress',
+      version: '1.1.36',
+      build: 41,
+      category: WhatsNewCategory.features,
+      emoji: '📥',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Sigue tus descargas sin salir de donde estás',
+        en: 'Track your downloads without leaving what you are doing',
+      ),
+      description: LocalizedText(
+        es: 'Un panel compacto con el progreso de las descargas en curso, visible desde cualquier pantalla, con acceso directo a la lista de descargas.',
+        en: 'A compact panel with the progress of the ongoing downloads, visible from any screen, with a shortcut to the download list.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1136-faster',
+      version: '1.1.36',
+      build: 41,
+      category: WhatsNewCategory.improvements,
+      emoji: '⚡',
+      order: 0,
+      title: LocalizedText(
+        es: 'Explorer, Shorts y Descargas abren antes',
+        en: 'Explorer, Shorts and Downloads open sooner',
+      ),
+      description: LocalizedText(
+        es: 'La portada ya no espera a tener la lista entera para empezar a reproducir, el feed de Shorts aparece casi al instante y el análisis de un enlace se reutiliza en lugar de repetirse.',
+        en: 'The home screen no longer waits for the whole list before it can play, the Shorts feed appears almost instantly and analysing a link is reused instead of repeated.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1136-background-audio',
+      version: '1.1.36',
+      build: 41,
+      category: WhatsNewCategory.improvements,
+      emoji: '🔊',
+      order: 1,
+      title: LocalizedText(
+        es: 'El sonido no se corta al apagar la pantalla ni al minimizar',
+        en: 'The sound no longer cuts out when the screen turns off or you minimise',
+      ),
+      description: LocalizedText(
+        es: 'El relevo al audio de fondo se prepara antes de parar el vídeo, así la música sigue sin saltos. Y al volver a la app el vídeo se recupera mientras el audio sigue sonando.',
+        en: 'The handoff to background audio is prepared before the video stops, so the music continues without gaps. Coming back to the app, the video is restored while the audio keeps playing.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1136-image-download',
+      version: '1.1.36',
+      build: 41,
+      category: WhatsNewCategory.improvements,
+      emoji: '🖼️',
+      order: 2,
+      title: LocalizedText(
+        es: 'Guarda la miniatura o la imagen del vídeo',
+        en: 'Save the cover or the image of a video',
+      ),
+      description: LocalizedText(
+        es: 'La acción de imagen aparece solo cuando el vídeo la tiene, se guarda con su formato real (PNG o WebP) y acaba en tu galería.',
+        en: 'The image action shows up only when the video has one; it is saved in its real format (PNG or WebP) and ends up in your gallery.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1136-play-button',
+      version: '1.1.36',
+      build: 41,
+      category: WhatsNewCategory.fixes,
+      emoji: '▶️',
+      order: 0,
+      title: LocalizedText(
+        es: 'Un toque en reproducir ya basta',
+        en: 'One tap on play is enough now',
+      ),
+      description: LocalizedText(
+        es: 'El botón de reproducción ya no se queda mudo si lo pulsas mientras el vídeo todavía se está cargando.',
+        en: 'The play button no longer goes mute if you tap it while the video is still loading.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1136-shorts-follow',
+      version: '1.1.36',
+      build: 41,
+      category: WhatsNewCategory.fixes,
+      emoji: '🎬',
+      order: 1,
+      title: LocalizedText(
+        es: 'Shorts: la pantalla sigue al reproductor',
+        en: 'Shorts: the feed follows the player',
+      ),
+      description: LocalizedText(
+        es: 'Cuando un short termina solo o usas los controles de la notificación, el feed se mueve con él en lugar de quedarse en el anterior.',
+        en: 'When a short ends by itself or you use the notification controls, the feed moves along with it instead of staying on the previous one.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.35
     WhatsNewEntry(
       id: 'wn-1135-notes',

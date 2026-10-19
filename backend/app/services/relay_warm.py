@@ -102,18 +102,20 @@ def _drop(vid: str, entry: dict) -> None:
 
 
 def _cleanup_locked(now: float) -> None:
-    for vid, e in list(_entries.items()):
-        to_kill = False
+    """Drop idle entries. Caller must hold ``_lock``."""
+    stale: list[tuple[str, dict]] = []
+    for vid, e in _entries.items():
         with e["cv"]:
             idle = e["consumers"] == {} and not e["tail_owner"]
             if idle and now - e["ts"] > _TTL:
-                del _entries[vid]
                 e["stop"] = True
                 e["done"] = True
                 e["cv"].notify_all()
-                to_kill = True
-        if to_kill:
-            _kill(e)
+                stale.append((vid, e))
+    for vid, e in stale:
+        if _entries.get(vid) is e:
+            del _entries[vid]
+        _kill(e)
 
 
 def start(vid: str, sources: dict) -> None:
@@ -145,6 +147,44 @@ def start(vid: str, sources: dict) -> None:
     threading.Thread(target=_worker, args=(vid, sources, entry), daemon=True).start()
 
 
+def _read_chunk(entry: dict, proc: subprocess.Popen, stall: threading.Timer) -> bool:
+    """Read one chunk into the entry.
+
+    Return False when the entry was stopped or the process output ended,
+    which tells the worker loop to finish.
+    """
+    cv = entry["cv"]
+    with cv:
+        while not entry["stop"]:
+            if entry["held"] >= _CAP:
+                entry["frozen"] = True
+                cv.notify_all()
+                cv.wait(timeout=1.0)
+                continue
+            if entry["consumers"]:
+                minpos = min(entry["consumers"].values())
+                if entry["size"] - minpos >= _AHEAD:
+                    cv.wait(timeout=1.0)
+                    continue
+            elif entry["held"] >= _PREBUF:
+                cv.wait(timeout=1.0)
+                continue
+            break
+        if entry["stop"]:
+            return False
+    chunk = proc.stdout.read1(65536)
+    if not chunk:
+        return False
+    stall.cancel()
+    with entry["cv"]:
+        entry["chunks"].append(chunk)
+        entry["held"] += len(chunk)
+        entry["size"] += len(chunk)
+        entry["ts"] = time.time()
+        entry["cv"].notify_all()
+    return True
+
+
 def _worker(vid: str, sources: dict, entry: dict) -> None:
     try:
         proc = build_proc(sources)
@@ -158,7 +198,8 @@ def _worker(vid: str, sources: dict, entry: dict) -> None:
     def _drain() -> None:
         try:
             while proc.stderr.read(4096):
-                pass
+                # keep draining ffmpeg stderr so the pipe never blocks
+                continue
         except Exception:  # noqa: BLE001
             pass
 
@@ -166,36 +207,9 @@ def _worker(vid: str, sources: dict, entry: dict) -> None:
     stall = threading.Timer(60.0, proc.kill)
     stall.start()
     try:
-        while True:
-            cv = entry["cv"]
-            with cv:
-                while not entry["stop"]:
-                    if entry["held"] >= _CAP:
-                        entry["frozen"] = True
-                        cv.notify_all()
-                        cv.wait(timeout=1.0)
-                        continue
-                    if entry["consumers"]:
-                        minpos = min(entry["consumers"].values())
-                        if entry["size"] - minpos >= _AHEAD:
-                            cv.wait(timeout=1.0)
-                            continue
-                    elif entry["held"] >= _PREBUF:
-                        cv.wait(timeout=1.0)
-                        continue
-                    break
-                if entry["stop"]:
-                    return
-            chunk = proc.stdout.read1(65536)
-            if not chunk:
-                break
-            stall.cancel()
-            with entry["cv"]:
-                entry["chunks"].append(chunk)
-                entry["held"] += len(chunk)
-                entry["size"] += len(chunk)
-                entry["ts"] = time.time()
-                entry["cv"].notify_all()
+        keep_going = True
+        while keep_going:
+            keep_going = _read_chunk(entry, proc, stall)
     except Exception as e:  # noqa: BLE001
         logger.error(f"warm relay worker failed for {vid}: {e}")
         _last_err[vid] = f"worker: {e}"[:200]
@@ -226,6 +240,73 @@ def wait_first(vid: str, timeout: float = 8.0) -> bool:
         return bool(entry["chunks"])
 
 
+def _acquire_chunk(
+    entry: dict, cid: int, index: int, tail: bool
+) -> tuple[bytes | None, bool]:
+    """Wait for the buffered chunk at ``index``.
+
+    Returns (chunk, tail): chunk is None when the buffered replay is done or
+    when the consumer is promoted to live-tail reading (tail becomes True).
+    """
+    cv = entry["cv"]
+    with cv:
+        while (
+            index >= len(entry["chunks"])
+            and not entry["done"]
+            and not entry["stop"]
+            and not tail
+        ):
+            if entry["frozen"] and entry["tail_owner"] in (None, cid):
+                entry["tail_owner"] = cid
+                entry["consumers"][cid] = entry["size"]
+                return None, True
+            cv.wait(timeout=1.0)
+        if index < len(entry["chunks"]):
+            return entry["chunks"][index], tail
+        return None, tail
+
+
+def _stream_gen(vid: str, entry: dict, cid: int):
+    """Yield the replay window, then the live tail, of a warm entry."""
+    cv = entry["cv"]
+    index = 0
+    pos = 0
+    tail = False
+    try:
+        while True:
+            chunk, tail = _acquire_chunk(entry, cid, index, tail)
+            if tail and chunk is None:
+                break
+            if chunk is None:
+                return
+            index += 1
+            pos += len(chunk)
+            with cv:
+                entry["consumers"][cid] = pos
+                entry["ts"] = time.time()
+                cv.notify_all()
+            yield chunk
+
+        proc = entry.get("proc")
+        stdout = proc.stdout if proc else None
+        if stdout is None:
+            return
+        while True:
+            chunk = stdout.read1(65536)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        with cv:
+            entry["consumers"].pop(cid, None)
+            if entry.get("tail_owner") == cid:
+                entry["tail_owner"] = None
+            cv.notify_all()
+        if tail:
+            # Viewer is gone; drop so the next open merges fresh.
+            _drop(vid, entry)
+
+
 def stream(vid: str):
     """Iterator over the merge output, or None if no warm entry exists."""
     entry = _entries.get(vid)
@@ -237,60 +318,4 @@ def stream(vid: str):
         entry["consumers"][cid] = 0
         entry["ts"] = time.time()
         cv.notify_all()
-
-    def _gen():
-        i = 0
-        pos = 0
-        tail = False
-        try:
-            while True:
-                with cv:
-                    while (
-                        i >= len(entry["chunks"])
-                        and not entry["done"]
-                        and not entry["stop"]
-                        and not tail
-                    ):
-                        if (
-                            entry["frozen"]
-                            and entry["tail_owner"] in (None, cid)
-                        ):
-                            entry["tail_owner"] = cid
-                            entry["consumers"][cid] = entry["size"]
-                            tail = True
-                            break
-                        entry["cv"].wait(timeout=1.0)
-                    if tail:
-                        pass
-                    elif i < len(entry["chunks"]):
-                        chunk = entry["chunks"][i]
-                        i += 1
-                        pos += len(chunk)
-                        entry["consumers"][cid] = pos
-                        entry["ts"] = time.time()
-                        cv.notify_all()
-                    else:
-                        return
-                if tail:
-                    break
-                yield chunk
-            proc = entry.get("proc")
-            stdout = proc.stdout if proc else None
-            if stdout is None:
-                return
-            while True:
-                chunk = stdout.read1(65536)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            with cv:
-                entry["consumers"].pop(cid, None)
-                if entry.get("tail_owner") == cid:
-                    entry["tail_owner"] = None
-                cv.notify_all()
-            if tail:
-                # Viewer is gone; drop so the next open merges fresh.
-                _drop(vid, entry)
-
-    return _gen()
+    return _stream_gen(vid, entry, cid)

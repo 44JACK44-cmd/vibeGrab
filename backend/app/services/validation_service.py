@@ -5,7 +5,7 @@ from app.core.logging import logger
 
 
 URL_PATTERN = re.compile(
-    r"https?://(?:www\.)?[\w\-]+(\.[\w\-]+)+(/[\w\-._~:/?#\[\]@!$&\'()*+,;=%]*)?"
+    r"https?://(?:www\.)?[\w\-]+(\.[\w\-]+)+(/[\w\-.~:/?#\[\]@!$&\'()*+,;=%]*)?"
 )
 
 _BLOCKED_HOST_SUFFIXES = (

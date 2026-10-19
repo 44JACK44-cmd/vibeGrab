@@ -158,7 +158,7 @@ class SearchResultCard extends StatelessWidget {
             break;
           case 'copy':
             await Clipboard.setData(ClipboardData(text: video.url));
-            _snack(context, loc.linkCopied);
+            if (context.mounted) _snack(context, loc.linkCopied);
             break;
           case 'download':
             (onQuickDownload ?? onDownload)?.call();

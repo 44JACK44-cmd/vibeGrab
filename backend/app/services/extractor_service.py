@@ -16,6 +16,10 @@ _KWAI_MOBILE_UA = (
 _ISO_DURATION = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
 
 
+class ExtractionError(Exception):
+    """Raised when a media page cannot be parsed or downloaded."""
+
+
 def is_kwai_url(url: str) -> bool:
     try:
         host = (urlparse(url).hostname or "").lower()
@@ -39,56 +43,69 @@ def _iso_to_seconds(value: str | None) -> int | None:
     return total or None
 
 
+def _og_content(page_html: str, name: str) -> str | None:
+    """Return the content of an OpenGraph <meta> tag, if present."""
+    m = re.search(
+        r'<meta[^>]*property="%s"[^>]*content="([^"]*)"' % re.escape(name),
+        page_html,
+    )
+    return htmllib.unescape(m.group(1).strip()) if m else None
+
+
+def _pick_kwai_video_url(mp4s: list[str], thumbnail: str) -> str:
+    """Prefer the mp4 whose id matches the og:image thumbnail."""
+    if not thumbnail:
+        return mp4s[0]
+    image_id = thumbnail.rsplit("/", 1)[-1].split("_")[0]
+    if not image_id:
+        return mp4s[0]
+    for candidate in mp4s:
+        if image_id in candidate:
+            return candidate
+    return mp4s[0]
+
+
+def _kwai_uploader(page_html: str, url: str) -> str | None:
+    author_m = re.search(r'"author":"([^"]+)"', page_html)
+    if author_m:
+        return author_m.group(1)
+    username_m = re.search(r"/@([^/?#]+)", url)
+    return username_m.group(1) if username_m else None
+
+
+def _kwai_height(page_html: str) -> int | None:
+    dims_m = re.search(r'"width":(\d+),"height":(\d+)', page_html)
+    return int(dims_m.group(2)) if dims_m else None
+
+
+def _kwai_video_id(url: str) -> str:
+    id_m = re.search(r"/(?:video|photo)/(\d+)", url)
+    return id_m.group(1) if id_m else str(abs(hash(url)) % 10**12)
+
+
 def parse_kwai_page(page_html: str, url: str) -> dict:
     """Pull video metadata out of a Kwai SSR page. Raises if nothing found."""
-
-    def og(name: str) -> str | None:
-        m = re.search(
-            r'<meta[^>]*property="%s"[^>]*content="([^"]*)"' % re.escape(name),
-            page_html,
-        )
-        return htmllib.unescape(m.group(1).strip()) if m else None
-
     mp4s = re.findall(r'https://[^"\'\s]+?\.mp4[^"\'\s]*', page_html)
     if not mp4s:
-        raise Exception("No video URL found in Kwai page")
+        raise ExtractionError("No video URL found in Kwai page")
 
-    thumbnail = og("og:image") or ""
-    video_url = mp4s[0]
-    if thumbnail:
-        image_id = thumbnail.rsplit("/", 1)[-1].split("_")[0]
-        if image_id:
-            for candidate in mp4s:
-                if image_id in candidate:
-                    video_url = candidate
-                    break
+    thumbnail = _og_content(page_html, "og:image") or ""
+    video_url = _pick_kwai_video_url(mp4s, thumbnail)
 
-    caption = og("og:description") or ""
-    author_m = re.search(r'"author":"([^"]+)"', page_html)
-    username_m = re.search(r"/@([^/?#]+)", url)
-    uploader = (
-        author_m.group(1)
-        if author_m
-        else (username_m.group(1) if username_m else None)
-    )
+    caption = _og_content(page_html, "og:description") or ""
+    uploader = _kwai_uploader(page_html, url)
     title = caption.strip() or (f"@{uploader} on Kwai" if uploader else "Kwai video")
 
     dur_m = re.search(r'"duration":"(PT[^"]+)"', page_html)
     duration = _iso_to_seconds(dur_m.group(1) if dur_m else None)
 
-    dims_m = re.search(r'"width":(\d+),"height":(\d+)', page_html)
-    height = int(dims_m.group(2)) if dims_m else None
-
-    id_m = re.search(r"/(?:video|photo)/(\d+)", url)
-    video_id = id_m.group(1) if id_m else str(abs(hash(url)) % 10**12)
-
     return {
-        "id": video_id,
+        "id": _kwai_video_id(url),
         "title": title,
         "thumbnail": thumbnail or None,
         "duration": duration,
         "uploader": uploader,
-        "height": height,
+        "height": _kwai_height(page_html),
         "url": video_url,
     }
 
@@ -98,6 +115,29 @@ _KWAI_IN_TEXT = re.compile(
 )
 
 
+def _find_kwai_url(text: str) -> str | None:
+    """Return the first valid Kwai link embedded in text, if any."""
+    for m in _KWAI_IN_TEXT.finditer(text):
+        candidate = m.group(0).rstrip("\\,;")
+        if is_kwai_url(candidate):
+            return candidate
+    return None
+
+
+def _kwai_from_query(final_url: str) -> str | None:
+    """Search the redirect page query string for an embedded Kwai link."""
+    try:
+        query = parse_qs(urlparse(final_url).query)
+    except Exception:  # noqa: BLE001 - malformed urls fall through to page scan
+        return None
+    for key in ("af_sub1", "target_url", "deep_link_value", "af_dp"):
+        for value in query.get(key, []):
+            found = _find_kwai_url(unquote(value))
+            if found:
+                return found
+    return None
+
+
 def _resolve_kwai_target(final_url: str, page_text: str) -> str | None:
     """Recover the real Kwai page URL from short-link redirect pages.
 
@@ -105,23 +145,14 @@ def _resolve_kwai_target(final_url: str, page_text: str) -> str | None:
     onelink page that embeds the target URL either percent-encoded in
     the query string or raw inside its JS.
     """
-    try:
-        query = parse_qs(urlparse(final_url).query)
-        for key in ("af_sub1", "target_url", "deep_link_value", "af_dp"):
-            for value in query.get(key, []):
-                for m in _KWAI_IN_TEXT.finditer(unquote(value)):
-                    candidate = m.group(0).rstrip("\\,;")
-                    if is_kwai_url(candidate):
-                        return candidate
-    except Exception:
-        pass
+    found = _kwai_from_query(final_url)
+    if found:
+        return found
 
     for text in (page_text, unquote(page_text)):
-        m = _KWAI_IN_TEXT.search(text)
-        if m:
-            candidate = m.group(0).rstrip("\\,;")
-            if is_kwai_url(candidate):
-                return candidate
+        found = _find_kwai_url(text)
+        if found:
+            return found
     return None
 
 
@@ -137,7 +168,7 @@ def extract_kwai(url: str, _hop: int = 0) -> tuple[MediaInfo, list[FormatOption]
         allow_redirects=True,
     )
     if response.status_code >= 400:
-        raise Exception(f"Kwai page returned HTTP {response.status_code}")
+        raise ExtractionError(f"Kwai page returned HTTP {response.status_code}")
 
     final_url = str(getattr(response, "url", None) or url)
 
@@ -221,7 +252,7 @@ def extract_info(url: str) -> dict:
                 continue
         last_error = result.stderr.strip()[:500]
 
-    raise Exception(f"yt-dlp error: {last_error}")
+    raise ExtractionError(f"yt-dlp error: {last_error}")
 
 
 def _best_thumbnail(data: dict) -> str | None:
@@ -234,9 +265,23 @@ def _best_thumbnail(data: dict) -> str | None:
     return data.get("thumbnail")
 
 
+def _format_option(
+    fmt: dict, fmt_type: str, quality: str, has_video: bool, has_audio: bool
+) -> FormatOption:
+    """Build a FormatOption from a raw yt-dlp format entry."""
+    return FormatOption(
+        id=fmt.get("format_id", ""),
+        type=fmt_type,
+        extension=fmt.get("ext", "mp4"),
+        quality=quality,
+        has_video=has_video,
+        has_audio=has_audio,
+        size_bytes=fmt.get("filesize") or fmt.get("filesize_approx"),
+        direct_url=fmt.get("url") or "",
+    )
+
+
 def _normalize_format(fmt: dict) -> FormatOption | None:
-    format_id = fmt.get("format_id", "")
-    ext = fmt.get("ext", "mp4")
     height = fmt.get("height")
     vcodec = fmt.get("vcodec", "none")
     acodec = fmt.get("acodec", "none")
@@ -254,50 +299,27 @@ def _normalize_format(fmt: dict) -> FormatOption | None:
     if "m3u8" in protocol or "m3u8" in url or "dash" in protocol:
         return None
 
-    size = fmt.get("filesize") or fmt.get("filesize_approx")
+    if has_video:
+        return _format_option(fmt, "video", f"{height}p", True, has_audio)
 
-    if has_video and has_audio:
-        return FormatOption(
-            id=format_id,
-            type="video",
-            extension=ext,
-            quality=f"{height}p",
-            has_video=True,
-            has_audio=True,
-            size_bytes=size,
-            direct_url=url,
-        )
-
-    if has_video and not has_audio:
-        return FormatOption(
-            id=format_id,
-            type="video",
-            extension=ext,
-            quality=f"{height}p",
-            has_video=True,
-            has_audio=False,
-            size_bytes=size,
-            direct_url=url,
-        )
-
-    if not has_video and has_audio:
-        abr = fmt.get("abr")
-        quality = f"{int(abr)}kbps" if abr else "audio"
-        return FormatOption(
-            id=format_id,
-            type="audio",
-            extension=ext,
-            quality=quality,
-            has_video=False,
-            has_audio=True,
-            size_bytes=size,
-            direct_url=url,
-        )
-
-    return None
+    abr = fmt.get("abr")
+    quality = f"{int(abr)}kbps" if abr else "audio"
+    return _format_option(fmt, "audio", quality, False, True)
 
 
-def _pick_best_formats(raw_formats: list[dict]) -> list[FormatOption]:
+def _audio_sort_key(quality: str) -> int:
+    if quality.endswith("kbps"):
+        try:
+            return int(quality[:-4])
+        except ValueError:
+            return 0
+    return 0
+
+
+def _collect_formats(
+    raw_formats: list[dict],
+) -> tuple[dict[str, FormatOption], dict[int, FormatOption], dict[int, FormatOption]]:
+    """Group usable formats into audio, combined (muxed) and video-only maps."""
     audio_by_quality: dict[str, FormatOption] = {}
     video_combined: dict[int, FormatOption] = {}
     video_only: dict[int, FormatOption] = {}
@@ -320,29 +342,22 @@ def _pick_best_formats(raw_formats: list[dict]) -> list[FormatOption]:
             if height not in video_combined or size > 0:
                 video_combined[height] = normalized
 
-        elif not normalized.has_audio and height:
-            if height not in video_only:
-                video_only[height] = normalized
+        elif height:
+            video_only.setdefault(height, normalized)
+
+    return audio_by_quality, video_combined, video_only
+
+
+def _pick_best_formats(raw_formats: list[dict]) -> list[FormatOption]:
+    audio_by_quality, video_combined, video_only = _collect_formats(raw_formats)
 
     formats: list[FormatOption] = []
-
-    def _audio_sort_key(q: str) -> int:
-        if q.endswith("kbps"):
-            try:
-                return int(q[:-4])
-            except ValueError:
-                return 0
-        return 0
-
-    for q in sorted(audio_by_quality.keys(), key=_audio_sort_key, reverse=True):
+    for q in sorted(audio_by_quality, key=_audio_sort_key, reverse=True):
         formats.append(audio_by_quality[q])
-
-    for h in sorted(video_combined.keys(), reverse=True):
+    for h in sorted(video_combined, reverse=True):
         formats.append(video_combined[h])
-
-    for h in sorted(video_only.keys(), reverse=True):
+    for h in sorted(video_only, reverse=True):
         formats.append(video_only[h])
-
     return formats
 
 
@@ -382,6 +397,6 @@ def extract_media_info(url: str) -> tuple[MediaInfo, list[FormatOption]]:
     formats = _pick_best_formats(raw_formats)
 
     if not formats:
-        raise Exception("No downloadable formats found")
+        raise ExtractionError("No downloadable formats found")
 
     return media, formats
