@@ -42,6 +42,24 @@ def test_normalize_strips_timestamp():
     assert "&t=" not in result
 
 
+def test_normalize_rewrites_tiktok_photo_posts():
+    """yt-dlp only understands /video/<id>; the id is the same item."""
+    url = "https://www.tiktok.com/@mens.guidance/photo/7467226363544554770"
+    assert normalize_url(url) == (
+        "https://www.tiktok.com/@mens.guidance/video/7467226363544554770"
+    )
+
+
+def test_normalize_keeps_tiktok_video_and_other_paths():
+    keep = [
+        "https://www.tiktok.com/@a/video/123",
+        "https://www.tiktok.com/@a",
+        "https://www.tiktok.com/t/ZTabc/",
+    ]
+    for url in keep:
+        assert normalize_url(url) == url
+
+
 def test_validate_youtube():
     assert validate_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ") is True
 

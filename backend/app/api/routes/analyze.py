@@ -2,9 +2,11 @@ import re
 import shutil
 import subprocess
 import threading
+import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, Query
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from app.schemas.analyze import AnalyzeRequest, AnalyzeResponse
 from app.schemas.download import (
     DownloadRequest,
@@ -15,6 +17,7 @@ from app.schemas.download import (
 )
 from app.services.validation_service import extract_url, normalize_url, validate_url
 from app.services.extractor_service import extract_media_info
+from app.services.audio_service import AudioConversionError, convert_to_mp3
 from app.services.download_service import (
     create_task, get_task, list_tasks, cancel_task, start_download, init_store,
 )
@@ -235,6 +238,74 @@ def fetch_media(
 
     mime = _MIME_BY_EXT.get(ext.lower(), "application/octet-stream")
     return StreamingResponse(_stream_fetch(proc, first, stderr_buf), media_type=mime)
+
+
+@router.get("/convert/audio")
+def convert_audio(
+    background_tasks: BackgroundTasks,
+    url: str = Query("", max_length=2048),
+    format_id: str = Query("", max_length=64),
+    direct: str = Query("", max_length=2048),
+    title: str = Query("", max_length=200),
+    artist: str = Query("", max_length=200),
+    cover: str = Query("", max_length=2048),
+):
+    """Convert one audio track to a real MP3 with tags and cover.
+
+    The phone cannot run ffmpeg (Android apps cannot execute a bundled binary
+    and VibeGrab ships none), so this is the only place where "MP3" can be the
+    real thing instead of a renamed m4a. The finished file is streamed back and
+    the temporary directory is removed afterwards.
+    """
+    if not url and not direct:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "detail": "Missing source"},
+        )
+    if url:
+        target = _validate_fetch_target(url)
+        if isinstance(target, JSONResponse):
+            return target
+        url = target
+    if format_id and not re.fullmatch(r"[A-Za-z0-9_.+-]+", format_id):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "detail": "Invalid format id"},
+        )
+
+    work = Path(settings.TEMP_DIR) / f"mp3-{uuid.uuid4().hex[:10]}"
+    try:
+        output = convert_to_mp3(
+            work,
+            url=url,
+            format_id=format_id,
+            direct_url=direct,
+            title=title,
+            artist=artist,
+            cover_url=cover,
+        )
+    except AudioConversionError as exc:
+        shutil.rmtree(work, ignore_errors=True)
+        logger.error(f"Audio conversion failed ({url or direct[:80]}): {exc}")
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": f"Conversion failed: {exc}"},
+        )
+
+    background_tasks.add_task(shutil.rmtree, work, ignore_errors=True)
+    filename = _safe_filename(title) + ".mp3"
+    return FileResponse(
+        output,
+        media_type="audio/mpeg",
+        filename=filename,
+        headers={"X-VibeGrab-Format": "mp3"},
+    )
+
+
+def _safe_filename(title: str) -> str:
+    """A conservative file name for the Content-Disposition header."""
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", title).strip(" .")
+    return cleaned[:80] or "audio"
 
 
 @router.post("/downloads")

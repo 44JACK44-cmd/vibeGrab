@@ -48,6 +48,15 @@ def normalize_url(url: str) -> str:
             video_id = query["v"][0]
             return f"https://www.youtube.com/watch?v={video_id}"
 
+    # TikTok image posts ("/photo/<id>"): yt-dlp answers "Unsupported URL" for
+    # that path, but the id is the same item the "/video/" route resolves, and
+    # there it returns what the post really offers — the music track and the
+    # first slide as the thumbnail — instead of nothing at all.
+    if parsed.hostname and parsed.hostname.endswith("tiktok.com"):
+        path = re.sub(r"/photo/(\d+)", r"/video/\1", parsed.path)
+        if path != parsed.path:
+            return parsed._replace(path=path).geturl()
+
     return url
 
 

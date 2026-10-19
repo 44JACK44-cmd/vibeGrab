@@ -5,6 +5,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 from app.core.logging import logger
 from app.services import relay_warm
@@ -941,22 +942,34 @@ def get_stream_urls(video_id: str) -> dict:
         return cached
 
     fields = _stream_defaults()
-    it = _innertube_pick(video_id)
-    if it:
-        fields = _stream_from_innertube(video_id, it)
+    # The innertube request and the Invidious metadata call are independent:
+    # running them one after the other put both round trips (2-3s of a cold
+    # play) in front of the first frame. Started together, the wait is the
+    # slowest of the two instead of the sum.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        innertube_future = pool.submit(_innertube_pick, video_id)
+        invidious_future = pool.submit(
+            _invidious_get, f"/api/v1/videos/{video_id}?local=true"
+        )
+        try:
+            it = innertube_future.result()
+        except Exception as e:  # noqa: BLE001
+            logger.info(f"innertube pick failed for {video_id}: {e}")
+            it = None
+        if it:
+            fields = _stream_from_innertube(video_id, it)
 
-    # Invidious: avatar, comment count and any missing urls (best effort).
-    try:
-        # local=true: instance serves bytes itself (googlevideo may block).
-        data = _invidious_get(f"/api/v1/videos/{video_id}?local=true")
-        _apply_invidious_metadata(fields, data)
-    except Exception as e:  # noqa: BLE001
-        logger.info(f"invidious metadata unavailable for {video_id}: {e}")
-        if not fields["video"] and not fields["audio"]:
-            raise WatchError(
-                502,
-                f"all stream sources failed — innertube: {_IT_LAST_ERR or 'empty'}"
-                f" | invidious: {str(e)[:120]}",
+        # Invidious: avatar, comment count and any missing urls (best effort).
+        try:
+            data = invidious_future.result()
+            _apply_invidious_metadata(fields, data)
+        except Exception as e:  # noqa: BLE001
+            logger.info(f"invidious metadata unavailable for {video_id}: {e}")
+            if not fields["video"] and not fields["audio"]:
+                raise WatchError(
+                    502,
+                    f"all stream sources failed — innertube: {_IT_LAST_ERR or 'empty'}"
+                    f" | invidious: {str(e)[:120]}",
             ) from e
 
     if not fields["video"] and not fields["audio"]:

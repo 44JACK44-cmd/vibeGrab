@@ -1,6 +1,9 @@
 import subprocess
 import json
+import queue
 import re
+import threading
+import time
 import html as htmllib
 from urllib.parse import urlparse, parse_qs, unquote
 from app.core.config import settings
@@ -215,44 +218,190 @@ def extract_kwai(url: str, _hop: int = 0) -> tuple[MediaInfo, list[FormatOption]
     return media, [fmt]
 
 
-def extract_info(url: str) -> dict:
-    # From datacenter IPs YouTube rejects the web player page ("Failed to
-    # extract any player response"); the android/tv innertube clients still
-    # answer, so try them first and fall back to the default client.
-    last_error = ""
-    for client in ("android", "tv", None):
-        cmd = [
-            settings.YT_DLP_PATH,
-            "--dump-json",
-            "--no-download",
-            "--no-warnings",
-            "--no-playlist",
-        ]
-        if client:
-            cmd += ["--extractor-args", f"youtube:player_client={client}"]
-        cmd.append(url)
+# --- YouTube extraction -------------------------------------------------
+#
+# One yt-dlp run per player client, all of them at once:
+#
+#   * the tv/web clients answer with the full ladder (audio-only tracks plus
+#     video up to 4K) which is what the download sheet needs to offer real
+#     choices;
+#   * the android client answers with a single 360p muxed stream, so it is
+#     kept for the case the web player rejects the datacenter IP of the
+#     server, never as the first choice.
+#
+# Running them in parallel means the extra clients cost no extra wall time:
+# the first rich answer wins and the rest are stopped.
+_YT_CLIENTS = ("tv_embedded", "default", "android")
+_YT_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
+_CLIENT_TIMEOUT = 30
+_OVERALL_TIMEOUT = 40
 
-        logger.info(f"Running extractor for: {url} (client={client or 'default'})")
+# Extractions are reused for a short while: a retry, a double tap or sharing
+# the same link twice used to spawn another yt-dlp process each time. The
+# signed media URLs stay valid for hours, so a few minutes of cache is safe.
+_CACHE_TTL = 300.0
+_cache: dict[str, tuple[float, dict]] = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_get(url: str) -> dict | None:
+    with _cache_lock:
+        hit = _cache.get(url)
+    if not hit:
+        return None
+    expires_at, data = hit
+    if time.monotonic() >= expires_at:
+        with _cache_lock:
+            _cache.pop(url, None)
+        return None
+    return data
+
+
+def _cache_put(url: str, data: dict) -> None:
+    with _cache_lock:
+        if len(_cache) > 128:
+            _cache.clear()
+        _cache[url] = (time.monotonic() + _CACHE_TTL, data)
+
+
+def _is_youtube(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return any(host == h or host.endswith("." + h) for h in _YT_HOSTS)
+
+
+def _spawn_extract(url: str, client: str | None) -> subprocess.Popen:
+    cmd = [
+        settings.YT_DLP_PATH,
+        "--dump-json",
+        "--no-download",
+        "--no-warnings",
+        "--no-playlist",
+    ]
+    if client:
+        cmd += ["--extractor-args", f"youtube:player_client={client}"]
+    cmd.append(url)
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _richness(data: dict) -> tuple[int, int, int]:
+    """(audio-only tracks, video heights, usable formats) of one answer."""
+    usable = [
+        f
+        for f in data.get("formats") or []
+        if str(f.get("url") or "").startswith("http")
+        and "mhtml" not in str(f.get("ext") or "")
+    ]
+    audio_only = sum(
+        1
+        for f in usable
+        if f.get("acodec", "none") != "none" and f.get("vcodec", "none") == "none"
+    )
+    heights = {f.get("height") for f in usable if f.get("height")}
+    return (1 if audio_only else 0, len(heights), len(usable))
+
+
+def _read_result(client: str, proc: subprocess.Popen, out: queue.Queue) -> None:
+    """Read one client's output and report it back to the coordinator."""
+    try:
+        stdout, stderr = proc.communicate(timeout=_CLIENT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        out.put((client, None, "yt-dlp timed out"))
+        return
+
+    if proc.returncode == 0 and stdout.strip():
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=45,
-            )
-        except subprocess.TimeoutExpired:
-            last_error = "yt-dlp timed out"
+            out.put((client, json.loads(stdout), None))
+            return
+        except json.JSONDecodeError:
+            out.put((client, None, "invalid json from yt-dlp"))
+            return
+    out.put((client, None, (stderr or "").strip()[:500] or "yt-dlp failed"))
+
+
+def _extract_youtube(url: str) -> dict:
+    """Ask every player client at once and keep the richest answer."""
+    logger.info(f"Running extractor for: {url} (clients={'+'.join(_YT_CLIENTS)})")
+    results: "queue.Queue[tuple[str, dict | None, str | None]]" = queue.Queue()
+    procs = {
+        client: _spawn_extract(url, None if client == "default" else client)
+        for client in _YT_CLIENTS
+    }
+    remaining = len(procs)
+    for client, proc in procs.items():
+        threading.Thread(
+            target=_read_result, args=(client, proc, results), daemon=True
+        ).start()
+
+    best: dict | None = None
+    errors: list[str] = []
+    deadline = time.monotonic() + _OVERALL_TIMEOUT
+
+    while remaining > 0 and time.monotonic() < deadline:
+        try:
+            client, data, error = results.get(timeout=1.0)
+        except queue.Empty:
             continue
+        remaining -= 1
+        if data is None:
+            errors.append(f"{client}: {error}")
+            continue
+        if best is None or _richness(data) > _richness(best):
+            best = data
+        audio_only, heights, _ = _richness(data)
+        if audio_only and heights >= 3:
+            # Good enough for the whole download sheet: stop the rest.
+            break
 
-        if result.returncode == 0 and result.stdout.strip():
-            try:
-                return json.loads(result.stdout)
-            except json.JSONDecodeError:
-                last_error = "invalid json from yt-dlp"
-                continue
-        last_error = result.stderr.strip()[:500]
+    for proc in procs.values():
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
-    raise ExtractionError(f"yt-dlp error: {last_error}")
+    if best is not None:
+        return best
+    raise ExtractionError("yt-dlp error: " + ("; ".join(errors) or "no answer"))
+
+
+def _extract_single(url: str) -> dict:
+    """One yt-dlp run for providers that take no player client."""
+    logger.info(f"Running extractor for: {url} (client=default)")
+    proc = _spawn_extract(url, None)
+    try:
+        stdout, stderr = proc.communicate(timeout=_CLIENT_TIMEOUT + 15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise ExtractionError("yt-dlp timed out") from None
+
+    if proc.returncode == 0 and stdout.strip():
+        try:
+            return json.loads(stdout)
+        except json.JSONDecodeError:
+            raise ExtractionError("invalid json from yt-dlp") from None
+    raise ExtractionError(f"yt-dlp error: {(stderr or '').strip()[:500]}")
+
+
+def extract_info(url: str) -> dict:
+    """Extract one media URL, reusing a very recent answer for the same link."""
+    cached = _cache_get(url)
+    if cached is not None:
+        logger.info(f"Extractor cache hit for: {url}")
+        return cached
+
+    data = _extract_youtube(url) if _is_youtube(url) else _extract_single(url)
+
+    _cache_put(url, data)
+    return data
 
 
 def _best_thumbnail(data: dict) -> str | None:
