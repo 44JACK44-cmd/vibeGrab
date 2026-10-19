@@ -16,6 +16,12 @@ enum DownloadErrorType {
   connectionFailed,
   fileEmpty,
   muxNoAudio,
+  sourceUnavailable,
+  conversionFailed,
+  mergeFailed,
+  fileTooLarge,
+  invalidRequest,
+  unexpectedResponse,
   cancelled,
   generic,
 }

@@ -4,7 +4,7 @@ from pathlib import Path
 
 class Settings(BaseSettings):
     APP_NAME: str = "VibeGrab API"
-    VERSION: str = "0.2.0"
+    VERSION: str = "0.3.0"
     DEBUG: bool = False
 
     HOST: str = "0.0.0.0"

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../core/constants/api_constants.dart';
@@ -9,6 +10,7 @@ import '../data/models/app_settings.dart';
 import '../data/models/download_task.dart';
 import '../services/storage_service.dart';
 import '../services/local_extraction_service.dart';
+import 'download_errors.dart';
 
 class DownloadStep {
   final String step;
@@ -20,6 +22,14 @@ class _CandidateStream {
   final StreamInfo stream;
   final bool needsMux;
   _CandidateStream(this.stream, this.needsMux);
+}
+
+/// One file of a multipart upload (the tracks the device already downloaded).
+class _UploadPart {
+  final String field;
+  final String path;
+  final String filename;
+  const _UploadPart(this.field, this.path, this.filename);
 }
 
 class LocalDownloadService {
@@ -53,11 +63,33 @@ class LocalDownloadService {
         ...ApiConfig.authHeaders,
       };
 
+  /// Headers for a media request. The API key only travels to our own backend:
+  /// a CDN (googlevideo, tiktokcdn, …) must never receive it.
+  static Map<String, String> _headersFor(Uri uri) {
+    final backend = Uri.tryParse(ApiConfig.baseUrl);
+    if (backend != null && backend.host == uri.host) {
+      return _directHeaders;
+    }
+    final host = uri.host;
+    if (host.endsWith('googlevideo.com') ||
+        host.endsWith('youtube.com') ||
+        host.endsWith('ytimg.com')) {
+      return _youTubeHeaders;
+    }
+    return {
+      'User-Agent': ApiConfig.streamUserAgent,
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': '*/*',
+    };
+  }
+
   /// Failures worth retrying with another route (device streams, another
   /// format): the backend or the network may simply be having a bad moment.
   static const _retriableErrors = {
     DownloadErrorType.http403,
     DownloadErrorType.httpError,
+    DownloadErrorType.sourceUnavailable,
+    DownloadErrorType.unexpectedResponse,
     DownloadErrorType.connectionTimeout,
     DownloadErrorType.serverTimeout,
     DownloadErrorType.connectionFailed,
@@ -112,8 +144,9 @@ class LocalDownloadService {
         totalBytes: task.totalBytes ?? 0,
         onProgress: onProgress,
         task: task,
-        headers: _directHeaders,
+        headers: _headersFor(uri),
         responseTimeout: const Duration(seconds: 60),
+        operation: 'direct_file',
       );
     }
 
@@ -144,8 +177,9 @@ class LocalDownloadService {
       totalBytes: task.totalBytes ?? 0,
       onProgress: onProgress,
       task: task,
-      headers: _directHeaders,
+      headers: _headersFor(fetchUri),
       responseTimeout: const Duration(seconds: 60),
+      operation: 'fetch',
     );
 
     if (result.status == DownloadStatus.completed) {
@@ -221,14 +255,143 @@ class LocalDownloadService {
     return false;
   }
 
-  /// Real MP3, converted by the backend.
+  /// Real MP3.
   ///
-  /// Android does not let an app execute a bundled binary and VibeGrab ships
-  /// no ffmpeg, so the old `Process.run('ffmpeg')` conversion could never run:
-  /// the "MP3" was the original m4a/webm under the wrong extension, with no
-  /// tags and no cover. The backend has ffmpeg (backend/Dockerfile): it
-  /// downloads the track, encodes MP3, writes title/artist and embeds the
-  /// cover, then streams the finished file.
+  /// The provider binds a signed media URL to the IP that asked for it, and in
+  /// production the backend host is blocked by the provider. So the device —
+  /// which already has a working, signed URL from its own manifest — downloads
+  /// the audio track and uploads those bytes; the backend only runs ffmpeg.
+  /// Sources the server can reach itself (e.g. a photo post's music) still use
+  /// the URL conversion, without an upload.
+  ///
+  /// A task that asked for MP3 never ends as an m4a/webm renamed to `.mp3`:
+  /// when no real MP3 can be produced it fails with a typed error.
+  Future<DownloadTask> _downloadAudioAsMp3({
+    required DownloadTask task,
+    required String dir,
+    required Function(double progress, int bytesDownloaded) onProgress,
+    required Function(DownloadStep step) onStep,
+    required Stopwatch sw,
+  }) async {
+    final safeTitle = _sanitizeFilename(task.title);
+    final filePath = '$dir/$safeTitle.mp3';
+    final videoId = _parseVideoId(LocalExtractionService.sanitizeUrl(task.url));
+    final tempFiles = <String>[];
+    DownloadErrorType? lastError;
+
+    if (videoId != null) {
+      try {
+        final manifest = await _ytc.videos.streamsClient
+            .getManifest(videoId)
+            .timeout(const Duration(seconds: 30));
+        final candidates = _buildCandidateList(
+          manifest,
+          task.formatId,
+          DownloadMediaType.audio,
+        );
+        onStep(const DownloadStep('resolving', 'Selecting audio track...'));
+        _log('MP3: device manifest -> ${candidates.length} audio candidates');
+
+        for (final candidate in candidates) {
+          if (!_activeDownloads.containsKey(task.id)) {
+            return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
+          }
+          // The audio-only option must never download the video track.
+          if (!_streamHasAudio(candidate.stream) ||
+              _streamHasVideo(candidate.stream)) {
+            continue;
+          }
+          final ext = _getExtension(candidate.stream);
+          final tempPath = '$dir/${safeTitle}__audio.$ext';
+          tempFiles.add(tempPath);
+
+          onStep(const DownloadStep('downloading', 'Downloading audio track...'));
+          final track = await _downloadViaHttpClient(
+            url: candidate.stream.url,
+            filePath: tempPath,
+            totalBytes: candidate.stream.size.totalBytes,
+            onProgress: _scaledProgress(onProgress, 0.45),
+            task: task,
+            headers: _headersFor(candidate.stream.url),
+            responseTimeout: const Duration(seconds: 60),
+          );
+          if (track.status != DownloadStatus.completed) {
+            lastError = track.errorCode;
+            await _deleteIfExists(tempPath);
+            continue;
+          }
+
+          onStep(const DownloadStep('processing', 'Converting to MP3...'));
+          final converted = await _uploadAndSave(
+            uri: Uri.parse(ApiConfig.convertAudioUrl).replace(queryParameters: {
+              if (task.title.isNotEmpty) 'title': task.title,
+              if ((task.source ?? '').isNotEmpty) 'artist': task.source!,
+              if ((task.thumbnail ?? '').isNotEmpty) 'cover': task.thumbnail!,
+              'ext': ext,
+            }),
+            parts: [_UploadPart('audio', tempPath, 'audio.$ext')],
+            outputPath: filePath,
+            task: task,
+            onProgress: onProgress,
+            responseTimeout: const Duration(minutes: 5),
+            operation: 'convert_audio',
+          );
+          await _deleteIfExists(tempPath);
+          if (converted.status == DownloadStatus.completed) {
+            _log('MP3: real mp3 saved ${converted.filePath} '
+                '(${converted.bytesDownloaded} bytes) in ${sw.elapsedMilliseconds}ms');
+            return converted;
+          }
+          // The track itself is irrelevant to a conversion/upload failure
+          // (405 from an old backend, 413, ffmpeg error): retrying another
+          // audio stream would only re-upload the same bytes. Surface it.
+          return converted;
+        }
+      } catch (e) {
+        _log('MP3: device path failed: $e');
+        lastError = e is TimeoutException
+            ? DownloadErrorType.streamsTimeout
+            : DownloadErrorType.streamsFailed;
+      }
+    }
+
+    // Sources that are not YouTube have no device manifest: the backend is the
+    // only one that can resolve and convert them. It may also succeed for
+    // YouTube when it is not blocked (development, other hosts).
+    final canAskServer = task.url.isNotEmpty || (task.directUrl ?? '').isNotEmpty;
+    if (canAskServer) {
+      final converted = await _downloadMp3Converted(
+        task: task,
+        dir: dir,
+        onProgress: onProgress,
+        onStep: onStep,
+        sw: sw,
+      );
+      if (converted.status == DownloadStatus.completed) return converted;
+      // The device error is the one that describes the user's reality: the
+      // server's "extractor unavailable" is a host limitation, not the cause.
+      lastError ??= converted.errorCode;
+    }
+
+    await _cleanupTempFiles(tempFiles);
+    _log('MP3: no real MP3 produced (device=$lastError)');
+    return task.copyWith(
+      status: 'failed',
+      error: 'No real MP3 could be produced (last error: $lastError)',
+      errorCode:
+          (lastError ?? DownloadErrorType.conversionFailed).name,
+    );
+  }
+
+  /// Wraps [onProgress] so a phase that feeds into a later one reports its own
+  /// share (real bytes, not a simulation).
+  static Function(double, int) _scaledProgress(
+    Function(double, int) onProgress,
+    double share,
+  ) =>
+      (p, b) => onProgress(p * share, (b * share).round());
+
+  /// Real MP3 from a provider URL, resolved and converted by the backend.
   Future<DownloadTask> _downloadMp3Converted({
     required DownloadTask task,
     required String dir,
@@ -264,8 +427,9 @@ class LocalDownloadService {
       totalBytes: 0,
       onProgress: onProgress,
       task: task,
-      headers: _directHeaders,
+      headers: _headersFor(uri),
       responseTimeout: const Duration(minutes: 5),
+      operation: 'convert_audio_server',
     );
 
     if (result.status == DownloadStatus.completed) {
@@ -341,29 +505,36 @@ class LocalDownloadService {
       }
       _log('STEP 0 OK: directory writable = true (${sw.elapsedMilliseconds}ms)');
 
-      // MP3: the file has to be encoded, and the device cannot do it. The
-      // backend converts and streams the finished MP3 (tags + cover).
+      // MP3/audio-only: a real MP3 or a typed failure. The device downloads
+      // the track and the backend encodes it (see _downloadAudioAsMp3).
       if (task.mediaType == DownloadMediaType.audio &&
           (task.url.isNotEmpty || (task.directUrl ?? '').isNotEmpty)) {
-        final mp3 = await _downloadMp3Converted(
+        final mp3 = await _downloadAudioAsMp3(
           task: task,
           dir: dir,
           onProgress: onProgress,
           onStep: onStep,
           sw: sw,
         );
-        if (!_retriableErrors.contains(mp3.errorCode)) return mp3;
-        _log('MP3 conversion failed (${mp3.errorCode}); '
-            'falling back to the original audio track');
-        await _deleteIfExists(mp3.filePath);
+        // Never continue into a path that would save the raw m4a/webm under
+        // an MP3 task: that is the false "MP3" this flow replaces.
+        return mp3;
       }
 
-      // Video-only tracks must be muxed: the backend does it, the device
-      // cannot (no ffmpeg binary, no permission to run one).
+      final sanitizedUrl = LocalExtractionService.sanitizeUrl(task.url);
+      final videoId = _parseVideoId(sanitizedUrl);
+
+      // Video-only tracks must be muxed. For YouTube the backend relay is
+      // known to be unable to resolve the media from its host, so the device
+      // goes straight to its own tracks + server mux. Other providers still
+      // use the server-side merge when they offer it. A muted video is never
+      // saved as a completed download.
+      DownloadTask? mergeError;
       if (task.mediaType == DownloadMediaType.video &&
           task.hasVideo &&
           !task.hasAudio &&
-          task.formatId.trim().isNotEmpty) {
+          task.formatId.trim().isNotEmpty &&
+          videoId == null) {
         final merged = await _downloadMergedVideo(
           task: task,
           dir: dir,
@@ -372,13 +543,21 @@ class LocalDownloadService {
           sw: sw,
         );
         if (merged.status == DownloadStatus.completed) return merged;
+        mergeError = merged;
         _log('Backend merge failed (${merged.errorCode}); '
-            'falling back to the video-only track');
+            'falling back to device tracks + server mux');
         await _deleteIfExists(merged.filePath);
       }
 
       DownloadTask? directResult;
-      if (task.directUrl != null && task.directUrl!.isNotEmpty) {
+      // A video-only direct URL is not a valid download: saving it as-is is
+      // the muted-video false success. Those tasks go through the mux path.
+      final needsMux = task.mediaType == DownloadMediaType.video &&
+          task.hasVideo &&
+          !task.hasAudio;
+      if (task.directUrl != null &&
+          task.directUrl!.isNotEmpty &&
+          !needsMux) {
         _log('DIRECT branch: using backend-provided direct URL');
         directResult = await _downloadDirect(
           task: task,
@@ -396,13 +575,11 @@ class LocalDownloadService {
 
       onStep(const DownloadStep('resolving', 'Parsing video ID...'));
       _log('STEP 1: Parsing video ID...');
-      final sanitizedUrl = LocalExtractionService.sanitizeUrl(task.url);
-
-      final videoId = _parseVideoId(sanitizedUrl);
       if (videoId == null) {
         _log('STEP 1 FAILED: Could not parse video ID from: $sanitizedUrl');
         // Not a YouTube URL (device streams are YouTube-only): surface the
         // real backend error instead of a misleading "invalid url".
+        if (mergeError != null) return mergeError;
         if (directResult != null) return directResult;
         return task.copyWith(
           status: 'failed',
@@ -578,7 +755,7 @@ class LocalDownloadService {
           : (candidates.isNotEmpty
               ? candidates.first.stream.tag.toString()
               : '');
-      if (relayFormat.isNotEmpty) {
+      if (relayFormat.isNotEmpty && !needsMux) {
         _log('FALLBACK: retrying via backend relay format=$relayFormat');
         try {
           final relay = await _downloadDirect(
@@ -703,6 +880,14 @@ class LocalDownloadService {
     return candidates;
   }
 
+  /// Video-only track + audio track → one real file with both streams.
+  ///
+  /// The old path stopped after the video track and marked the download as
+  /// completed, so the user got a muted video named like a normal download.
+  /// An Android app cannot run ffmpeg, so both tracks (downloaded here, with
+  /// the phone's own signed URLs) are uploaded to the backend and muxed with
+  /// `-c copy`; the response is the actual container (mp4, or mkv when the
+  /// codecs are not mp4-compatible).
   Future<DownloadTask> _downloadWithMuxing({
     required DownloadTask task,
     required VideoOnlyStreamInfo videoOnlyStream,
@@ -722,70 +907,257 @@ class LocalDownloadService {
     final dir = StorageService.instance.downloadPath;
     final safeTitle = _sanitizeFilename(task.title);
     final videoExt = videoOnlyStream.container.name;
-    final videoTempPath = '$dir/${safeTitle}_video_temp.$videoExt';
+    final audioStream = audioStreams.first;
+    final audioExt = _getExtension(audioStream);
+    final videoTempPath = '$dir/${safeTitle}__video.$videoExt';
+    final audioTempPath = '$dir/${safeTitle}__audio.$audioExt';
 
     try {
       final totalVideoBytes = videoOnlyStream.size.totalBytes;
-
-      _log('MUX: video tag=${videoOnlyStream.tag} size=$totalVideoBytes (${(totalVideoBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
+      _log('MUX: video tag=${videoOnlyStream.tag} '
+          'size=$totalVideoBytes (${(totalVideoBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
 
       onStep(const DownloadStep('downloading', 'Downloading video track...'));
-      _log('MUX STEP 1: Downloading video...');
-
-      final videoUrl = videoOnlyStream.url;
-
       final videoResult = await _downloadViaHttpClient(
-        url: videoUrl,
+        url: videoOnlyStream.url,
         filePath: videoTempPath,
         totalBytes: totalVideoBytes,
-        onProgress: (p, b) => onProgress(p * 0.5, (b * 0.5).round()),
+        onProgress: _scaledProgress(onProgress, 0.45),
         task: task,
+        headers: _headersFor(videoOnlyStream.url),
       );
-
-      if (videoResult.status != DownloadStatus.completed) {
-        return videoResult;
-      }
+      if (videoResult.status != DownloadStatus.completed) return videoResult;
 
       if (!_activeDownloads.containsKey(task.id)) {
-        _log('MUX: Cancelled during video download');
         return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
       }
 
-      onStep(const DownloadStep('processing', 'Saving video track...'));
-      // No audio download and no local merge: an Android app cannot execute
-      // the ffmpeg binary it does not ship. The backend merge (see
-      // startDownload) is what returns a file with sound; this path is only
-      // reached when that route failed, so it keeps the video track alone
-      // instead of downloading an audio track it could never join.
-      final videoFile = File(videoTempPath);
-      final finalPath = '$dir/$safeTitle.$videoExt';
-      if (await videoFile.exists()) {
-        await videoFile.rename(finalPath);
-      }
-      final fileBytes =
-          await File(finalPath).exists() ? await File(finalPath).length() : 0;
-      _log('VIDEO-ONLY: kept $finalPath ($fileBytes bytes) — merging needs the backend');
-
-      _log('MUX DONE: path=$finalPath size=$fileBytes (${(fileBytes / 1024 / 1024).toStringAsFixed(1)} MB)');
-
-      if (fileBytes == 0) {
-        return task.copyWith(status: 'failed', error: 'Downloaded file is empty', errorCode: 'fileEmpty');
-      }
-
-      onProgress(1.0, fileBytes);
-
-      return task.copyWith(
-        status: 'completed',
-        progress: 1.0,
-        bytesDownloaded: fileBytes,
-        totalBytes: fileBytes,
-        filePath: finalPath,
+      onStep(const DownloadStep('downloading', 'Downloading audio track...'));
+      final audioResult = await _downloadViaHttpClient(
+        url: audioStream.url,
+        filePath: audioTempPath,
+        totalBytes: audioStream.size.totalBytes,
+        onProgress: _scaledProgress(onProgress, 0.45),
+        task: task,
+        headers: _headersFor(audioStream.url),
       );
+      if (audioResult.status != DownloadStatus.completed) {
+        await _cleanupTempFiles([videoTempPath]);
+        return audioResult;
+      }
+
+      onStep(const DownloadStep('processing', 'Muxing video + audio on the server...'));
+      final merged = await _uploadAndSave(
+        uri: Uri.parse(ApiConfig.mergeUrl).replace(queryParameters: {
+          if (task.title.isNotEmpty) 'title': task.title,
+        }),
+        parts: [
+          _UploadPart('video', videoTempPath, 'video.$videoExt'),
+          _UploadPart('audio', audioTempPath, 'audio.$audioExt'),
+        ],
+        // The extension is decided by the server (mp4, or mkv when needed).
+        outputPath: '$dir/$safeTitle.mp4',
+        task: task,
+        onProgress: onProgress,
+        responseTimeout: const Duration(minutes: 10),
+        operation: 'merge',
+      );
+
+      await _cleanupTempFiles([videoTempPath, audioTempPath]);
+
+      if (merged.status == DownloadStatus.completed) {
+        final format = merged.filePath?.split('.').last;
+        _log('MUX DONE: ${merged.filePath} '
+            '(${merged.bytesDownloaded} bytes, $format) in ${sw.elapsedMilliseconds}ms');
+      }
+      return merged;
     } catch (e, st) {
       _log('[ERROR] MUX EXCEPTION: $e');
       _log('[ERROR] MUX STACK: $st');
-      await _cleanupTempFiles([videoTempPath]);
-      return task.copyWith(status: 'failed', error: 'Download failed', errorCode: 'generic');
+      await _cleanupTempFiles([videoTempPath, audioTempPath]);
+      return task.copyWith(
+        status: 'failed',
+        error: 'Merge failed (${e.runtimeType})',
+        errorCode: DownloadErrorType.mergeFailed.name,
+      );
+    }
+  }
+
+  /// Posts one or two local files to the backend and streams the processed
+  /// result to [outputPath]. Progress is the real number of bytes sent.
+  Future<DownloadTask> _uploadAndSave({
+    required Uri uri,
+    required List<_UploadPart> parts,
+    required String outputPath,
+    required DownloadTask task,
+    required Function(double progress, int bytesDownloaded) onProgress,
+    required Duration responseTimeout,
+    required String operation,
+  }) async {
+    final sw = Stopwatch()..start();
+    var totalBytes = 0;
+    var sent = 0;
+    final lengths = <_UploadPart, int>{};
+    try {
+      for (final part in parts) {
+        final length = await File(part.path).length();
+        if (length <= 0) {
+          return task.copyWith(
+            status: 'failed',
+            error: 'Empty upload part (${part.field})',
+            errorCode: DownloadErrorType.fileEmpty.name,
+          );
+        }
+        lengths[part] = length;
+        totalBytes += length;
+      }
+
+      final request = http.MultipartRequest('POST', uri);
+      request.headers.addAll(ApiConfig.authHeaders);
+      for (final part in parts) {
+        final length = lengths[part]!;
+        final progressStream = File(part.path)
+            .openRead()
+            .transform(StreamTransformer<List<int>, List<int>>.fromHandlers(
+          handleData: (data, sink) {
+            sent += data.length;
+            if (totalBytes > 0) {
+              onProgress(sent / totalBytes, sent);
+            }
+            sink.add(data);
+          },
+        ));
+        request.files.add(http.MultipartFile(
+          part.field,
+          progressStream,
+          length,
+          filename: part.filename,
+        ));
+      }
+
+      _log('UPLOAD $operation: host=${uri.host} '
+          'parts=${parts.map((p) => p.field).join(",")} bytes=$totalBytes');
+
+      final streamed = await request.send().timeout(responseTimeout);
+      if (streamed.statusCode != 200) {
+        final body = await streamed.stream.bytesToString();
+        final info = parseBackendError(streamed.statusCode, body);
+        final code = errorTypeOf(info);
+        _log('UPLOAD FAILED $operation: '
+            '${describeBackendError(info, operation: operation)} '
+            'time=${sw.elapsedMilliseconds}ms');
+        return task.copyWith(
+          status: 'failed',
+          error: describeBackendError(info, operation: operation),
+          errorCode: code.name,
+        );
+      }
+
+      final file = File(outputPath);
+      final sink = file.openWrite();
+      var received = 0;
+      try {
+        await for (final chunk
+            in streamed.stream.timeout(const Duration(seconds: 120))) {
+          if (!_activeDownloads.containsKey(task.id)) {
+            await sink.close();
+            await _deleteIfExists(outputPath);
+            return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
+          }
+          sink.add(chunk);
+          received += chunk.length;
+        }
+      } finally {
+        await sink.close();
+      }
+
+      // The mux may fall back to Matroska when the codecs do not fit MP4;
+      // the server says which container it produced, the file must match it.
+      var finalPath = outputPath;
+      final announced = streamed.headers['x-vibegrab-format']?.trim();
+      if (announced != null && announced.isNotEmpty) {
+        final wanted =
+            outputPath.replaceFirst(RegExp(r'\.[^./\\]+$'), '.$announced');
+        if (wanted != outputPath) {
+          try {
+            await file.rename(wanted);
+            finalPath = wanted;
+          } catch (e) {
+            _log('UPLOAD: could not rename to .$announced: $e');
+          }
+        }
+      }
+
+      if (received == 0 || !await File(finalPath).exists()) {
+        await _deleteIfExists(finalPath);
+        return task.copyWith(
+          status: 'failed',
+          error: 'The server returned an empty file',
+          errorCode: DownloadErrorType.fileEmpty.name,
+        );
+      }
+
+      // Size alone is not proof: a proxy error page or a mismatched container
+      // would also be "non-empty". Check the real signature of what was
+      // written before calling the download complete.
+      final outExt = finalPath.contains('.')
+          ? finalPath.substring(finalPath.lastIndexOf('.') + 1).toLowerCase()
+          : '';
+      if (!await _matchesContainer(finalPath, outExt)) {
+        _log('UPLOAD: produced file does not match .$outExt');
+        await _deleteIfExists(finalPath);
+        return task.copyWith(
+          status: 'failed',
+          error: 'The server produced a file that is not a valid .$outExt '
+              'container',
+          errorCode: (operation.startsWith('merge')
+                  ? DownloadErrorType.mergeFailed
+                  : DownloadErrorType.conversionFailed)
+              .name,
+        );
+      }
+
+      onProgress(1.0, received);
+      _log('UPLOAD DONE $operation: $finalPath ($received bytes) '
+          'in ${sw.elapsedMilliseconds}ms');
+      return task.copyWith(
+        status: 'completed',
+        progress: 1.0,
+        bytesDownloaded: received,
+        totalBytes: received,
+        filePath: finalPath,
+      );
+    } on TimeoutException {
+      _log('UPLOAD TIMEOUT $operation after ${sw.elapsedMilliseconds}ms');
+      return task.copyWith(
+        status: 'failed',
+        error: 'Server timed out during $operation',
+        errorCode: DownloadErrorType.serverTimeout.name,
+      );
+    } catch (e) {
+      _log('UPLOAD ERROR $operation: ${e.runtimeType} after ${sw.elapsedMilliseconds}ms');
+      return task.copyWith(
+        status: 'failed',
+        error: 'Upload failed (${e.runtimeType})',
+        errorCode: DownloadErrorType.connectionFailed.name,
+      );
+    }
+  }
+
+  /// Checks the first bytes of a produced file against the container the task
+  /// promised. A non-empty file is not enough: an error page or a different
+  /// container would otherwise be reported as a successful download.
+  Future<bool> _matchesContainer(String path, String ext) async {
+    try {
+      final raf = await File(path).open();
+      try {
+        final head = await raf.read(12);
+        return matchesContainerHeader(head, ext);
+      } finally {
+        await raf.close();
+      }
+    } catch (_) {
+      return false;
     }
   }
 
@@ -797,8 +1169,9 @@ class LocalDownloadService {
     required DownloadTask task,
     Map<String, String> headers = _youTubeHeaders,
     Duration responseTimeout = const Duration(seconds: 30),
+    String operation = 'download',
   }) async {
-    _log('HTTP GET: ${url.host}${url.path.substring(0, url.path.length.clamp(0, 40))}...');
+    _log('HTTP GET [$operation]: ${url.host}${url.path.substring(0, url.path.length.clamp(0, 40))}...');
     final sw = Stopwatch()..start();
 
     final httpClient = HttpClient();
@@ -835,17 +1208,19 @@ class LocalDownloadService {
       _log('HTTP: status=${response.statusCode} contentLength=${response.contentLength} contentType=${response.headers.contentType}');
 
       if (response.statusCode != 200 && response.statusCode != 206) {
-        _log('HTTP FAILED: status=${response.statusCode}');
-        String detail = '';
+        String body = '';
         try {
-          final text = await response.transform(utf8.decoder).join();
-          final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(text);
-          if (m != null) detail = ' - ${m.group(1)}';
+          body = await response.transform(utf8.decoder).join();
         } catch (_) {}
-        if (response.statusCode == 403) {
-          return task.copyWith(status: 'failed', error: 'HTTP 403$detail', errorCode: 'http403');
-        }
-        return task.copyWith(status: 'failed', error: 'HTTP ${response.statusCode}$detail', errorCode: 'httpError');
+        final info = parseBackendError(response.statusCode, body);
+        final code = errorTypeOf(info);
+        final detail = describeBackendError(info, operation: operation);
+        _log('HTTP FAILED [$operation]: $detail time=${sw.elapsedMilliseconds}ms');
+        return task.copyWith(
+          status: 'failed',
+          error: detail,
+          errorCode: code.name,
+        );
       }
 
       final responseBytes = response.contentLength;
@@ -911,6 +1286,20 @@ class LocalDownloadService {
 
       if (!verified || size == 0) {
         return task.copyWith(status: 'failed', error: 'Downloaded file is empty', errorCode: 'fileEmpty');
+      }
+
+      // Signature check: a CDN error page saved under .mp4 is not a download.
+      final outExt = filePath.contains('.')
+          ? filePath.substring(filePath.lastIndexOf('.') + 1).toLowerCase()
+          : '';
+      if (!await _matchesContainer(filePath, outExt)) {
+        await _deleteIfExists(filePath);
+        _log('HTTP: downloaded bytes are not a valid .$outExt container');
+        return task.copyWith(
+          status: 'failed',
+          error: 'The downloaded file is not a valid .$outExt container',
+          errorCode: DownloadErrorType.unexpectedResponse.name,
+        );
       }
 
       onProgress(1.0, size);

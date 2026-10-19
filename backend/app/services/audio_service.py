@@ -184,6 +184,32 @@ def convert_to_mp3(
     else:
         raise AudioConversionError("no source")
 
+    return encode_mp3(
+        work,
+        source,
+        title=title,
+        artist=artist,
+        cover_url=cover_url,
+    )
+
+
+def encode_mp3(
+    work: Path,
+    source: Path,
+    *,
+    title: str = "",
+    artist: str = "",
+    cover_url: str = "",
+) -> Path:
+    """Encode an already-local audio file into ``work/output.mp3``.
+
+    Used by the upload route: the client downloads the track from the
+    provider (its own IP is the one the signed URL is bound to) and sends the
+    bytes here, where only ffmpeg is needed.
+    """
+    if not source.exists() or source.stat().st_size == 0:
+        raise AudioConversionError("empty source")
+
     cover: Path | None = None
     if cover_url and _public_host(cover_url):
         try:
@@ -219,3 +245,49 @@ def convert_to_mp3(
     if output.stat().st_size == 0:
         raise AudioConversionError("empty output")
     return output
+
+
+def merge_tracks(work: Path, video: Path, audio: Path) -> tuple[Path, str]:
+    """Mux a video-only track and an audio-only track without re-encoding.
+
+    Returns ``(path, extension)``. MP4 is tried first (the format the UI
+    offers); when the codecs/container combination is not MP4-compatible
+    (VP9/Opus from the WebM tracks) Matroska is used instead. The file is
+    real: both streams are copied and the result is never a muted video.
+    """
+    work.mkdir(parents=True, exist_ok=True)
+    for path in (video, audio):
+        if not path.exists() or path.stat().st_size == 0:
+            raise AudioConversionError("empty track")
+
+    attempts = (("mp4", ["-movflags", "+faststart"]), ("mkv", []))
+    last_error = ""
+    for ext, extra in attempts:
+        output = work / f"output.{ext}"
+        args = [
+            settings.FFMPEG_PATH,
+            "-y",
+            "-i", str(video),
+            "-i", str(audio),
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c", "copy",
+            "-shortest",
+            *extra,
+            str(output),
+        ]
+        try:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            last_error = "ffmpeg timed out"
+            continue
+        if result.returncode == 0 and output.exists() and output.stat().st_size > 0:
+            return output, ext
+        last_error = (result.stderr or "").strip()[-300:] or str(result.returncode)
+        try:
+            output.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    raise AudioConversionError(f"mux failed: {last_error or 'unknown error'}")
+

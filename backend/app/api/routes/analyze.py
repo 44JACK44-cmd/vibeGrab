@@ -5,7 +5,7 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi import APIRouter, BackgroundTasks, File, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from app.schemas.analyze import AnalyzeRequest, AnalyzeResponse
 from app.schemas.download import (
@@ -17,7 +17,12 @@ from app.schemas.download import (
 )
 from app.services.validation_service import extract_url, normalize_url, validate_url
 from app.services.extractor_service import extract_media_info
-from app.services.audio_service import AudioConversionError, convert_to_mp3
+from app.services.audio_service import (
+    AudioConversionError,
+    convert_to_mp3,
+    encode_mp3,
+    merge_tracks,
+)
 from app.services.download_service import (
     create_task, get_task, list_tasks, cancel_task, start_download, init_store,
 )
@@ -43,6 +48,62 @@ def _check_tool(path: str) -> dict:
         return {"available": True, "path": path}
     except Exception:
         return {"available": False, "path": path, "error": "not found"}
+
+
+_MAX_UPLOAD_BYTES = 300 * 1024 * 1024
+
+
+def _host(url: str) -> str:
+    """Host only: signed URLs must never reach the logs."""
+    try:
+        return re.sub(r"[^A-Za-z0-9.\-]", "", url.split("/")[2])[:80]
+    except Exception:
+        return "?"
+
+
+def _error(
+    status: int,
+    code: str,
+    detail: str,
+    *,
+    stage: str,
+    request_id: str | None = None,
+):
+    """One error shape for every download pipeline stage.
+
+    The client turns ``error_code`` into a specific user message and keeps
+    ``detail`` + ``request_id`` for the technical log, so a failure is never
+    hidden behind a generic "server error".
+    """
+    rid = request_id or uuid.uuid4().hex[:12]
+    logger.warning(
+        f"[{rid}] stage={stage} code={code} status={status} detail={detail[:300]}"
+    )
+    return JSONResponse(
+        status_code=status,
+        content={
+            "success": False,
+            "error_code": code,
+            "stage": stage,
+            "detail": detail,
+            "request_id": rid,
+        },
+        headers={"X-Request-ID": rid},
+    )
+
+
+async def _save_upload(upload: UploadFile, dest: Path, limit: int = _MAX_UPLOAD_BYTES) -> int:
+    written = 0
+    with dest.open("wb") as out:
+        while True:
+            chunk = await upload.read(1024 * 1024)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > limit:
+                raise ValueError("file too large")
+            out.write(chunk)
+    return written
 
 
 @router.get("/health")
@@ -85,32 +146,29 @@ def status():
 def analyze(req: AnalyzeRequest):
     raw_url = extract_url(req.url)
     if not raw_url:
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "detail": "No valid URL found in input"},
-        )
+        return _error(400, "invalid_request", "No valid URL found in input", stage="normalize")
 
     url = normalize_url(raw_url)
 
     if not validate_url(url):
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "detail": "Unsupported or invalid URL"},
+        return _error(
+            400, "unsupported_url", "Unsupported or invalid URL", stage="normalize"
         )
 
     try:
         media, formats = extract_media_info(url)
     except Exception as e:
-        logger.error(f"Extraction failed for {url}: {e}")
-        return JSONResponse(
-            status_code=422,
-            content={"success": False, "detail": f"Could not extract media info: {str(e)}"},
+        logger.error(f"Extraction failed for {_host(url)}: {e}")
+        return _error(
+            422,
+            "source_unavailable",
+            f"Could not extract media info: {str(e)[:300]}",
+            stage="extract",
         )
 
     if not formats:
-        return JSONResponse(
-            status_code=422,
-            content={"success": False, "detail": "No downloadable formats found"},
+        return _error(
+            422, "no_formats", "No downloadable formats found", stage="extract"
         )
 
     return AnalyzeResponse(success=True, media=media, formats=formats)
@@ -172,15 +230,13 @@ def _validate_fetch_target(url: str) -> str | JSONResponse:
     """Return the normalized fetch URL or a 400 JSONResponse."""
     raw_url = extract_url(url)
     if not raw_url:
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "detail": "No valid URL found in input"},
+        return _error(
+            400, "invalid_request", "No valid URL found in input", stage="validate"
         )
     target = normalize_url(raw_url)
     if not validate_url(target):
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "detail": "Unsupported or invalid URL"},
+        return _error(
+            400, "unsupported_url", "Unsupported or invalid URL", stage="validate"
         )
     return target
 
@@ -212,12 +268,11 @@ def fetch_media(
     if isinstance(target, JSONResponse):
         return target
     if not re.fullmatch(r"[A-Za-z0-9_.+-]+", format_id):
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "detail": "Invalid format id"},
+        return _error(
+            400, "invalid_format", "Invalid format id", stage="validate"
         )
 
-    logger.info(f"Streaming fetch: {target} format={format_id}")
+    logger.info(f"Streaming fetch: {_host(target)} format={format_id}")
 
     proc = _spawn_fetch(target, format_id)
 
@@ -230,10 +285,12 @@ def fetch_media(
     if not first:
         proc.wait(timeout=30)
         tail = _stderr_tail(stderr_buf)
-        logger.error(f"Fetch failed for {target}: {tail}")
-        return JSONResponse(
-            status_code=502,
-            content={"success": False, "detail": f"Extractor failed: {tail or 'unknown error'}"},
+        logger.error(f"Fetch failed for {_host(target)}: {tail[:200]}")
+        return _error(
+            502,
+            "source_unavailable",
+            f"Extractor failed: {tail or 'unknown error'}",
+            stage="extract",
         )
 
     mime = _MIME_BY_EXT.get(ext.lower(), "application/octet-stream")
@@ -258,20 +315,14 @@ def convert_audio(
     the temporary directory is removed afterwards.
     """
     if not url and not direct:
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "detail": "Missing source"},
-        )
+        return _error(400, "invalid_request", "Missing source", stage="validate")
     if url:
         target = _validate_fetch_target(url)
         if isinstance(target, JSONResponse):
             return target
         url = target
     if format_id and not re.fullmatch(r"[A-Za-z0-9_.+-]+", format_id):
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "detail": "Invalid format id"},
-        )
+        return _error(400, "invalid_format", "Invalid format id", stage="validate")
 
     work = Path(settings.TEMP_DIR) / f"mp3-{uuid.uuid4().hex[:10]}"
     try:
@@ -286,10 +337,12 @@ def convert_audio(
         )
     except AudioConversionError as exc:
         shutil.rmtree(work, ignore_errors=True)
-        logger.error(f"Audio conversion failed ({url or direct[:80]}): {exc}")
-        return JSONResponse(
-            status_code=502,
-            content={"success": False, "detail": f"Conversion failed: {exc}"},
+        logger.error(f"Audio conversion failed ({_host(url or direct)}): {exc}")
+        return _error(
+            502,
+            "conversion_failed",
+            f"Conversion failed: {exc}",
+            stage="convert",
         )
 
     background_tasks.add_task(shutil.rmtree, work, ignore_errors=True)
@@ -299,6 +352,125 @@ def convert_audio(
         media_type="audio/mpeg",
         filename=filename,
         headers={"X-VibeGrab-Format": "mp3"},
+    )
+
+
+@router.post("/convert/audio")
+async def convert_audio_upload(
+    background_tasks: BackgroundTasks,
+    audio: UploadFile = File(...),
+    title: str = Query("", max_length=200),
+    artist: str = Query("", max_length=200),
+    cover: str = Query("", max_length=2048),
+    ext: str = Query("", max_length=8),
+):
+    """Encode MP3 from bytes the client already downloaded.
+
+    Why this route exists: the production host cannot always reach a
+    provider's media servers (the provider blocks datacenter IPs), while the
+    phone can. The phone downloads the audio track with its own signed URL and
+    posts it here; ffmpeg is the only thing the server is needed for. No
+    provider extraction and no signed URL ever leave the device.
+
+    The part is multipart (`audio`), the same shape as `/merge`, because the
+    app uploads with one code path for both.
+    """
+    rid = uuid.uuid4().hex[:12]
+    safe_ext = ext.lower() if re.fullmatch(r"[a-z0-9]{1,5}", ext.lower()) else "bin"
+    work = Path(settings.TEMP_DIR) / f"upload-mp3-{rid}"
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+        source = work / f"source.{safe_ext}"
+        written = await _save_upload(audio, source)
+        if written == 0:
+            raise AudioConversionError("empty upload")
+        output = encode_mp3(
+            work, source, title=title, artist=artist, cover_url=cover
+        )
+    except ValueError as exc:
+        shutil.rmtree(work, ignore_errors=True)
+        return _error(413, "file_too_large", str(exc), stage="upload", request_id=rid)
+    except AudioConversionError as exc:
+        shutil.rmtree(work, ignore_errors=True)
+        logger.error(f"[{rid}] Upload conversion failed: {exc}")
+        return _error(
+            422,
+            "conversion_failed",
+            f"Conversion failed: {exc}",
+            stage="convert",
+            request_id=rid,
+        )
+    except Exception as exc:  # noqa: BLE001 - contract must stay stable
+        shutil.rmtree(work, ignore_errors=True)
+        logger.exception(f"[{rid}] Upload conversion crashed")
+        return _error(
+            500,
+            "internal_error",
+            f"Unexpected error: {type(exc).__name__}",
+            stage="convert",
+            request_id=rid,
+        )
+
+    background_tasks.add_task(shutil.rmtree, work, ignore_errors=True)
+    logger.info(f"[{rid}] Upload converted to MP3 ({written} bytes in)")
+    return FileResponse(
+        output,
+        media_type="audio/mpeg",
+        filename=_safe_filename(title) + ".mp3",
+        headers={"X-VibeGrab-Format": "mp3", "X-Request-ID": rid},
+    )
+
+
+@router.post("/merge")
+async def merge_media(
+    background_tasks: BackgroundTasks,
+    video: UploadFile = File(...),
+    audio: UploadFile = File(...),
+    title: str = Query("", max_length=200),
+):
+    """Mux two device-downloaded tracks (video-only + audio-only) for real.
+
+    Same reason as the upload conversion: yt-dlp on the server may be unable
+    to reach the provider, but the phone already has the exact tracks. The
+    result is a real container with both streams, never a muted video saved
+    as if it had sound.
+    """
+    rid = uuid.uuid4().hex[:12]
+    work = Path(settings.TEMP_DIR) / f"upload-merge-{rid}"
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+        video_path = work / "video.bin"
+        audio_path = work / "audio.bin"
+        await _save_upload(video, video_path)
+        await _save_upload(audio, audio_path)
+        output, ext = merge_tracks(work, video_path, audio_path)
+    except ValueError as exc:
+        shutil.rmtree(work, ignore_errors=True)
+        return _error(413, "file_too_large", str(exc), stage="upload", request_id=rid)
+    except AudioConversionError as exc:
+        shutil.rmtree(work, ignore_errors=True)
+        logger.error(f"[{rid}] Upload merge failed: {exc}")
+        return _error(
+            422, "merge_failed", f"Merge failed: {exc}", stage="merge", request_id=rid
+        )
+    except Exception as exc:  # noqa: BLE001 - contract must stay stable
+        shutil.rmtree(work, ignore_errors=True)
+        logger.exception(f"[{rid}] Upload merge crashed")
+        return _error(
+            500,
+            "internal_error",
+            f"Unexpected error: {type(exc).__name__}",
+            stage="merge",
+            request_id=rid,
+        )
+
+    background_tasks.add_task(shutil.rmtree, work, ignore_errors=True)
+    logger.info(f"[{rid}] Upload merged to {ext}")
+    return FileResponse(
+        output,
+        media_type="video/mp4" if ext == "mp4" else "video/x-matroska",
+        filename=_safe_filename(title) + f".{ext}",
+        headers={"X-VibeGrab-Format": ext, "X-Request-ID": rid},
     )
 
 

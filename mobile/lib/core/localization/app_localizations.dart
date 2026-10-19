@@ -124,6 +124,12 @@ class AppLocalizations {
   String get downloadErrorConnectionFailed => _get('downloadErrorConnectionFailed');
   String get downloadErrorFileEmpty => _get('downloadErrorFileEmpty');
   String get downloadErrorMuxNoAudio => _get('downloadErrorMuxNoAudio');
+  String get downloadErrorSourceUnavailable => _get('downloadErrorSourceUnavailable');
+  String get downloadErrorConversionFailed => _get('downloadErrorConversionFailed');
+  String get downloadErrorMergeFailed => _get('downloadErrorMergeFailed');
+  String get downloadErrorFileTooLarge => _get('downloadErrorFileTooLarge');
+  String get downloadErrorInvalidRequest => _get('downloadErrorInvalidRequest');
+  String get downloadErrorUnexpectedResponse => _get('downloadErrorUnexpectedResponse');
   String get downloadErrorCancelled => _get('downloadErrorCancelled');
   String get downloadErrorGeneric => _get('downloadErrorGeneric');
 
@@ -148,6 +154,12 @@ class AppLocalizations {
       case 'connectionFailed': return downloadErrorConnectionFailed;
       case 'fileEmpty': return downloadErrorFileEmpty;
       case 'muxNoAudio': return downloadErrorMuxNoAudio;
+      case 'sourceUnavailable': return downloadErrorSourceUnavailable;
+      case 'conversionFailed': return downloadErrorConversionFailed;
+      case 'mergeFailed': return downloadErrorMergeFailed;
+      case 'fileTooLarge': return downloadErrorFileTooLarge;
+      case 'invalidRequest': return downloadErrorInvalidRequest;
+      case 'unexpectedResponse': return downloadErrorUnexpectedResponse;
       case 'cancelled': return downloadErrorCancelled;
       default: return downloadErrorGeneric;
     }

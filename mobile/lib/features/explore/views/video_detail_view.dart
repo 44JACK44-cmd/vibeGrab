@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -530,15 +532,7 @@ Future<void> _toggleLike() async {
                         children: [
                           Hero(
                             tag: 'explore_thumb_${_current.url}',
-                            child: _current.thumbnail != null &&
-                                    _current.thumbnail!.isNotEmpty
-                                ? Image.network(
-                                    _current.thumbnail!,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) =>
-                                        _buildPlaceholder(cs),
-                                  )
-                                : _buildPlaceholder(cs),
+                            child: _buildPoster(cs, engine),
                           ),
                           if (buffering)
                             Column(
@@ -712,6 +706,36 @@ Future<void> _toggleLike() async {
       child: const Center(
         child: Icon(Icons.videocam, color: Colors.white24, size: 48),
       ),
+    );
+  }
+
+  /// Poster for the not-currently-playing state.
+  ///
+  /// Prefers the thumbnail the engine already cached on disk (same frame, no
+  /// network wait) and keeps the dark placeholder until the first frame is
+  /// decoded, so minimizing never leaves an empty grey rectangle.
+  Widget _buildPoster(ColorScheme cs, MediaEngine engine) {
+    final cached = engine.currentMediaId == _current.url
+        ? engine.currentThumbnailPath
+        : null;
+    if (cached != null && cached.isNotEmpty && File(cached).existsSync()) {
+      return Image.file(
+        File(cached),
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _buildPlaceholder(cs),
+      );
+    }
+
+    final url = _current.thumbnail;
+    if (url == null || url.isEmpty) return _buildPlaceholder(cs);
+    return Image.network(
+      url,
+      fit: BoxFit.cover,
+      frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+        if (wasSynchronouslyLoaded || frame != null) return child;
+        return _buildPlaceholder(cs);
+      },
+      errorBuilder: (_, __, ___) => _buildPlaceholder(cs),
     );
   }
 

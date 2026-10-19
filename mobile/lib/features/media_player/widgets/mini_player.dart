@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/localization/app_localizations.dart';
@@ -6,6 +5,7 @@ import '../../../services/media_engine.dart';
 import '../../../data/models/explore_video.dart';
 import '../../explore/views/video_detail_view.dart';
 import '../views/video_fullscreen_view.dart';
+import 'media_artwork.dart';
 import 'play_mode_button.dart';
 
 class MiniPlayer extends StatelessWidget {
@@ -149,8 +149,6 @@ class MiniPlayer extends StatelessWidget {
   }
 
   Widget _buildThumbnail(MediaEngine engine, ColorScheme cs) {
-    final thumbPath = engine.currentThumbnailPath;
-    final thumb = engine.currentThumbnail;
     return Container(
       width: 40,
       height: 40,
@@ -159,28 +157,7 @@ class MiniPlayer extends StatelessWidget {
         color: cs.surfaceContainerHighest,
       ),
       clipBehavior: Clip.antiAlias,
-      child: thumbPath != null && thumbPath.isNotEmpty && File(thumbPath).existsSync()
-          ? Image.file(File(thumbPath), fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Icon(
-                engine.isVideo ? Icons.videocam : Icons.music_note,
-                size: 20, color: cs.onSurfaceVariant,
-              ))
-          : (thumb != null && thumb.isNotEmpty
-              ? (thumb.startsWith('http')
-                  ? Image.network(thumb, fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Icon(
-                        engine.isVideo ? Icons.videocam : Icons.music_note,
-                        size: 20, color: cs.onSurfaceVariant,
-                      ))
-                  : Image.file(File(thumb), fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Icon(
-                        engine.isVideo ? Icons.videocam : Icons.music_note,
-                        size: 20, color: cs.onSurfaceVariant,
-                      )))
-              : Icon(
-                  engine.isVideo ? Icons.videocam : Icons.music_note,
-                  size: 20, color: cs.onSurfaceVariant,
-                )),
+      child: mediaArtwork(engine, cs, iconSize: 20),
     );
   }
 
@@ -325,18 +302,7 @@ const PlayModeButton(size: 22),
                     boxShadow: [BoxShadow(color: cs.primary.withValues(alpha: 0.15), blurRadius: 30, offset: const Offset(0, 10))],
                   ),
                   clipBehavior: Clip.antiAlias,
-                  child: (() {
-                    final tp = engine.currentThumbnailPath;
-                    final t = engine.currentThumbnail;
-                    if (tp != null && tp.isNotEmpty && File(tp).existsSync()) {
-                      return Image.file(File(tp), fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Icon(Icons.music_note, size: 80, color: cs.onSurfaceVariant));
-                    } else if (t != null && t.isNotEmpty) {
-                      return Image.network(t, fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Icon(Icons.music_note, size: 80, color: cs.onSurfaceVariant));
-                    }
-                    return Icon(Icons.music_note, size: 80, color: cs.onSurfaceVariant);
-                  })(),
+                  child: mediaArtwork(engine, cs, iconSize: 80),
                 ),
                 const Spacer(),
                 Text(engine.currentTitle ?? '', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: cs.onSurface),

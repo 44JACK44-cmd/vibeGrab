@@ -23,6 +23,73 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.39
+    WhatsNewEntry(
+      id: 'wn-1139-device-downloads',
+      version: '1.1.39',
+      build: 44,
+      category: WhatsNewCategory.features,
+      emoji: '📥',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Las descargas que antes fallaban ya se completan',
+        en: 'Downloads that used to fail now complete',
+      ),
+      description: LocalizedText(
+        es: 'El audio y el vídeo se descargan con la conexión del propio teléfono y el servidor solo hace la conversión final. Así funciona el MP3 de verdad, el vídeo con su audio y las pistas de música aunque la fuente no esté disponible desde el servidor.',
+        en: "Audio and video are downloaded with the phone's own connection and the server only does the final conversion. That is how the real MP3, the video with its audio and the music tracks work even when the source is not reachable from the server.",
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1139-error-details',
+      version: '1.1.39',
+      build: 44,
+      category: WhatsNewCategory.improvements,
+      emoji: '🧭',
+      order: 0,
+      title: LocalizedText(
+        es: 'Si algo falla, ahora sabes por qué',
+        en: 'If something fails, now you know why',
+      ),
+      description: LocalizedText(
+        es: 'Los errores distinguen entre fuente no disponible, formato incompatible, problema de red, tiempo agotado, espacio insuficiente o conversión fallida, en lugar de un mensaje genérico de error del servidor. Puedes reintentar cuando tenga sentido.',
+        en: 'Errors tell apart an unavailable source, an incompatible format, a network problem, a timeout, not enough space or a failed conversion, instead of a generic server error message. You can retry when it makes sense.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1139-screen-off-audio',
+      version: '1.1.39',
+      build: 44,
+      category: WhatsNewCategory.fixes,
+      emoji: '🔊',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'El sonido sigue al apagar la pantalla',
+        en: 'Sound keeps going when the screen turns off',
+      ),
+      description: LocalizedText(
+        es: 'Al apagar la pantalla el audio continúa y el tiempo avanza; desde la notificación puedes pausar, reanudar y volver, y al encender la pantalla el vídeo y el sonido siguen sincronizados. Ya no hace falta pulsar Play otra vez.',
+        en: 'When the screen turns off the audio continues and the time keeps advancing; from the notification you can pause, resume and go back, and when the screen turns on the video and the sound are still in sync. There is no need to press Play again.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1139-grey-thumbnail',
+      version: '1.1.39',
+      build: 44,
+      category: WhatsNewCategory.fixes,
+      emoji: '🖼️',
+      order: 1,
+      title: LocalizedText(
+        es: 'Sin recuadro gris al minimizar el reproductor',
+        en: 'No grey box when the player is minimized',
+      ),
+      description: LocalizedText(
+        es: 'La carátula se guarda en el teléfono al empezar a reproducir, así aparece al instante al minimizar o al volver de la ventana pequeña, en lugar de un hueco gris mientras carga.',
+        en: 'The artwork is saved on the phone when playback starts, so it appears instantly when minimizing or coming back from the small window, instead of a grey gap while it loads.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.38
     WhatsNewEntry(
       id: 'wn-1138-real-mp3',

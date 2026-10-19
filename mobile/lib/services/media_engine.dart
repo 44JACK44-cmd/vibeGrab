@@ -183,6 +183,26 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   bool _isAudioBackgroundActive = false;
   bool get isAudioBackgroundActive => _isAudioBackgroundActive;
+
+  /// True between [onScreenOff] and [onScreenOn]. The handoff checks it after
+  /// every await: if the screen came back while the audio source was being
+  /// prepared, the video must stay alive instead of going silent behind a
+  /// resumed UI.
+  bool _appInBackground = false;
+
+  /// Audio-only source resolved while the video was still on screen. The
+  /// screen-off handoff must not start a network request after the app has
+  /// been backgrounded: the OS may freeze the isolate mid-resolve, which is
+  /// silence with the UI still claiming playback.
+  AudioSource? _warmAudioSource;
+  String? _warmAudioMediaId;
+
+  StreamSubscription<PlaybackEvent>? _errSub;
+
+  /// Set by [dispose]: an in-flight thumbnail write must not notify a
+  /// ChangeNotifier that no longer has listeners.
+  bool _disposed = false;
+
   bool _isInPiP = false;
   bool _isPiPEntering = false;
   DateTime? pipExitedAt;
@@ -336,6 +356,92 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     } catch (e) {
       debugPrint('[MediaEngine] cover cache failed: $e');
       return null;
+    }
+  }
+
+  /// Media id whose remote thumbnail has already been requested.
+  String? _thumbCacheKey;
+
+  /// Downloads the remote thumbnail once so the mini player, the audio sheet
+  /// and the detail page can paint it from disk.
+  ///
+  /// `Image.network` on its own is what produced the grey square every time
+  /// the player was minimized: the widget was rebuilt with an empty image
+  /// cache and had nothing to show until the HTTP response arrived. A local
+  /// file paints in the same frame, survives a rebuild and works offline.
+  void _cacheThumbnailIfNeeded() {
+    final remote = _state.thumbnail;
+    if (remote == null || remote.isEmpty) return;
+    if (!remote.startsWith('http')) return;
+    if (_thumbCacheKey == remote) return;
+
+    final existing = _state.thumbnailPath;
+    if (existing != null && existing.isNotEmpty && File(existing).existsSync()) {
+      return;
+    }
+    _thumbCacheKey = remote;
+    unawaited(_downloadThumbnail(remote));
+  }
+
+  Future<void> _downloadThumbnail(String remote) async {
+    final uri = Uri.tryParse(remote);
+    if (uri == null || !uri.hasAuthority) return;
+    try {
+      final dir = Directory(
+          '${(await getTemporaryDirectory()).path}/vibegrab_thumbs');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final lower = uri.path.toLowerCase();
+      final ext = lower.endsWith('.png')
+          ? 'png'
+          : lower.endsWith('.webp')
+              ? 'webp'
+              : 'jpg';
+      final file = File(
+          '${dir.path}/${remote.hashCode.toRadixString(16)}_${remote.length}.$ext');
+
+      if (!await file.exists() || await file.length() == 0) {
+        final client = HttpClient()
+          ..connectionTimeout = const Duration(seconds: 10);
+        IOSink? sink;
+        try {
+          final request = await client.getUrl(uri);
+          request.headers.set('User-Agent', ApiConfig.streamUserAgent);
+          final response =
+              await request.close().timeout(const Duration(seconds: 15));
+          if (response.statusCode == 200) {
+            sink = file.openWrite();
+            var bytes = 0;
+            await for (final chunk
+                in response.timeout(const Duration(seconds: 15))) {
+              bytes += chunk.length;
+              // Thumbnails are small; anything larger is not one.
+              if (bytes > 4 * 1024 * 1024) break;
+              sink.add(chunk);
+            }
+            await sink.close();
+            sink = null;
+            if (bytes == 0 && await file.exists()) {
+              await file.delete();
+            }
+          } else {
+            await response.drain<void>();
+          }
+        } finally {
+          if (sink != null) await sink.close();
+          client.close(force: true);
+        }
+      }
+
+      if (!await file.exists() || await file.length() == 0) return;
+      // The user may have moved on while the download was in flight.
+      if (_state.thumbnail != remote) return;
+      if (_disposed) return;
+      _state = _state.copyWith(thumbnailPath: file.path);
+      _emitSessionSnapshot();
+      _syncPlaybackStateToHandler();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[MediaEngine] thumbnail cache failed: ${e.runtimeType}');
     }
   }
 
@@ -621,6 +727,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   void _syncPlaybackStateToHandler() {
+    _cacheThumbnailIfNeeded();
     AudioProcessingState procState;
     switch (_state.status) {
       case MediaStatus.idle:
@@ -1987,6 +2094,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       // Keep the freshest stream URL for the background handoff and relay
       // seeks (a reconnect writes its own `?t=` variant here).
       _lastDirectUrl = streamUrl.toString();
+      // Resolve the audio-only URL NOW, while the app is on screen. Doing it
+      // at screen-off time means a network wait inside a backgrounded app,
+      // which is exactly when the OS is free to freeze the isolate.
+      unawaited(_warmBackgroundAudio(mediaId));
       return true;
     } catch (e) {
       debugPrint('[MediaEngine] Network video start error: $e');
@@ -2053,7 +2164,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _state = _state.copyWith(status: MediaStatus.playing, position: Duration.zero);
       _syncPlaybackStateToHandler();
       notifyListeners();
-      await _player.play();
+      // just_audio's play() completes when playback ENDS. Awaiting it made
+      // every following line (history, state, handler sync) run only when the
+      // track stopped.
+      unawaited(_player.play());
 
       MediaMetadataService().recordPlay(
         filename: youtubeUrl,
@@ -2169,8 +2283,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _syncPlaybackStateToHandler();
       notifyListeners();
       debugPrint('[MediaEngine] Calling _player.play() for: ${file.title}');
-      await _player.play();
-      debugPrint('[MediaEngine] _player.play() completed');
+      unawaited(_player.play());
     }
   }
 
@@ -2190,7 +2303,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _state = _state.copyWith(status: MediaStatus.playing, position: Duration.zero);
     _syncPlaybackStateToHandler();
     notifyListeners();
-    await _player.play();
+    unawaited(_player.play());
   }
 
   Future<void> _playVideoFile(File file, MediaItem item) async {
@@ -2337,14 +2450,18 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final savedDuration = _state.duration;
     final videoBefore = _videoController;
 
-    // The handoff used to DISPOSE THE VIDEO FIRST and only then go resolve
-    // the audio source, so the sound died for the whole resolution: the
-    // YouTube path alone waits on a network manifest for up to 10s. That is
-    // the audible pause when the screen goes off or the app is minimized.
-    // The other way around: resolve and BUFFER the audio while the video
-    // keeps playing, and swap only once the next source is ready. Failing
-    // anywhere leaves the video playing instead of leaving silence behind.
-    final source = await _prepareBackgroundAudio(mediaId, savedPosition);
+    _appInBackground = true;
+
+    // Resolve/buffer the audio WITHOUT touching the video. The source is
+    // usually already warm (resolved while the video was still playing), so
+    // this costs no network at all now that the screen is off.
+    AudioSource? source;
+    if (_warmAudioMediaId == mediaId && _warmAudioSource != null) {
+      source = _warmAudioSource;
+      _bgAudioOffset = Duration.zero;
+    } else {
+      source = await _prepareBackgroundAudio(mediaId, savedPosition);
+    }
     if (source == null) {
       _bgAudioOffset = Duration.zero;
       debugPrint('[MediaEngine] No background audio source for $mediaId');
@@ -2361,14 +2478,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       return;
     }
 
-    // Resolving took time and the video never stopped, so start the audio
-    // where it is NOW, not where it was when the handoff began. Only the
-    // relay `?t=` stream starts elsewhere, and _bgAudioOffset carries that.
-    if (_state.mediaId != mediaId ||
+    // Resolving took time. The app must still be in the background and the
+    // same item must still be playing; otherwise taking over would hijack
+    // whatever the user is watching now.
+    if (!_appInBackground ||
+        _state.mediaId != mediaId ||
         !identical(_videoController, videoBefore) ||
         _state.status == MediaStatus.paused) {
-      // The queue moved on (a short ended, another video was picked) or the
-      // user paused meanwhile: taking over here would hijack that playback.
       _bgAudioOffset = Duration.zero;
       return;
     }
@@ -2377,17 +2493,53 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         ? logicalNow - _bgAudioOffset
         : Duration.zero;
 
+    // Swap with NO silence: pause the video (momentarily), start the audio,
+    // and only release the video once the audio is actually the active
+    // player. The old order disposed the video BEFORE play() and then awaited
+    // the play future — which completes when playback ENDS — so the handler
+    // sync, the position listeners and `_isAudioBackgroundActive` never ran:
+    // silent playback, frozen UI, and Play restored nothing.
+    try {
+      await _videoController?.pause();
+      await _player.seek(audioStart);
+      unawaited(_player.play());
+    } catch (e) {
+      debugPrint('[MediaEngine] Screen off audio play error: $e');
+      _bgAudioOffset = Duration.zero;
+      try {
+        await _videoController?.play();
+      } catch (_) {}
+      return;
+    }
+
+    if (!_appInBackground) {
+      // The user came back before the swap finished: drop the audio and keep
+      // the video that is still on screen.
+      try {
+        await _player.pause();
+        await _videoController?.play();
+      } catch (_) {}
+      _bgAudioOffset = Duration.zero;
+      return;
+    }
+    if (!_player.playing) {
+      // The source refused to play (expired URL, unsupported codec): never
+      // report playback that is not happening.
+      debugPrint('[MediaEngine] Screen off: audio did not start, keeping video');
+      _bgAudioOffset = Duration.zero;
+      try {
+        await _videoController?.play();
+      } catch (_) {}
+      return;
+    }
+
     _completionDebounce?.cancel();
+    _wireAudioSubscriptions(mediaId);
+    // Release the video only now: the sound is already coming from the audio
+    // player, so disposing cannot open an audible gap.
     await _videoController?.dispose();
     _videoController = null;
 
-    try {
-      await _player.seek(audioStart);
-      await _player.play();
-    } catch (e) {
-      debugPrint('[MediaEngine] Screen off audio play error: $e');
-    }
-    _wireAudioSubscriptions(mediaId);
     _state = _state.copyWith(
       status: MediaStatus.playing,
       position: logicalNow,
@@ -2399,6 +2551,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   Future<void> onScreenOn() async {
+    _appInBackground = false;
     if (!_isAudioBackgroundActive) return;
 
     // Logical position: the audio clock excludes the relay `t` offset.
@@ -2514,6 +2667,28 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     } catch (e) {
       debugPrint('[MediaEngine] YouTube restore error: $e');
       return false;
+    }
+  }
+
+  /// Resolves the audio-only source ahead of the screen-off handoff.
+  ///
+  /// Only YouTube needs the network; local files and the last direct URL are
+  /// instant and are resolved lazily at handoff time.
+  Future<void> _warmBackgroundAudio(String mediaId) async {
+    if (_parseVideoIdFromUrl(mediaId) == null) return;
+    if (_warmAudioMediaId == mediaId && _warmAudioSource != null) return;
+    final offsetBefore = _bgAudioOffset;
+    try {
+      final source = await _prepareBackgroundAudio(mediaId, Duration.zero);
+      // Warming up must never move the position math of the live video.
+      _bgAudioOffset = offsetBefore;
+      if (source == null || _state.mediaId != mediaId) return;
+      _warmAudioSource = source;
+      _warmAudioMediaId = mediaId;
+      debugPrint('[MediaEngine] background audio pre-resolved for $mediaId');
+    } catch (e) {
+      _bgAudioOffset = offsetBefore;
+      debugPrint('[MediaEngine] background audio warm-up failed: $e');
     }
   }
 
@@ -2701,6 +2876,24 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();
+    _errSub?.cancel();
+
+    // A failed audio session (expired stream URL, unsupported codec, focus
+    // refused) must never leave the UI claiming playback. This is what kept
+    // "playing" on screen with no sound after a bad handoff.
+    _errSub = _player.playbackEventStream.listen((_) {}, onError: (Object error) {
+      final text = error is PlayerException
+          ? '${error.code}: ${error.message}'
+          : error.toString();
+      debugPrint('[MediaEngine] audio error: $text');
+      _lastAudioError = _short(text);
+      if (_isAudioBackgroundActive && _videoController == null) {
+        _state = _state.copyWith(status: MediaStatus.paused);
+        _isAudioBackgroundActive = false;
+        _syncPlaybackStateToHandler();
+        notifyListeners();
+      }
+    });
 
     _posSub = _player.positionStream.listen((pos) {
       final logical = pos + _bgAudioOffset;
@@ -2762,7 +2955,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         if (_videoController != null) {
           await _videoController!.play();
         } else {
-          await _player.play();
+          unawaited(_player.play());
         }
         return;
       }
@@ -2931,7 +3124,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (_videoController != null) {
       await _videoController!.play();
     } else if (_player.audioSource != null) {
-      await _player.play();
+      // NOT awaited: play() completes when playback ends, so awaiting it left
+      // the state below "paused" forever and the user had to press Play a
+      // second time to make the UI catch up.
+      unawaited(_player.play());
     } else {
       // No source at all: there is nothing to resume. Forcing `playing`
       // here would hide the spinner and disarm the stall watchdog on a
@@ -3025,12 +3221,14 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   @override
   void dispose() {
+    _disposed = true;
     _completionDebounce?.cancel();
     _pipConfirmTimer?.cancel();
     _playWatchdog?.cancel();
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();
+    _errSub?.cancel();
     for (final sub in _audioSessionSubs) {
       sub.cancel();
     }
