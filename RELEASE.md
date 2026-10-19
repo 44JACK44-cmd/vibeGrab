@@ -37,7 +37,9 @@ Reglas:
 
 ## 3. Notas del release
 
-Crea `docs/releases/X.Y.Z.md` (sin el build) con esas mismas novedades, en el
+Crea `docs/releases/X.Y.Z.md` — **sin el build y sin la `v` del tag**
+(`v1.1.38-43` -> `docs/releases/1.1.38.md`; el workflow corta el tag para
+formar el nombre y no encuentra `v1.1.38.md`) — con esas mismas novedades, en el
 formato `## Seccion` + `- **Titulo** — descripcion`, con los dos idiomas
 separados por los marcadores `<!-- es -->` y `<!-- en -->`. Copia el bloque mas
 reciente del catalogo y conviertelo a texto.
@@ -48,8 +50,8 @@ usuario llega sin catalogo y lo unico que puede enseñar es el texto del
 release. Sin ese archivo, GitHub rellena el release con la lista de commits,
 que es una lista de cambios tecnica y no algo para quien usa la app.
 
-Si el archivo falta, el workflow cae al texto generado (no rompe nada) y la
-app filtra el ruido y pinta lo que quede. Pero lo correcto es escribirlo.
+Si el archivo falta, el workflow **falla antes de publicar** y dice que falta:
+asi nunca sale un release con la lista de commits como texto.
 
 ## 4. Commit y push
 

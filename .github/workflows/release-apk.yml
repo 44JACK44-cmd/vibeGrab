@@ -112,23 +112,19 @@ jobs:
           VER="${TAG#v}"
           VER="${VER%-*}"
           NOTES="docs/releases/${VER}.md"
-          if [ -f "$NOTES" ]; then
-            if gh release view "${TAG}" >/dev/null 2>&1; then
-              gh release upload "${TAG}" VibeGrab.apk --clobber
-              gh release edit "${TAG}" --notes-file "$NOTES"
-            else
-              gh release create "${TAG}" VibeGrab.apk \
-                --title "${TAG}" \
-                --notes-file "$NOTES" \
-                --verify-tag
-            fi
-          elif gh release view "${TAG}" >/dev/null 2>&1; then
+          # Las notas son parte del producto: son lo que la app muestra en el
+          # aviso de actualizacion. Sin archivo de notas el release publicaba
+          # la lista de commits (nombres tecnicos) en su lugar, asi que aqui
+          # se corta antes de publicar algo ilegible.
+          if [ ! -f "$NOTES" ]; then
+            echo "::error::Falta $NOTES: las notas del release son obligatorias (ver RELEASE.md)"; exit 1
+          fi
+          if gh release view "${TAG}" >/dev/null 2>&1; then
             gh release upload "${TAG}" VibeGrab.apk --clobber
+            gh release edit "${TAG}" --notes-file "$NOTES"
           else
-            # Sin notas escritas se cae al texto generado a partir de los
-            # commits: legible para quien desarrolla, no para quien usa.
             gh release create "${TAG}" VibeGrab.apk \
               --title "${TAG}" \
-              --generate-notes \
+              --notes-file "$NOTES" \
               --verify-tag
           fi
