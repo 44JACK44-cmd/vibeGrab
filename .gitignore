@@ -22,3 +22,6 @@ mobile/.flutter-plugins-dependencies
 .idea/
 *.iml
 .DS_Store
+
+# Kotlin/Gradle session data
+mobile/android/.kotlin/
