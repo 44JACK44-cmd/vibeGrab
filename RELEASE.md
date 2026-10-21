@@ -13,7 +13,7 @@ de ningun portatil concreto: lo hace GitHub Actions.
 | 2 | Anadir las novedades (catalogo) |
 | 3 | Escribir las notas del release (`docs/releases`) |
 | 4 | Commit + push a `main` |
-| 5 | Crear y empujar el tag `vX.Y.Z-B` (o `vX.Y.Z.P-B` para un parche) |
+| 5 | Crear y empujar el tag `vX.Y.Z-B` |
 | 6 | GitHub Actions compila, firma y publica el APK solo |
 
 ---
@@ -22,11 +22,12 @@ de ningun portatil concreto: lo hace GitHub Actions.
 
 - `mobile/pubspec.yaml` -> `version: X.Y.Z+B`  (semver de tres; `B` es el
   `versionCode`)
-- Para un parche de cuatro componentes (`1.1.40.2`) el `versionName` del APK
-  sale del tag al compilar; no lo escribas en `pubspec.yaml` porque pub rechaza
-  `X.Y.Z.P`.
-- `mobile/lib/core/localization/app_es.arb` -> `"appVersion": "vX.Y.Z"` (o `vX.Y.Z.P`)
-- `mobile/lib/core/localization/app_en.arb` -> `"appVersion": "vX.Y.Z"` (o `vX.Y.Z.P`)
+- **No uses cuatro componentes** (`X.Y.Z.P`) para una versión publicada. Las
+  apps ya instaladas y la web solo reconocen `X.Y.Z`: un tag `v1.1.40.2-47`
+  no aparece como actualización. Para un parche usa el siguiente número
+  normal, por ejemplo `1.1.41`.
+- `mobile/lib/core/localization/app_es.arb` -> `"appVersion": "vX.Y.Z"`
+- `mobile/lib/core/localization/app_en.arb` -> `"appVersion": "vX.Y.Z"`
 
 ## 2. Anadir las novedades
 
@@ -41,10 +42,9 @@ Reglas:
 
 ## 3. Notas del release
 
-Crea `docs/releases/X.Y.Z.md` (o `X.Y.Z.P.md` para un parche) — **sin el build y sin la `v` del tag**
-(`v1.1.38-43` -> `docs/releases/1.1.38.md`; `v1.1.40.2-47` ->
-`docs/releases/1.1.40.2.md`; el workflow corta el build para formar el nombre y
-no encuentra `v1.1.38.md`) — con esas mismas novedades, en el
+Crea `docs/releases/X.Y.Z.md` — **sin el build y sin la `v` del tag**
+(`v1.1.38-43` -> `docs/releases/1.1.38.md`; el workflow corta el build para
+formar el nombre y no encuentra `v1.1.38.md`) — con esas mismas novedades, en el
 formato `## Seccion` + `- **Titulo** — descripcion`, con los dos idiomas
 separados por los marcadores `<!-- es -->` y `<!-- en -->`. Copia el bloque mas
 reciente del catalogo y conviertelo a texto.
@@ -72,14 +72,14 @@ git push origin main
 
 ```bash
 git tag vX.Y.Z-B
-git tag vX.Y.Z.P-B   # parche, por ejemplo v1.1.40.2-47
-git push origin vX.Y.Z.P-B
+git push origin vX.Y.Z-B
 ```
 
-El formato es `vX.Y.Z-B` o `vX.Y.Z.P-B`: la app lo lee con
-`^v(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?-(\d+)$`. Ejemplo: `v1.1.35-40` o
-`v1.1.40.2-47`. El workflow toma el `versionName` del tag (`1.1.40.2`) y el
-`versionCode` del build (`47`).
+El formato es `vX.Y.Z-B`: la app y la web lo leen con
+`^v(\d+)\.(\d+)\.(\d+)-(\d+)$`. Ejemplo: `v1.1.41-48`. El workflow toma el
+`versionName` del tag (`1.1.41`) y el `versionCode` del build (`48`). No uses
+cuatro componentes para una versión que deba recibir alguien que ya tiene una
+versión anterior instalada.
 
 ## 6. Compilacion y publicacion
 
@@ -103,7 +103,7 @@ Necesita `mobile/android/key.properties` (ver "Firma del APK"):
 
 ```bash
 cd mobile
-flutter build apk --release --build-name=1.1.40.2 --build-number=47
+flutter build apk --release --build-name=1.1.41 --build-number=48
 ```
 
 ---
@@ -165,6 +165,5 @@ flutter analyze          # sin errores
 flutter test             # todo en verde
 ```
 
-Y que el tag coincida con `pubspec.yaml` en `X.Y.Z+B`; para un parche
-`X.Y.Z.P-B` el `versionName` con cuatro componentes viene del tag y el
-`versionCode` sigue siendo `B`.
+Y que el tag coincida con `pubspec.yaml` en `X.Y.Z+B`. El `versionName` debe
+tener tres componentes para que las apps instaladas y la web lo detecten.

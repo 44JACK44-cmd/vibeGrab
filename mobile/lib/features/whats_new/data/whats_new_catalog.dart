@@ -23,11 +23,11 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
-    // --------------------------------------------------------------- 1.1.40.2
+    // ----------------------------------------------------------------- 1.1.41
     WhatsNewEntry(
-      id: 'wn-114002-mp3-real',
-      version: '1.1.40.2',
-      build: 47,
+      id: 'wn-1141-mp3-real',
+      version: '1.1.41',
+      build: 48,
       category: WhatsNewCategory.fixes,
       emoji: '🎵',
       order: 0,
@@ -42,9 +42,9 @@ class WhatsNewCatalog {
       ),
     ),
     WhatsNewEntry(
-      id: 'wn-114002-no-duplicates',
-      version: '1.1.40.2',
-      build: 47,
+      id: 'wn-1141-no-duplicates',
+      version: '1.1.41',
+      build: 48,
       category: WhatsNewCategory.fixes,
       emoji: '🧹',
       order: 1,
@@ -59,9 +59,9 @@ class WhatsNewCatalog {
       ),
     ),
     WhatsNewEntry(
-      id: 'wn-114002-whats-new-scroll',
-      version: '1.1.40.2',
-      build: 47,
+      id: 'wn-1141-whats-new-scroll',
+      version: '1.1.41',
+      build: 48,
       category: WhatsNewCategory.fixes,
       emoji: '📜',
       order: 2,

@@ -1,10 +1,10 @@
 name: Compilar y publicar APK
 
 # Escalabilidad: publicar una version NO depende de ningun portatil.
-# Empuja un tag con el formato vX.Y.Z-B o vX.Y.Z.P-B y GitHub compila, firma
-# y publica el APK. El nombre de version del APK se toma del tag, por eso los
-# parches pueden conservar cuatro componentes (1.1.40.2) aunque pubspec use
-# el formato semver de tres.
+# Empuja un tag con el formato vX.Y.Z-B y GitHub compila, firma y publica el
+# APK. Usa siempre tres componentes: las apps instaladas y la web no detectan
+# tags de cuatro componentes como v1.1.40.2-47. El versionName del APK se toma
+# del tag y el versionCode del numero de build.
 # La clave de firma vive en los SECRETOS del repositorio (nunca en el codigo).
 # Ver RELEASE.md.
 
