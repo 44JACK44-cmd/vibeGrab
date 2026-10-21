@@ -52,6 +52,29 @@ class UpdateService {
     return remoteBuild > localBuild;
   }
 
+  /// Flutter builds the per-ABI APKs with `versionCode = abi * 1000 + build`
+  /// (armeabi-v7a = 1, arm64-v8a = 2, x86_64 = 3) while the universal APK
+  /// keeps `versionCode = build`. Comparing the raw numbers of the release
+  /// against the installed one would make a phone that installed a split look
+  /// newer than the release itself, and the app would offer an update that
+  /// Android then refuses. Both sides are therefore compared with the same
+  /// rule.
+  static const Map<String, int> _abiOrder = {
+    'armeabi-v7a': 1,
+    'arm64-v8a': 2,
+    'x86_64': 3,
+  };
+
+  /// Real `versionCode` of an APK of this release.
+  static int effectiveBuild(String? assetName, int build) {
+    if (assetName == null) return build;
+    final abi = RegExp(r'^vibegrab-(.+)\.apk$')
+        .firstMatch(assetName.toLowerCase())
+        ?.group(1);
+    final index = abi == null ? null : _abiOrder[abi];
+    return index == null ? build : index * 1000 + build;
+  }
+
   static Future<UpdateInfo?> checkForUpdate() async {
     final current = await currentVersion();
     final response = await http
@@ -78,16 +101,22 @@ class UpdateService {
         ? '${match[1]}.${match[2]}.${match[3]}'
         : '${match[1]}.${match[2]}.${match[3]}.${match[4]}';
     final remoteBuild = int.parse(match[5]!);
-    if (!_isNewer(remoteVersion, remoteBuild, current.version, current.build)) {
-      return null;
-    }
 
     // Un APK por ABI: el universal pesa cuatro veces mas y en una descarga
     // por movil se corta con facilidad. Se elige el de la arquitectura del
     // telefono y, si no existe, el universal.
     final assets = (data['assets'] as List<dynamic>?) ?? [];
     final phoneAbi = await deviceAbi();
-    final apkUrl = pickApkUrl(assets, phoneAbi) ?? _fallbackApkUrl;
+    final picked = pickApk(assets, phoneAbi);
+    final apkUrl = picked?.url ?? _fallbackApkUrl;
+
+    // La comparacion usa el versionCode REAL del APK elegido: los splits
+    // llevan `abi * 1000 + build` y el universal solo `build`.
+    final effectiveRemoteBuild = effectiveBuild(picked?.name, remoteBuild);
+    if (!_isNewer(remoteVersion, effectiveRemoteBuild, current.version,
+        current.build)) {
+      return null;
+    }
 
     return UpdateInfo(
       versionName: remoteVersion,
@@ -201,25 +230,32 @@ class UpdateService {
   /// Picks the APK to download out of the release assets: the one built for
   /// [deviceAbi] if the release has it, the universal one otherwise.
   @visibleForTesting
-  static String? pickApkUrl(List<dynamic> assets, String deviceAbi) {
-    String? universalUrl;
-    final byAbi = <String, String>{};
+  static String? pickApkUrl(List<dynamic> assets, String deviceAbi) =>
+      pickApk(assets, deviceAbi)?.url;
+
+  /// Same as [pickApkUrl] but also returns the file name, needed to know the
+  /// real `versionCode` of the chosen APK.
+  @visibleForTesting
+  static ({String name, String url})? pickApk(
+      List<dynamic> assets, String deviceAbi) {
+    ({String name, String url})? universal;
+    final byAbi = <String, ({String name, String url})>{};
     for (final asset in assets) {
       if (asset is! Map) continue;
       final name = '${asset['name']}'.toLowerCase();
       if (!name.endsWith('.apk')) continue;
       final url = '${asset['browser_download_url']}';
       if (name == 'vibegrab.apk') {
-        universalUrl = url;
+        universal = (name: name, url: url);
         continue;
       }
       final abi = RegExp(r'^vibegrab-(.+)\.apk$').firstMatch(name);
-      if (abi != null) byAbi[abi.group(1)!] = url;
+      if (abi != null) byAbi[abi.group(1)!] = (name: name, url: url);
     }
     if (deviceAbi.isNotEmpty) {
       final exact = byAbi[deviceAbi];
       if (exact != null) return exact;
     }
-    return universalUrl;
+    return universal;
   }
 }

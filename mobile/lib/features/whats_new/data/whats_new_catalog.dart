@@ -27,7 +27,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-player-styles',
       version: '1.1.42',
-      build: 51,
+      build: 52,
       category: WhatsNewCategory.features,
       emoji: '🎨',
       order: 0,
@@ -44,7 +44,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-audio-player',
       version: '1.1.42',
-      build: 51,
+      build: 52,
       category: WhatsNewCategory.fixes,
       emoji: '🎚️',
       order: 1,
@@ -61,7 +61,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-library-duplicates',
       version: '1.1.42',
-      build: 51,
+      build: 52,
       category: WhatsNewCategory.fixes,
       emoji: '🧹',
       order: 2,
@@ -77,7 +77,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-notifications',
       version: '1.1.42',
-      build: 51,
+      build: 52,
       category: WhatsNewCategory.improvements,
       emoji: '🔔',
       order: 3,
@@ -93,7 +93,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-analysis-speed',
       version: '1.1.42',
-      build: 51,
+      build: 52,
       category: WhatsNewCategory.improvements,
       emoji: '⚡',
       order: 4,
@@ -109,7 +109,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-resume',
       version: '1.1.42',
-      build: 51,
+      build: 52,
       category: WhatsNewCategory.stability,
       emoji: '📥',
       order: 5,
@@ -125,7 +125,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-shorts',
       version: '1.1.42',
-      build: 51,
+      build: 52,
       category: WhatsNewCategory.fixes,
       emoji: '🎬',
       order: 6,
@@ -141,7 +141,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-browser-blocker',
       version: '1.1.42',
-      build: 51,
+      build: 52,
       category: WhatsNewCategory.features,
       emoji: '🌐',
       order: 7,
@@ -157,7 +157,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-explorer-parallel',
       version: '1.1.42',
-      build: 51,
+      build: 52,
       category: WhatsNewCategory.improvements,
       emoji: '🚀',
       order: 8,
@@ -950,11 +950,18 @@ class WhatsNewCatalog {
   }
 
   /// Every entry registered for exactly `version`/`build`.
-  static List<WhatsNewEntry> forVersion(String version, int build) => _sorted(
-        entries
-            .where((e) => e.version == version && e.build == build)
-            .toList(),
-      );
+  ///
+  /// The build is only a tie-breaker: an app installed from a per-ABI APK
+  /// carries a `versionCode` of `abi * 1000 + build`, so the exact pair would
+  /// not match anything. When there is no entry for that exact build, the
+  /// entries of the same version are used.
+  static List<WhatsNewEntry> forVersion(String version, int build) {
+    final exact = entries
+        .where((e) => e.version == version && e.build == build)
+        .toList();
+    if (exact.isNotEmpty) return _sorted(exact);
+    return _sorted(entries.where((e) => e.version == version).toList());
+  }
 
   /// The newest registered version group(s), newest first.
   ///

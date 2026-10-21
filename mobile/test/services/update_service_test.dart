@@ -159,5 +159,14 @@ void main() {
         'https://x/VibeGrab-arm64-v8a.apk',
       );
     });
+
+    test('the real versionCode of each APK is known', () {
+      // Flutter builds the per-ABI APKs as abi * 1000 + build.
+      expect(UpdateService.effectiveBuild('vibegrab.apk', 51), 51);
+      expect(UpdateService.effectiveBuild('vibegrab-armeabi-v7a.apk', 51), 1051);
+      expect(UpdateService.effectiveBuild('vibegrab-arm64-v8a.apk', 51), 2051);
+      expect(UpdateService.effectiveBuild('vibegrab-x86_64.apk', 51), 3051);
+      expect(UpdateService.effectiveBuild(null, 51), 51);
+    });
   });
 }

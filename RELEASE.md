@@ -34,6 +34,16 @@ de ningun portatil concreto: lo hace GitHub Actions.
   instalador se abre y se cierra sin decir nada.
 - `mobile/lib/core/localization/app_es.arb` -> `"appVersion": "vX.Y.Z"`
 - `mobile/lib/core/localization/app_en.arb` -> `"appVersion": "vX.Y.Z"`
+- El workflow publica **además del APK universal un APK por arquitectura**
+  (`VibeGrab-arm64-v8a.apk`, `VibeGrab-armeabi-v7a.apk`,
+  `VibeGrab-x86_64.apk`): pesan alrededor de 25 MB en vez de 67 MB, que es lo
+  que se corta al descargar en un móvil. Publica **siempre los dos** (el
+  universal es el respaldo para arquitecturas raras).
+  Ojo: Flutter numera los APKs por ABI como `versionCode = abi * 1000 + build`
+  (armeabi-v7a = 1, arm64-v8a = 2, x86_64 = 3) mientras que el universal
+  conserva `versionCode = build`. Por eso la app compara el `versionCode`
+  real del APK elegido y no el número del tag. `SHA256SUMS.txt` acompaña a los
+  APK para poder comprobar la descarga.
 
 ## 2. Anadir las novedades
 
