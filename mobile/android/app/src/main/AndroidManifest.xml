@@ -78,6 +78,18 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"/>
         </provider>
+        <!-- El SDK de Google Ads se inicializa solo (provider) al arrancar el
+             proceso: eso ocurre ANTES de Flutter y antes del consentimiento
+             UMP, y en dispositivos sin Google Play Services la inicializacion
+             lanza una excepcion que mata la app al abrirla (entraba y se
+             salia). VibeGrab lo inicializa desde Dart, solo con consentimiento
+             y solo si la publicidad esta activada, asi que el provider se
+             desactiva aqui. -->
+        <provider
+            android:name="com.google.android.gms.ads.MobileAdsInitProvider"
+            android:authorities="${applicationId}.mobileadsinitprovider"
+            android:enabled="false"
+            android:exported="false" />
     </application>
     <queries>
         <intent>

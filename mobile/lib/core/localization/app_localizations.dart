@@ -433,6 +433,10 @@ class AppLocalizations {
   String get updateLatest => _get('updateLatest');
   String get updateChecking => _get('updateChecking');
   String get updateCheckFailed => _get('updateCheckFailed');
+  String get updateDownloading => _get('updateDownloading');
+  String get updateInstalling => _get('updateInstalling');
+  String get updateWorking => _get('updateWorking');
+  String get updatePermissionRequired => _get('updatePermissionRequired');
 
   String get whatsNewTitle => _get('whatsNewTitle');
   String get whatsNewTitleManual => _get('whatsNewTitleManual');

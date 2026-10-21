@@ -432,6 +432,14 @@ class MainActivity : AudioServiceActivity() {
             when (call.method) {
                 "getVersion" -> handleGetVersion(result)
                 "installApk" -> handleInstallApk(call, result)
+                "canInstallPackages" -> {
+                    val allowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        packageManager.canRequestPackageInstalls()
+                    } else {
+                        true
+                    }
+                    result.success(allowed)
+                }
                 "closeActivity" -> handleCloseActivity(result)
                 // Opens a downloaded file with the system viewer.
                 "openFile" -> handleOpenFile(call, result)
@@ -532,6 +540,42 @@ class MainActivity : AudioServiceActivity() {
         val file = if (path != null) File(path) else null
         if (file == null || !file.exists()) {
             result.error("ENOENT", "APK file not found", null)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            // Android 8+ needs the user to allow this app to install
+            // packages. Without this check the installer opens and dies with
+            // a security error that the app never sees: the update simply
+            // "does nothing". Open the permission screen instead and tell
+            // the app what happened.
+            try {
+                // "Install unknown apps" per-app screen. The action string is
+                // used because the per-app constant is not available in every
+                // compileSdk; the value is stable since API 26.
+                val settings = Intent(
+                    "android.settings.MANAGE_APP_INSTALL_PACKAGE",
+                    Uri.parse("package:$packageName")
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(settings)
+                result.error(
+                    "INSTALL_PERMISSION_REQUIRED",
+                    "Permission to install packages is required",
+                    null
+                )
+            } catch (e: Exception) {
+                try {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:$packageName")
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                } catch (_: Exception) {
+                    // Nothing else to try: the app details screen is the last
+                    // resort.
+                }
+                result.error("INSTALL_ERROR", e.message, null)
+            }
         } else {
             try {
                 val uri = androidx.core.content.FileProvider.getUriForFile(

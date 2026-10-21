@@ -26,6 +26,12 @@ de ningun portatil concreto: lo hace GitHub Actions.
   apps ya instaladas y la web solo reconocen `X.Y.Z`: un tag `v1.1.40.2-47`
   no aparece como actualización. Para un parche usa el siguiente número
   normal, por ejemplo `1.1.41`.
+- **El número de build (`B`) SIEMPRE sube**, aunque la versión no cambie:
+  Android solo deja instalar un APK cuyo `versionCode` es mayor que el que
+  ya hay instalado. Un parche sobre la misma versión es un tag con la misma
+  `X.Y.Z` y un `B` nuevo (`v1.1.42-50`); si se repite un `B` ya publicado,
+  Android rechaza la instalación con `INSTALL_FAILED_VERSION_DOWNGRADE` y el
+  instalador se abre y se cierra sin decir nada.
 - `mobile/lib/core/localization/app_es.arb` -> `"appVersion": "vX.Y.Z"`
 - `mobile/lib/core/localization/app_en.arb` -> `"appVersion": "vX.Y.Z"`
 
@@ -184,6 +190,13 @@ uno real.
 
 - El consentimiento UMP se pide antes de que VibeGrab inicialice el SDK. Si
   falla o el usuario no da consentimiento, no se solicitan anuncios.
+- El provider `com.google.android.gms.ads.MobileAdsInitProvider` va
+  **desactivado** en el manifest (`android:enabled="false"`). Por defecto el
+  SDK de Google Ads se inicializa al arrancar el proceso, antes de Flutter y
+  antes del consentimiento UMP: en dispositivos sin Google Play Services esa
+  inicializacion lanza una excepcion y **la app se cierra al abrirla**. Con el
+  provider desactivado, el SDK solo se inicializa desde Dart, con el
+  consentimiento ya dado y solo si la publicidad esta activada.
 - `AdMetrics` solo guarda eventos locales y acotados (solicitud, carga,
   impresion, clic, fallo). No envia URLs, busquedas, historial ni identificadores
   y no estima ingresos.

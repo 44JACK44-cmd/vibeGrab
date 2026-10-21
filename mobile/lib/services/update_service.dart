@@ -99,6 +99,12 @@ class UpdateService {
     );
   }
 
+  /// Downloads the APK of the release.
+  ///
+  /// The URL of a GitHub release asset answers with a 302 to the CDN, and
+  /// `http.Client.send()` does NOT follow redirects (only `get`/`post` do).
+  /// Without following them the download always failed with "HTTP 302" and
+  /// the update could never be installed.
   static Future<String> download(
     UpdateInfo info,
     void Function(double progress) onProgress,
@@ -113,8 +119,35 @@ class UpdateService {
 
     final client = http.Client();
     try {
-      final request = http.Request('GET', Uri.parse(info.apkUrl));
-      final response = await client.send(request);
+      var url = Uri.parse(info.apkUrl);
+      http.StreamedResponse response;
+      var redirects = 0;
+      while (true) {
+        final request = http.Request('GET', url)
+          ..headers['User-Agent'] = 'VibeGrab';
+        response = await client.send(request);
+        final status = response.statusCode;
+        if (status == 301 ||
+            status == 302 ||
+            status == 303 ||
+            status == 307 ||
+            status == 308) {
+          final location = response.headers['location'];
+          // The body of a redirect must be drained or the socket stays busy.
+          await response.stream.drain<void>();
+          if (location == null || location.isEmpty) {
+            throw Exception('Redirect without location');
+          }
+          if (redirects >= 5) {
+            throw Exception('Too many redirects');
+          }
+          url = url.resolve(location);
+          redirects++;
+          continue;
+        }
+        break;
+      }
+
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
       }
@@ -144,4 +177,15 @@ class UpdateService {
 
   static Future<void> install(String path) =>
       _channel.invokeMethod('installApk', {'path': path});
+
+  /// True when the user already allowed this app to install packages.
+  /// Android 8+ asks for that permission the first time an APK is opened.
+  static Future<bool> canInstallPackages() async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('canInstallPackages');
+      return ok ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
 }
