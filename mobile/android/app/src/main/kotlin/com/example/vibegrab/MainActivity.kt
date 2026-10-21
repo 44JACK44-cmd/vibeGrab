@@ -432,6 +432,10 @@ class MainActivity : AudioServiceActivity() {
             when (call.method) {
                 "getVersion" -> handleGetVersion(result)
                 "installApk" -> handleInstallApk(call, result)
+                "getDeviceAbi" -> {
+                    val abis = Build.SUPPORTED_ABIS
+                    result.success(if (abis.isNotEmpty()) abis[0] else "arm64-v8a")
+                }
                 "canInstallPackages" -> {
                     val allowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         packageManager.canRequestPackageInstalls()

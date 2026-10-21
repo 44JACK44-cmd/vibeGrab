@@ -101,8 +101,44 @@ jobs:
             --dart-define=ADMOB_INTERSTITIAL_ID="${ADMOB_INTERSTITIAL_ID:-}" \
             -PadmobAppId="${ADMOB_APP_ID:-}"
 
+      # Un APK por ABI: el universal pesa ~67 MB y en una descarga por movil
+      # se corta con facilidad (el instalador responde "el paquete no parece
+      # valido"). Cada ABI pesa una cuarta parte y la app elige el suyo.
+      - name: Compilar APK por ABI
+        working-directory: mobile
+        env:
+          ADMOB_ENABLED: ${{ vars.ADMOB_ENABLED }}
+          ADMOB_BANNER_ID: ${{ secrets.ADMOB_BANNER_ID }}
+          ADMOB_INTERSTITIAL_ID: ${{ secrets.ADMOB_INTERSTITIAL_ID }}
+          ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          BUILD_NUMBER="${TAG##*-}"
+          BUILD_NAME="${TAG#v}"
+          BUILD_NAME="${BUILD_NAME%-*}"
+          ADMOB_ENABLED="${ADMOB_ENABLED:-false}"
+          flutter build apk --release \
+            --split-per-abi \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=ADMOB_ENABLED="$ADMOB_ENABLED" \
+            --dart-define=ADMOB_BANNER_ID="${ADMOB_BANNER_ID:-}" \
+            --dart-define=ADMOB_INTERSTITIAL_ID="${ADMOB_INTERSTITIAL_ID:-}" \
+            -PadmobAppId="${ADMOB_APP_ID:-}"
+
       - name: Preparar artefacto
-        run: cp mobile/build/app/outputs/flutter-apk/app-release.apk VibeGrab.apk
+        run: |
+          set -euo pipefail
+          cp mobile/build/app/outputs/flutter-apk/app-release.apk VibeGrab.apk
+          for f in mobile/build/app/outputs/flutter-apk/app-*-release.apk; do
+            [ -e "$f" ] || continue
+            abi=$(basename "$f" | sed -E 's/^app-(.*)-release\.apk$/\1/')
+            cp "$f" "VibeGrab-$abi.apk"
+          done
+          ls -la VibeGrab*.apk
+          sha256sum VibeGrab*.apk > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       # Verificacion estricta: si el APK no esta firmado con la clave de release
       # (o no coincide con la huella configurada), el workflow se detiene.
@@ -147,11 +183,16 @@ jobs:
           if [ ! -f "$NOTES" ]; then
             echo "::error::Falta $NOTES: las notas del release son obligatorias (ver RELEASE.md)"; exit 1
           fi
+          # Todos los APKs (universal y uno por ABI) y el fichero de
+          # huellas SHA-256 para comprobar la descarga.
+          ASSETS=$(ls VibeGrab*.apk SHA256SUMS.txt 2>/dev/null | tr '\n' ' ')
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" VibeGrab.apk --clobber
+            for a in $ASSETS; do
+              gh release upload "${TAG}" "$a" --clobber
+            done
             gh release edit "${TAG}" --notes-file "$NOTES"
           else
-            gh release create "${TAG}" VibeGrab.apk \
+            gh release create "${TAG}" $ASSETS \
               --title "${TAG}" \
               --notes-file "$NOTES" \
               --verify-tag

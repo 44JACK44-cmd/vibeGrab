@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -81,15 +82,12 @@ class UpdateService {
       return null;
     }
 
-    var apkUrl = _fallbackApkUrl;
+    // Un APK por ABI: el universal pesa cuatro veces mas y en una descarga
+    // por movil se corta con facilidad. Se elige el de la arquitectura del
+    // telefono y, si no existe, el universal.
     final assets = (data['assets'] as List<dynamic>?) ?? [];
-    for (final asset in assets) {
-      final name = '${(asset as Map)['name']}'.toLowerCase();
-      if (name.endsWith('.apk')) {
-        apkUrl = '${asset['browser_download_url']}';
-        break;
-      }
-    }
+    final phoneAbi = await deviceAbi();
+    final apkUrl = pickApkUrl(assets, phoneAbi) ?? _fallbackApkUrl;
 
     return UpdateInfo(
       versionName: remoteVersion,
@@ -187,5 +185,41 @@ class UpdateService {
     } catch (_) {
       return true;
     }
+  }
+
+  /// Primary ABI of the device (arm64-v8a, armeabi-v7a, x86_64...).
+  /// Used to pick the smallest APK that the phone can install.
+  static Future<String> deviceAbi() async {
+    try {
+      final abi = await _channel.invokeMethod<String>('getDeviceAbi');
+      return abi ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// Picks the APK to download out of the release assets: the one built for
+  /// [deviceAbi] if the release has it, the universal one otherwise.
+  @visibleForTesting
+  static String? pickApkUrl(List<dynamic> assets, String deviceAbi) {
+    String? universalUrl;
+    final byAbi = <String, String>{};
+    for (final asset in assets) {
+      if (asset is! Map) continue;
+      final name = '${asset['name']}'.toLowerCase();
+      if (!name.endsWith('.apk')) continue;
+      final url = '${asset['browser_download_url']}';
+      if (name == 'vibegrab.apk') {
+        universalUrl = url;
+        continue;
+      }
+      final abi = RegExp(r'^vibegrab-(.+)\.apk$').firstMatch(name);
+      if (abi != null) byAbi[abi.group(1)!] = url;
+    }
+    if (deviceAbi.isNotEmpty) {
+      final exact = byAbi[deviceAbi];
+      if (exact != null) return exact;
+    }
+    return universalUrl;
   }
 }

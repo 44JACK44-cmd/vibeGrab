@@ -17,6 +17,18 @@ void main() {
       const MethodChannel('plugins.flutter.io/path_provider'),
       (call) async => tempDir.path,
     );
+    // The app asks the device which ABI it is to pick the smallest APK.
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const MethodChannel('com.example.vibegrab/app'),
+      (call) async {
+        if (call.method == 'getDeviceAbi') return 'arm64-v8a';
+        if (call.method == 'getVersion') {
+          return {'version': '1.1.42', 'build': 50};
+        }
+        return null;
+      },
+    );
 
     // The test binding replaces every HttpClient with one that answers 400.
     // The download has to reach a real (local) server to be tested.
@@ -90,5 +102,62 @@ void main() {
       failed = true;
     }
     expect(failed, isTrue);
+  });
+
+  group('asset selection', () {
+    final assets = <dynamic>[
+      {
+        'name': 'VibeGrab.apk',
+        'browser_download_url': 'https://x/VibeGrab.apk',
+      },
+      {
+        'name': 'VibeGrab-arm64-v8a.apk',
+        'browser_download_url': 'https://x/VibeGrab-arm64-v8a.apk',
+      },
+      {
+        'name': 'VibeGrab-armeabi-v7a.apk',
+        'browser_download_url': 'https://x/VibeGrab-armeabi-v7a.apk',
+      },
+      {
+        'name': 'SHA256SUMS.txt',
+        'browser_download_url': 'https://x/SHA256SUMS.txt',
+      },
+    ];
+
+    test('the APK of the device architecture is chosen', () {
+      expect(
+        UpdateService.pickApkUrl(assets, 'arm64-v8a'),
+        'https://x/VibeGrab-arm64-v8a.apk',
+      );
+      expect(
+        UpdateService.pickApkUrl(assets, 'armeabi-v7a'),
+        'https://x/VibeGrab-armeabi-v7a.apk',
+      );
+    });
+
+    test('an unknown architecture falls back to the universal APK', () {
+      expect(
+        UpdateService.pickApkUrl(assets, 'x86_64'),
+        'https://x/VibeGrab.apk',
+      );
+      expect(UpdateService.pickApkUrl(assets, ''), 'https://x/VibeGrab.apk');
+    });
+
+    test('a release without a universal APK still works', () {
+      final onlyAbi = <dynamic>[
+        {
+          'name': 'VibeGrab-arm64-v8a.apk',
+          'browser_download_url': 'https://x/VibeGrab-arm64-v8a.apk',
+        },
+      ];
+      expect(
+        UpdateService.pickApkUrl(onlyAbi, 'x86_64'),
+        isNull,
+      );
+      expect(
+        UpdateService.pickApkUrl(onlyAbi, 'arm64-v8a'),
+        'https://x/VibeGrab-arm64-v8a.apk',
+      );
+    });
   });
 }
