@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../core/constants/api_constants.dart';
 import '../data/models/analyze_response.dart';
@@ -345,28 +346,54 @@ class LocalExtractionService {
     // muxed stream is the source and the backend extracts its audio.
     String? mp3Tag;
     int? mp3Size;
+    Uri? mp3Url;
     if (sortedAudio.isNotEmpty) {
       mp3Tag = sortedAudio.first.tag.toString();
+      mp3Size = sortedAudio.first.size.totalBytes;
+      mp3Url = sortedAudio.first.url;
     } else if (manifest.muxed.isNotEmpty) {
       final smallest = manifest.muxed.toList()
         ..sort((a, b) =>
             a.videoResolution.height.compareTo(b.videoResolution.height));
       mp3Tag = smallest.first.tag.toString();
       mp3Size = smallest.first.size.totalBytes;
+      mp3Url = smallest.first.url;
     }
     if (mp3Tag != null) {
-      formats.add(FormatOption(
-        id: '${mp3Tag}__mp3',
-        type: 'audio',
-        extension: 'mp3',
-        quality: '192 kbps',
-        hasVideo: false,
-        hasAudio: true,
+      final option = mp3FormatOption(
+        tag: mp3Tag,
         sizeBytes: mp3Size,
-      ));
+        url: mp3Url,
+      );
+      if (option != null) formats.add(option);
     }
 
     return formats;
+  }
+
+  /// Builds the synthetic MP3 menu row. Kept pure so the test can verify the
+  /// signed source URL is carried into [FormatOption.directUrl].
+  @visibleForTesting
+  static FormatOption? mp3FormatOption({
+    required String tag,
+    int? sizeBytes,
+    Uri? url,
+  }) {
+    if (tag.isEmpty) return null;
+    return FormatOption(
+      id: '${tag}__mp3',
+      type: 'audio',
+      extension: 'mp3',
+      quality: '192 kbps',
+      hasVideo: false,
+      hasAudio: true,
+      sizeBytes: sizeBytes,
+      // The phone's own signed track URL. Without it the MP3 download had
+      // to resolve the manifest again (and failed with "no streams" when
+      // YouTube blocked that second request); the downloader can now get
+      // this source directly and send it to the encoder.
+      directUrl: url?.toString(),
+    );
   }
 
   static String sanitizeUrl(String url) {

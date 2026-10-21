@@ -9,10 +9,10 @@ void main() {
       expect(WhatsNewCatalog.entries, isNotEmpty);
     });
 
-    test('ids are unique and versions look like x.y.z', () {
+    test('ids are unique and versions look like x.y.z or x.y.z.p', () {
       final ids = WhatsNewCatalog.entries.map((e) => e.id).toSet();
       expect(ids.length, WhatsNewCatalog.entries.length);
-      final re = RegExp(r'^\d+\.\d+\.\d+$');
+      final re = RegExp(r'^\d+\.\d+\.\d+(?:\.\d+)?$');
       for (final e in WhatsNewCatalog.entries) {
         expect(re.hasMatch(e.version), isTrue, reason: e.id);
         expect(e.build, greaterThan(0), reason: e.id);
@@ -84,7 +84,7 @@ void main() {
   group('grouping and sections', () {
     test('groupByVersion sorts newest first', () {
       final groups = WhatsNewCatalog.groupByVersion(WhatsNewCatalog.entries);
-      expect(groups.first.version, '1.1.40');
+      expect(groups.first.version, '1.1.40.2');
       for (var i = 1; i < groups.length; i++) {
         expect(
           WhatsNewCatalog.compare(

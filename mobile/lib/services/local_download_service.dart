@@ -105,6 +105,17 @@ class LocalDownloadService {
     }
   }
 
+  /// Scratch file for a track that still has to be re-encoded or muxed.
+  ///
+  /// Keeping it in the app cache (not in the user's Downloads folder) prevents
+  /// the intermediate video/audio track from showing up in the library or the
+  /// gallery next to the finished download.
+  String _tempSourcePath(DownloadTask task, String suffix) {
+    final safeId = task.id.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    final dir = StorageService.instance.tempSourcesDir.path;
+    return '$dir${Platform.pathSeparator}${safeId}_$suffix';
+  }
+
   Future<DownloadTask> _downloadDirect({
     required DownloadTask task,
     required String dir,
@@ -293,12 +304,19 @@ class LocalDownloadService {
   ///
   /// A task that asked for MP3 never ends as an m4a/webm renamed to `.mp3`:
   /// when no real MP3 can be produced it fails with a typed error.
-  bool _wantsMp3(DownloadTask task) {
-    if (task.mediaType != DownloadMediaType.audio) return false;
+  @visibleForTesting
+  bool wantsMp3(DownloadTask task) {
     final ext = (task.fileExt ?? '').trim().toLowerCase();
+    final synthetic =
+        task.formatId.trim().toLowerCase().endsWith('__mp3');
+    // Tasks persisted by older builds could have media_type=video even for
+    // the synthetic MP3 row. The extension and the synthetic id are stronger
+    // evidence than that stale field, so route them through the real MP3
+    // pipeline as well.
+    if (synthetic) return true;
+    if (task.mediaType != DownloadMediaType.audio) return false;
     if (ext.isEmpty) return true; // tasks saved by older versions
-    if (ext == 'mp3') return true;
-    return task.formatId.trim().toLowerCase().endsWith('__mp3');
+    return ext == 'mp3';
   }
 
   Future<DownloadTask> _downloadAudioAsMp3({
@@ -319,10 +337,11 @@ class LocalDownloadService {
     //    a whole extra manifest round-trip (1-3 s on a phone network).
     final directRaw = (task.directUrl ?? '').trim();
     final directUri = directRaw.isEmpty ? null : Uri.tryParse(directRaw);
+    final synthetic = task.formatId.trim().toLowerCase().endsWith('__mp3');
     final canUseDirectFirst = directUri != null &&
         directUri.hasScheme &&
         directUri.host.isNotEmpty &&
-        (videoId == null || !task.hasVideo);
+        (videoId == null || !task.hasVideo || synthetic);
     if (canUseDirectFirst) {
       // The synthetic `__mp3` format has fileExt=mp3, but its directUrl is
       // the provider's m4a/webm/mp4 source that still needs conversion.
@@ -346,7 +365,7 @@ class LocalDownloadService {
         lastError = direct.errorCode;
         if (!_retriableErrors.contains(direct.errorCode)) return direct;
       } else {
-        final tempPath = '$dir/${safeTitle}__audio.$ext';
+        final tempPath = _tempSourcePath(task, 'audio.$ext');
         tempFiles.add(tempPath);
         onStep(const DownloadStep('downloading', 'Downloading audio track...'));
         final track = await _downloadViaHttpClient(
@@ -397,7 +416,7 @@ class LocalDownloadService {
           final isVideo = _streamHasVideo(candidate);
           if (!_streamHasAudio(candidate)) continue;
           final ext = isVideo ? 'mp4' : _getExtension(candidate);
-          final tempPath = '$dir/${safeTitle}__audio.$ext';
+          final tempPath = _tempSourcePath(task, 'audio.$ext');
           tempFiles.add(tempPath);
 
           onStep(DownloadStep('downloading',
@@ -675,7 +694,7 @@ class LocalDownloadService {
       // and the backend encodes it (see _downloadAudioAsMp3). M4A/WebM
       // selections use the normal audio-only track path below, so the
       // extension shown in the UI is the extension actually saved.
-      if (_wantsMp3(task) &&
+      if (wantsMp3(task) &&
           (task.url.isNotEmpty || (task.directUrl ?? '').isNotEmpty)) {
         final mp3 = await _downloadAudioAsMp3(
           task: task,
@@ -1087,8 +1106,8 @@ class LocalDownloadService {
     final videoExt = videoOnlyStream.container.name;
     final audioStream = audioStreams.first;
     final audioExt = _getExtension(audioStream);
-    final videoTempPath = '$dir/${safeTitle}__video.$videoExt';
-    final audioTempPath = '$dir/${safeTitle}__audio.$audioExt';
+    final videoTempPath = _tempSourcePath(task, 'video.$videoExt');
+    final audioTempPath = _tempSourcePath(task, 'audio.$audioExt');
 
     try {
       final totalVideoBytes = videoOnlyStream.size.totalBytes;
@@ -1175,6 +1194,7 @@ class LocalDownloadService {
     final sw = Stopwatch()..start();
     var totalBytes = 0;
     var sent = 0;
+    var producedPath = outputPath;
     final lengths = <_UploadPart, int>{};
     try {
       for (final part in parts) {
@@ -1232,6 +1252,7 @@ class LocalDownloadService {
       }
 
       final file = File(outputPath);
+      producedPath = outputPath;
       final sink = file.openWrite();
       var received = 0;
       try {
@@ -1260,6 +1281,7 @@ class LocalDownloadService {
           try {
             await file.rename(wanted);
             finalPath = wanted;
+            producedPath = wanted;
           } catch (e) {
             _log('UPLOAD: could not rename to .$announced: $e');
           }
@@ -1307,6 +1329,7 @@ class LocalDownloadService {
       );
     } on TimeoutException {
       _log('UPLOAD TIMEOUT $operation after ${sw.elapsedMilliseconds}ms');
+      await _deleteIfExists(producedPath);
       return task.copyWith(
         status: 'failed',
         error: 'Server timed out during $operation',
@@ -1314,6 +1337,10 @@ class LocalDownloadService {
       );
     } catch (e) {
       _log('UPLOAD ERROR $operation: ${e.runtimeType} after ${sw.elapsedMilliseconds}ms');
+      // A socket can die after the server started streaming the result: the
+      // half-written MP3/video would show up in the library as a finished
+      // download and look like a second copy. Remove it.
+      await _deleteIfExists(producedPath);
       return task.copyWith(
         status: 'failed',
         error: 'Upload failed (${e.runtimeType})',

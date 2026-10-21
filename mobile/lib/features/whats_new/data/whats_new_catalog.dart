@@ -23,6 +23,58 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // --------------------------------------------------------------- 1.1.40.2
+    WhatsNewEntry(
+      id: 'wn-114002-mp3-real',
+      version: '1.1.40.2',
+      build: 47,
+      category: WhatsNewCategory.fixes,
+      emoji: '🎵',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Las descargas MP3 ya no se quedan sin fuente',
+        en: 'MP3 downloads no longer run out of sources',
+      ),
+      description: LocalizedText(
+        es: 'La opción MP3 usa directamente la pista de audio que el teléfono ya tiene firmada, sin pedir el manifiesto por segunda vez. Si el video solo trae una pista combinada, se descarga esa pista y se convierte en un MP3 real en el servidor.',
+        en: 'The MP3 option now uses the audio track your phone already has signed, without asking for the manifest a second time. If the video only has a combined track, that track is downloaded and turned into a real MP3 on the server.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-114002-no-duplicates',
+      version: '1.1.40.2',
+      build: 47,
+      category: WhatsNewCategory.fixes,
+      emoji: '🧹',
+      order: 1,
+      featured: true,
+      title: LocalizedText(
+        es: 'Una descarga, un archivo',
+        en: 'One download, one file',
+      ),
+      description: LocalizedText(
+        es: 'Las pistas temporales que se usan para convertir o unir ya no aparecen en tu carpeta de descargas como si fueran un video extra. Además, tocar dos veces el mismo formato ya no encola el trabajo duplicado.',
+        en: 'Temporary tracks used for converting or muxing no longer show up in your downloads folder as an extra video. Double-tapping the same format also no longer queues the job twice.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-114002-whats-new-scroll',
+      version: '1.1.40.2',
+      build: 47,
+      category: WhatsNewCategory.fixes,
+      emoji: '📜',
+      order: 2,
+      featured: false,
+      title: LocalizedText(
+        es: 'El aviso de novedades ya se lee completo',
+        en: 'The update announcement is fully readable',
+      ),
+      description: LocalizedText(
+        es: 'La cabecera y las tarjetas del aviso se desplazan juntas cuando el texto no cabe en la pantalla, también con el tamaño de letra grande. Ya no se cortan títulos ni descripciones.',
+        en: 'The announcement header and cards scroll together when the text does not fit on screen, including with large font sizes. Titles and descriptions are no longer cut off.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.40
     WhatsNewEntry(
       id: 'wn-1140-browser',

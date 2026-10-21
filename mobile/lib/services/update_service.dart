@@ -66,11 +66,16 @@ class UpdateService {
 
     final data = jsonDecode(response.body) as Map<String, dynamic>;
     final tag = ((data['tag_name'] as String?) ?? '').trim();
-    final match = RegExp(r'^v(\d+)\.(\d+)\.(\d+)-(\d+)$').firstMatch(tag);
+    // Patch releases use four version components (v1.1.40.2-47); regular
+    // releases keep the historical three-component form (v1.1.40-45).
+    final match =
+        RegExp(r'^v(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?-(\d+)$').firstMatch(tag);
     if (match == null) return null;
 
-    final remoteVersion = '${match[1]}.${match[2]}.${match[3]}';
-    final remoteBuild = int.parse(match[4]!);
+    final remoteVersion = match[4] == null
+        ? '${match[1]}.${match[2]}.${match[3]}'
+        : '${match[1]}.${match[2]}.${match[3]}.${match[4]}';
+    final remoteBuild = int.parse(match[5]!);
     if (!_isNewer(remoteVersion, remoteBuild, current.version, current.build)) {
       return null;
     }

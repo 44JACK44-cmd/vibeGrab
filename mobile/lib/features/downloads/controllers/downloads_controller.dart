@@ -112,6 +112,7 @@ class DownloadsController extends ChangeNotifier {
     }
 
     _migrateLegacyThumbnails();
+    _cleanupLegacyTempSources();
     _loadLocalFiles();
     // Active tasks were already requeued above. Do not call
     // _retryStuckTasks() here: it would reset the status of the workers
@@ -172,6 +173,49 @@ class DownloadsController extends ChangeNotifier {
     _reprocessQueue();
   }
 
+  /// Removes the intermediate `__audio`/`__video` files that older builds
+  /// left in the public Downloads folder after converting or muxing.
+  ///
+  /// New builds write those sources to the app cache, but without this
+  /// migration an existing user would keep seeing the old leftovers as extra
+  /// videos next to their finished MP3.
+  void _cleanupLegacyTempSources() {
+    try {
+      final dirPath = StorageService.instance.downloadPath;
+      if (dirPath.isEmpty) return;
+      final dir = Directory(dirPath);
+      if (!dir.existsSync()) return;
+      final taskPaths = _tasks
+          .map((t) => t.filePath)
+          .whereType<String>()
+          .where((p) => p.isNotEmpty)
+          .toSet();
+      // Do not touch a file that another (possibly old) worker created in the
+      // last few minutes. Anything older is a leftover from a finished,
+      // failed, or interrupted conversion.
+      final cutoff = DateTime.now().subtract(const Duration(minutes: 10));
+      var removed = 0;
+      for (final entity in dir.listSync()) {
+        if (entity is! File) continue;
+        final name = entity.path.split(Platform.pathSeparator).last.toLowerCase();
+        if (!name.contains('__audio.') && !name.contains('__video.')) continue;
+        if (taskPaths.contains(entity.path)) continue;
+        try {
+          if (entity.lastModifiedSync().isAfter(cutoff)) continue;
+          entity.deleteSync();
+          removed++;
+        } catch (_) {
+          // Busy or already deleted: the library filter still hides it.
+        }
+      }
+      if (removed > 0) {
+        _log('Removed $removed legacy temporary source files');
+      }
+    } catch (e) {
+      _log('cleanupLegacyTempSources error: $e');
+    }
+  }
+
   void _loadLocalFiles() {
     _loading = true;
     notifyListeners();
@@ -188,7 +232,11 @@ class DownloadsController extends ChangeNotifier {
               lower.endsWith('.part') ||
               lower.endsWith('.tmp') ||
               lower.endsWith('.download') ||
-              lower.endsWith('.crdownload')) {
+              lower.endsWith('.crdownload') ||
+              // Reserved names for the temporary source tracks that older
+              // builds wrote next to the final file while converting/muxing.
+              lower.contains('__audio.') ||
+              lower.contains('__video.')) {
             continue;
           }
           try {
@@ -235,9 +283,32 @@ class DownloadsController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// A double tap (format row + download button, or two quick taps) used to
+  /// enqueue the same work twice. Both workers wrote a file, so one action
+  /// produced duplicate downloads. Reject only an identical job that is
+  /// still active: completed jobs can be downloaded again, and choosing a
+  /// different format for the same URL is a legitimate action.
+  ///
+  /// The predicate is pure and public for the regression test.
+  @visibleForTesting
+  static bool isSameActiveJob(DownloadTask candidate, DownloadTask existing) {
+    return existing.id == candidate.id ||
+        (existing.isActive &&
+            existing.url == candidate.url &&
+            existing.formatId == candidate.formatId &&
+            existing.mediaType == candidate.mediaType);
+  }
+
   void addTask(DownloadTask task) {
     _log('enqueue task=${task.id} url=${task.url} format=${task.formatId} title=${task.title}');
     _log('downloadPath=${StorageService.instance.downloadPath}');
+
+    final duplicate = _tasks.any((t) => isSameActiveJob(task, t));
+    if (duplicate) {
+      _log('skip duplicate task=${task.id} format=${task.formatId}');
+      return;
+    }
+
     _tasks.insert(0, task);
     _persistence.saveTask(task);
     notifyListeners();

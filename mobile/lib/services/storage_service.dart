@@ -9,6 +9,7 @@ class StorageService {
   static const _channel = MethodChannel('com.example.vibegrab/storage');
   late Directory _appDir;
   Directory? _downloadDir;
+  Directory? _tempSourcesDir;
   String? _customDirUri;
   bool _initialized = false;
 
@@ -46,6 +47,42 @@ class StorageService {
     return _thumbDir!;
   }
 
+  /// Scratch space for provider tracks that are only downloaded to be
+  /// re-encoded or muxed on the server.
+  ///
+  /// It must not live in [downloadPath]: that folder is the user's public
+  /// library, so a temporary `__audio.mp4` appeared next to the finished MP3
+  /// and looked like a second download. The app cache is invisible to the
+  /// gallery and to the library scanner.
+  Directory get tempSourcesDir {
+    final dir = _tempSourcesDir ??
+        Directory(
+          '${Directory.systemTemp.path}${Platform.pathSeparator}vibegrab_sources',
+        );
+    _tempSourcesDir = dir;
+    if (!dir.existsSync()) {
+      dir.createSync(recursive: true);
+    }
+    return dir;
+  }
+
+  Future<void> _cleanStaleTempSources(Directory dir) async {
+    try {
+      final cutoff = DateTime.now().subtract(const Duration(hours: 24));
+      await for (final entity in dir.list()) {
+        if (entity is! File) continue;
+        try {
+          final modified = await entity.lastModified();
+          if (modified.isBefore(cutoff)) await entity.delete();
+        } catch (_) {
+          // A busy or already-removed temp file must not block startup.
+        }
+      }
+    } catch (_) {
+      // Cache cleanup is best effort; downloads still work without it.
+    }
+  }
+
   File? getThumbFile(String baseName) {
     for (final ext in const ['jpg', 'png', 'jpeg']) {
       final f = File('${thumbDir.path}${Platform.pathSeparator}$baseName.$ext');
@@ -60,6 +97,21 @@ class StorageService {
     if (_initialized) return;
     _appDir = await getApplicationDocumentsDirectory();
     _log('appDir=${_appDir.path}');
+
+    // Real cache directory (not the public Downloads folder) for temporary
+    // source tracks. Created once so download workers can use it synchronously.
+    try {
+      final cacheDir = await getTemporaryDirectory();
+      _tempSourcesDir = Directory(
+        '${cacheDir.path}${Platform.pathSeparator}vibegrab_sources',
+      );
+      if (!await _tempSourcesDir!.exists()) {
+        await _tempSourcesDir!.create(recursive: true);
+      }
+      await _cleanStaleTempSources(_tempSourcesDir!);
+    } catch (e) {
+      _log('Could not prepare temp sources dir: $e');
+    }
 
     final prefs = await SharedPreferences.getInstance();
 

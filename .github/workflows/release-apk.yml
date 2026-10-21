@@ -1,7 +1,10 @@
 name: Compilar y publicar APK
 
 # Escalabilidad: publicar una version NO depende de ningun portatil.
-# Empuja un tag con el formato vX.Y.Z-B y GitHub compila, firma y publica el APK.
+# Empuja un tag con el formato vX.Y.Z-B o vX.Y.Z.P-B y GitHub compila, firma
+# y publica el APK. El nombre de version del APK se toma del tag, por eso los
+# parches pueden conservar cuatro componentes (1.1.40.2) aunque pubspec use
+# el formato semver de tres.
 # La clave de firma vive en los SECRETOS del repositorio (nunca en el codigo).
 # Ver RELEASE.md.
 
@@ -71,7 +74,15 @@ jobs:
 
       - name: Compilar APK de release (firmado)
         working-directory: mobile
-        run: flutter build apk --release
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          BUILD_NUMBER="${TAG##*-}"
+          BUILD_NAME="${TAG#v}"
+          BUILD_NAME="${BUILD_NAME%-*}"
+          flutter build apk --release \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER"
 
       - name: Preparar artefacto
         run: cp mobile/build/app/outputs/flutter-apk/app-release.apk VibeGrab.apk

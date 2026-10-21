@@ -23,11 +23,24 @@ class WhatsNewDialog {
   }
 }
 
-class _WhatsNewDialog extends StatelessWidget {
+class _WhatsNewDialog extends StatefulWidget {
   final List<WhatsNewVersionGroup> groups;
   final bool isUpdate;
 
   const _WhatsNewDialog({required this.groups, required this.isUpdate});
+
+  @override
+  State<_WhatsNewDialog> createState() => _WhatsNewDialogState();
+}
+
+class _WhatsNewDialogState extends State<_WhatsNewDialog> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -37,14 +50,16 @@ class _WhatsNewDialog extends StatelessWidget {
     final text = Theme.of(context).textTheme;
 
     final allEntries = [
-      for (final group in groups) ...group.entries,
+      for (final group in widget.groups) ...group.entries,
     ];
     final sections = WhatsNewCatalog.sectionsOf(allEntries);
-    final showVersionTag = groups.length > 1;
+    final showVersionTag = widget.groups.length > 1;
 
-    final title = isUpdate ? loc.whatsNewTitle : loc.whatsNewTitleManual;
-    final subtitle =
-        groups.length > 1 ? loc.whatsNewSinceLast : loc.whatsNewSubtitle;
+    final title =
+        widget.isUpdate ? loc.whatsNewTitle : loc.whatsNewTitleManual;
+    final subtitle = widget.groups.length > 1
+        ? loc.whatsNewSinceLast
+        : loc.whatsNewSubtitle;
 
     return Dialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 28),
@@ -55,33 +70,50 @@ class _WhatsNewDialog extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _Header(
-              title: title,
-              subtitle: subtitle,
-              versionLabels: [
-                for (final group in groups)
-                  loc.whatsNewVersion(group.version),
-              ],
-              onClose: () => Navigator.of(context).maybePop(),
-              closeLabel: loc.whatsNewClose,
-            ),
+            // The header grows with large text scales and long translations.
+            // It must scroll together with the entries: keeping it fixed made
+            // the dialog overflow on short screens and with accessibility
+            // font sizes.
             Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    for (final (index, section) in sections.indexed)
+              child: Scrollbar(
+                controller: _scrollController,
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _Header(
+                        title: title,
+                        subtitle: subtitle,
+                        versionLabels: [
+                          for (final group in widget.groups)
+                            loc.whatsNewVersion(group.version),
+                        ],
+                        onClose: () => Navigator.of(context).maybePop(),
+                        closeLabel: loc.whatsNewClose,
+                      ),
                       Padding(
-                        padding: const EdgeInsets.only(bottom: 22),
-                        child: _Section(
-                          section: section,
-                          languageCode: lang,
-                          animationSeed: index,
-                          showVersionTag: showVersionTag,
+                        padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            for (final (index, section) in sections.indexed)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 22),
+                                child: _Section(
+                                  section: section,
+                                  languageCode: lang,
+                                  animationSeed: index,
+                                  showVersionTag: showVersionTag,
+                                ),
+                              ),
+                          ],
                         ),
                       ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -89,8 +121,11 @@ class _WhatsNewDialog extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
               decoration: BoxDecoration(
+                color: cs.surface,
                 border: Border(
-                  top: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
+                  top: BorderSide(
+                    color: cs.outlineVariant.withValues(alpha: 0.5),
+                  ),
                 ),
               ),
               child: FilledButton(
@@ -267,6 +302,7 @@ class _Section extends StatelessWidget {
         Semantics(
           header: true,
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               ExcludeSemantics(
                 child: Text(
@@ -275,11 +311,13 @@ class _Section extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              Text(
-                _categoryLabel(loc, section.category),
-                style: text.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: cs.onSurface,
+              Expanded(
+                child: Text(
+                  _categoryLabel(loc, section.category),
+                  style: text.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: cs.onSurface,
+                  ),
                 ),
               ),
             ],

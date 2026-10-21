@@ -500,8 +500,10 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
         child: InkWell(
           onTap: () {
             if (controller.isDownloading) return;
+            // Select only: the explicit download button starts the job. The
+            // old one-tap start could enqueue a second format when the user
+            // tapped the row and then the button before the sheet closed.
             controller.selectFormat(format);
-            _startDownload(controller, loc);
           },
           borderRadius: BorderRadius.circular(12),
           child: Padding(
