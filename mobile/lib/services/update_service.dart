@@ -66,8 +66,9 @@ class UpdateService {
 
     final data = jsonDecode(response.body) as Map<String, dynamic>;
     final tag = ((data['tag_name'] as String?) ?? '').trim();
-    // Patch releases use four version components (v1.1.40.2-47); regular
-    // releases keep the historical three-component form (v1.1.40-45).
+    // Se aceptan cuatro componentes por compatibilidad con tags antiguos
+    // (v1.1.40.2-47). Para publicar usa siempre tres: las apps ya instaladas
+    // y la web no detectan un tag de cuatro componentes.
     final match =
         RegExp(r'^v(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?-(\d+)$').firstMatch(tag);
     if (match == null) return null;
