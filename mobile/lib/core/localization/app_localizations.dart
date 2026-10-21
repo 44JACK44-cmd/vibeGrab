@@ -525,6 +525,23 @@ class AppLocalizations {
   String get lyricsNotFound => _get('lyricsNotFound');
   String get lyricsUnavailable => _get('lyricsUnavailable');
   String get lyricsSynced => _get('lyricsSynced');
+  String get playerStyle => _get('playerStyle');
+  String get shortsAudioOnly => _get('shortsAudioOnly');
+  String get shortsAudioOnlyHint => _get('shortsAudioOnlyHint');
+  String get shortsPlaybackFailed => _get('shortsPlaybackFailed');
+  String get browserBlocker => _get('browserBlocker');
+  String get browserBlockerEnabled => _get('browserBlockerEnabled');
+  String get browserBlockerDisabled => _get('browserBlockerDisabled');
+  String get browserBlockerAllowSite => _get('browserBlockerAllowSite');
+  String get browserBlockerExceptions => _get('browserBlockerExceptions');
+  String get browserBlockerBlockedCount => _get('browserBlockerBlockedCount');
+  String get browserBlockerNoExceptions => _get('browserBlockerNoExceptions');
+  String get playerStyleClassic => _get('playerStyleClassic');
+  String get playerStyleClassicDesc => _get('playerStyleClassicDesc');
+  String get playerStyleImmersive => _get('playerStyleImmersive');
+  String get playerStyleImmersiveDesc => _get('playerStyleImmersiveDesc');
+  String get playerStyleCompact => _get('playerStyleCompact');
+  String get playerStyleCompactDesc => _get('playerStyleCompactDesc');
   String get sessionNotStarted => _get('sessionNotStarted');
   String get sessionConnecting => _get('sessionConnecting');
   String get sessionOk => _get('sessionOk');
@@ -610,6 +627,12 @@ class AppLocalizations {
   String get netStream => _get('netStream');
   String get netManifest => _get('netManifest');
   String get netDirect => _get('netDirect');
+
+  String get adLabel => _get('adLabel');
+  String get adPrivacyTitle => _get('adPrivacyTitle');
+  String get adPrivacyHint => _get('adPrivacyHint');
+  String get adPrivacyUpdated => _get('adPrivacyUpdated');
+  String get adPrivacyUnavailable => _get('adPrivacyUnavailable');
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

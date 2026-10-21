@@ -243,6 +243,21 @@ class _ShortPage extends StatelessWidget {
                 child: Icon(Icons.play_circle_fill,
                     color: Colors.white70, size: 72),
               ),
+            // A cover with no image and no explanation is the worst case:
+            // the user cannot tell a loading short from a broken one. The
+            // engine reports the audio-only fallback and the playback error,
+            // and both are recoverable with a fresh resolve.
+            if (active && engine.currentMediaId == video.url)
+              Positioned.fill(
+                child: _ShortNotice(
+                  message: engine.videoFallbackNotice != null
+                      ? '${loc.shortsAudioOnly}\n${loc.shortsAudioOnlyHint}'
+                      : (engine.playbackError != null
+                          ? '${loc.shortsPlaybackFailed}\n${engine.playbackError}'
+                          : null),
+                  onRetry: () => engine.retryVideoPlayback(),
+                ),
+              ),
             Positioned(
               right: 8,
               bottom: 90,
@@ -327,6 +342,54 @@ class _ShortPage extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+/// Small overlay shown when the current short cannot show its image.
+class _ShortNotice extends StatelessWidget {
+  final String? message;
+  final VoidCallback onRetry;
+
+  const _ShortNotice({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    if (message == null) return const SizedBox.shrink();
+    final loc = AppLocalizations.of(context);
+    return Container(
+      color: Colors.black54,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.white, size: 34),
+              const SizedBox(height: 10),
+              Text(
+                message!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: Text(loc.retry),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  side: const BorderSide(color: Colors.white54),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

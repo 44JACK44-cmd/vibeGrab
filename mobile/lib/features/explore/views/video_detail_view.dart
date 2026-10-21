@@ -7,6 +7,8 @@ import 'package:video_player/video_player.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_animations.dart';
 import '../../../core/localization/app_localizations.dart';
+import '../../../services/player_style_service.dart';
+import '../../media_player/widgets/player_backdrop.dart';
 import '../../../data/models/explore_video.dart';
 import '../../../data/models/related_video.dart';
 import '../../../data/models/comment_item.dart';
@@ -318,8 +320,21 @@ Future<void> _toggleLike() async {
     final inPiP = context.select<MediaEngine, bool>((e) => e.isInPiP);
     if (inPiP) return _buildPipWindow();
 
-    return Scaffold(
-      body: Column(
+    return ListenableBuilder(
+      listenable: PlayerStyleService.instance,
+      builder: (context, _) => Scaffold(
+      body: Stack(
+        children: [
+          // The chosen player style also dresses the Explorer page (the
+          // video surface itself stays black on purpose).
+          Positioned.fill(
+            child: PlayerBackdrop(
+              style: PlayerStyleService.instance.style,
+              artworkUrl: video.thumbnail,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+          Column(
         children: [
           _buildPlayerArea(),
           _buildErrorBanner(),
@@ -372,7 +387,10 @@ Future<void> _toggleLike() async {
             ),
           ),
         ],
+          ),
+        ],
       ),
+    ),
     );
   }
 

@@ -34,9 +34,22 @@ val hasReleaseSigning = releaseStoreFile != null &&
     releaseKeyPassword != null &&
     file(releaseStoreFile).exists()
 
+// AdMob application ID for the Android manifest.
+//
+// The official Google test app ID is the safe default, so debug builds never
+// need a secret. A production release must pass the real app ID explicitly:
+//   flutter build apk --release -PadmobAppId=ca-app-pub-...~...
+// or set ADMOB_APP_ID in the build environment. Dart-side ad units are also
+// required; see AdConfig and RELEASE.md.
+val admobAppId = (project.findProperty("admobAppId") as String?)
+    ?.takeIf { it.isNotBlank() }
+    ?: System.getenv("ADMOB_APP_ID")?.takeIf { it.isNotBlank() }
+    ?: "ca-app-pub-3940256099942544~3347511713"
+
 android {
     namespace = "com.example.vibegrab"
-    compileSdk = flutter.compileSdkVersion
+    // google_mobile_ads 9.1.0 requires compileSdk 36.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -47,11 +60,13 @@ android {
 
     defaultConfig {
         applicationId = "com.example.vibegrab"
-        minSdk = flutter.minSdkVersion
+        // google_mobile_ads 9.1.0 requires API 24.
+        minSdk = maxOf(flutter.minSdkVersion, 24)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         multiDexEnabled = true
+        manifestPlaceholders["admobAppId"] = admobAppId
     }
 
     signingConfigs {

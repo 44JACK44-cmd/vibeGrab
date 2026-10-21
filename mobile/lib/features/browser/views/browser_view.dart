@@ -5,6 +5,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/theme/app_animations.dart';
+import '../../../services/browser_blocker_service.dart';
 import '../../downloads/controllers/downloads_controller.dart';
 import '../../share/controllers/shared_download_controller.dart';
 import '../../share/widgets/shared_download_sheet.dart';
@@ -140,6 +141,14 @@ class _BrowserViewState extends State<BrowserView> {
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(_desktopUa)
       ..setBackgroundColor(Theme.of(context).colorScheme.surface)
+      ..addJavaScriptChannel(
+        BrowserBlockerService.channelName,
+        onMessageReceived: (message) {
+          final count = int.tryParse(message.message);
+          if (count == null) return;
+          BrowserBlockerService.instance.reportBlocked(count);
+        },
+      )
       ..setNavigationDelegate(NavigationDelegate(
         onProgress: (value) {
           if (mounted) setState(() => _progress = value / 100);
@@ -166,6 +175,11 @@ class _BrowserViewState extends State<BrowserView> {
           final scheme = uri?.scheme.toLowerCase();
           if (uri == null ||
               (scheme != 'http' && scheme != 'https' && scheme != 'about')) {
+            return NavigationDecision.prevent;
+          }
+          // Top-level navigation to a known ad host never opens a page.
+          if (BrowserBlockerService.instance.isBlockedUrl(request.url)) {
+            BrowserBlockerService.instance.reportBlocked(1);
             return NavigationDecision.prevent;
           }
           return NavigationDecision.navigate;
@@ -197,6 +211,20 @@ class _BrowserViewState extends State<BrowserView> {
       _canGoBack = canBack;
       _canGoForward = canForward;
     });
+    await _injectBlocker();
+  }
+
+  /// The WebView cannot filter sub-resources on its own, so the filter is a
+  /// script injected after every page load. It blocks the known ad hosts,
+  /// removes their nodes and hides the usual ad containers.
+  Future<void> _injectBlocker() async {
+    final blocker = BrowserBlockerService.instance;
+    if (!blocker.enabled) return;
+    try {
+      await _web.runJavaScript(blocker.buildInjectionScript());
+    } catch (e) {
+      debugPrint('[Browser] blocker injection failed: $e');
+    }
   }
 
   void _syncUrlBar(String url) {
@@ -467,8 +495,155 @@ class _BrowserViewState extends State<BrowserView> {
     );
   }
 
-  Widget _buildToolbar(ColorScheme cs, AppLocalizations loc) {
-    return Material(
+  /// Discreet blocker indicator: the shield changes when the filter is off
+  /// and shows how many requests it stopped.
+  Widget _buildBlockerButton(ColorScheme cs, AppLocalizations loc) {
+    return ListenableBuilder(
+      listenable: BrowserBlockerService.instance,
+      builder: (context, _) {
+        final blocker = BrowserBlockerService.instance;
+        final active = blocker.enabled;
+        final count = blocker.blockedCount;
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            _iconBtn(
+              active ? Icons.shield : Icons.shield_outlined,
+              tooltip: loc.browserBlocker,
+              onPressed: () => _showBlockerSheet(),
+            ),
+            if (active && count > 0)
+              Positioned(
+                right: 0,
+                top: 0,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: cs.primary,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '$count',
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 9, height: 1.1),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showBlockerSheet() async {
+    final loc = AppLocalizations.of(context);
+    final blocker = BrowserBlockerService.instance;
+    await showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        return ListenableBuilder(
+          listenable: blocker,
+          builder: (ctx, _) {
+            final cs = Theme.of(ctx).colorScheme;
+            final host = Uri.tryParse(_currentUrl ?? '')?.host ?? '';
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(blocker.enabled
+                            ? Icons.shield
+                            : Icons.shield_outlined),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(loc.browserBlocker,
+                              style: const TextStyle(
+                                  fontSize: 17, fontWeight: FontWeight.w700)),
+                        ),
+                        Switch(
+                          value: blocker.enabled,
+                          onChanged: (v) async {
+                            await blocker.setEnabled(v);
+                            if (!v && mounted) {
+                              _web.runJavaScript(
+                                  'window.__vibeGrabBlocker && '
+                                  'window.__vibeGrabBlocker.count();');
+                            } else if (v) {
+                              await _injectBlocker();
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      blocker.enabled
+                          ? loc.browserBlockerEnabled
+                          : loc.browserBlockerDisabled,
+                      style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${loc.browserBlockerBlockedCount}: ${blocker.blockedCount}',
+                      style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
+                    ),
+                    const SizedBox(height: 12),
+                    if (host.isNotEmpty)
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          await blocker.allowHost(host);
+                          if (ctx.mounted) Navigator.pop(ctx);
+                        },
+                        icon: const Icon(Icons.add_link, size: 18),
+                        label: Text('${loc.browserBlockerAllowSite}: $host'),
+                      ),
+                    const SizedBox(height: 12),
+                    Text(
+                      loc.browserBlockerExceptions,
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    if (blocker.allowedHosts.isEmpty)
+                      Text(
+                        loc.browserBlockerNoExceptions,
+                        style: TextStyle(
+                            color: cs.onSurfaceVariant, fontSize: 12),
+                      )
+                    else
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 160),
+                        child: ListView(
+                          shrinkWrap: true,
+                          children: blocker.allowedHosts.map((h) {
+                            return ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(h, style: const TextStyle(fontSize: 13)),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.close, size: 18),
+                                onPressed: () => blocker.disallowHost(h),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildToolbar(ColorScheme cs, AppLocalizations loc) {    return Material(
       color: cs.surfaceContainerHighest.withValues(alpha: 0.45),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
@@ -528,6 +703,7 @@ class _BrowserViewState extends State<BrowserView> {
               ),
             ),
             const SizedBox(width: 2),
+            _buildBlockerButton(cs, loc),
             _iconBtn(
               _loading ? Icons.close_rounded : Icons.refresh_rounded,
               tooltip: _loading ? loc.browserStop : loc.retry,

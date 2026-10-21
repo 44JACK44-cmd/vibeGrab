@@ -15,6 +15,12 @@ class NotificationAction {
 class DownloadNotificationService {
   static const _channel = MethodChannel('com.example.vibegrab/downloads');
 
+  /// Terminal notifications vanish on their own. The native side clamps this
+  /// to ten seconds as well, so a stale settings value can never make a
+  /// "completed" card permanent.
+  static const minResultTimeout = Duration(seconds: 10);
+  static const defaultResultTimeout = Duration(seconds: 10);
+
   static final _instance = DownloadNotificationService._();
   factory DownloadNotificationService() => _instance;
   DownloadNotificationService._();
@@ -98,19 +104,27 @@ class DownloadNotificationService {
     required String taskId,
     required String title,
     required double progress,
+    int bytesPerSecond = 0,
   }) async {
     try {
       await _channel.invokeMethod('updateNotification', {
         'taskId': taskId,
         'title': title,
         'progress': progress,
+        if (bytesPerSecond > 0) 'speedBps': bytesPerSecond,
       });
     } catch (_) {}
   }
 
+  int _resultTimeoutMs(Duration timeout) =>
+      timeout.inMilliseconds < minResultTimeout.inMilliseconds
+          ? minResultTimeout.inMilliseconds
+          : timeout.inMilliseconds;
+
   Future<void> showCompleted({
     required String taskId,
     required String title,
+    Duration timeout = defaultResultTimeout,
   }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -118,6 +132,7 @@ class DownloadNotificationService {
       await _channel.invokeMethod('showCompleted', {
         'taskId': taskId,
         'title': title,
+        'timeoutMs': _resultTimeoutMs(timeout),
       });
     } catch (_) {}
   }
@@ -126,6 +141,7 @@ class DownloadNotificationService {
     required String taskId,
     required String title,
     required String error,
+    Duration timeout = defaultResultTimeout,
   }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -134,6 +150,7 @@ class DownloadNotificationService {
         'taskId': taskId,
         'title': title,
         'error': error,
+        'timeoutMs': _resultTimeoutMs(timeout),
       });
     } catch (_) {}
   }

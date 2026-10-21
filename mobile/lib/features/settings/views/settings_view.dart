@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/player_style.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/theme/vibe_presets.dart';
+import '../../../services/player_style_service.dart';
 import '../../../services/network_diagnostics.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/localization/language_provider.dart';
@@ -14,6 +16,8 @@ import '../../../services/download_notification_service.dart';
 import '../../../services/dns_service.dart';
 import '../../../services/update_service.dart';
 import '../controllers/settings_controller.dart';
+import '../../ads/config/ad_config.dart';
+import '../../ads/services/ad_manager.dart';
 import '../../downloads/controllers/downloads_controller.dart';
 import '../widgets/update_dialog.dart';
 import '../../whats_new/whats_new_service.dart';
@@ -70,6 +74,7 @@ class _SettingsViewState extends State<SettingsView> {
     final loc = AppLocalizations.of(context);
     final langProv = context.watch<LanguageProvider>();
     final themeProv = context.watch<ThemeProvider>();
+    final adManager = context.watch<AdManager>();
     final cs = Theme.of(context).colorScheme;
     final text1 = Theme.of(context).textTheme.bodyLarge?.color ?? cs.onSurface;
     final text2 = Theme.of(context).textTheme.bodyMedium?.color ?? cs.onSurfaceVariant;
@@ -197,6 +202,7 @@ class _SettingsViewState extends State<SettingsView> {
                 children: [
                   _buildThemeTile(context, themeProv, cs, text1, text2),
                   _buildAccentTile(context, themeProv, cs, text1, text2),
+                  _buildPlayerStyleTile(context, loc, cs, text1, text2),
                   _buildLanguageTile(context, loc, langProv, cs, text1, text2),
                 ],
               ),
@@ -249,6 +255,8 @@ class _SettingsViewState extends State<SettingsView> {
                 icon: Icons.info_outline,
                 cs: cs,
                 children: [
+                  if (AdConfig.enabled && adManager.privacyOptionsRequired)
+                    _buildAdPrivacyTile(context, cs, text1, text2),
                   _buildAboutTile(context, cs, text1, text2),
                   _buildWhatsNewTile(context, cs, text1, text2),
                   _buildMediaSessionTile(context, cs, text1, text2),
@@ -812,6 +820,88 @@ final modes = [
     );
   }
 
+/// Player skin shared by the full audio player and the mini player.
+Widget _buildPlayerStyleTile(BuildContext context, AppLocalizations loc,
+    ColorScheme cs, Color text1, Color text2) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 4),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.album_outlined, color: text2, size: 22),
+            const SizedBox(width: 12),
+            Text(loc.playerStyle, style: TextStyle(color: text1, fontSize: 15)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ListenableBuilder(
+          listenable: PlayerStyleService.instance,
+          builder: (context, _) {
+            final current = PlayerStyleService.instance.style;
+            return Column(
+              children: PlayerStyle.values.map((style) {
+                final isSelected = current == style;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: GestureDetector(
+                    onTap: () => PlayerStyleService.instance.setStyle(style),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 10, horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? cs.primary.withValues(alpha: 0.18)
+                            : cs.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: isSelected ? cs.primary : Colors.transparent,
+                          width: 1.5,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(style.icon,
+                              size: 20, color: isSelected ? cs.primary : text2),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  loc.value(style.labelKey),
+                                  style: TextStyle(
+                                    color: isSelected ? cs.primary : text1,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Text(
+                                  loc.value(style.descriptionKey),
+                                  style:
+                                      TextStyle(color: text2, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (isSelected)
+                            Icon(Icons.check_circle, size: 18, color: cs.primary),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            );
+          },
+        ),
+      ],
+    ),
+  );
+}
+
 Widget _buildAccentTile(BuildContext context, ThemeProvider themeProv, ColorScheme cs, Color text1, Color text2) {
 final loc = AppLocalizations.of(context);
 return Padding(
@@ -928,6 +1018,39 @@ return Padding(
       subtitle: Text(currentLabel, style: TextStyle(color: text2.withValues(alpha: 0.7), fontSize: 12)),
       trailing: const Icon(Icons.chevron_right),
       onTap: () => _showLanguageDialog(context, loc, langProv),
+    );
+  }
+
+  Widget _buildAdPrivacyTile(
+    BuildContext context,
+    ColorScheme cs,
+    Color text1,
+    Color text2,
+  ) {
+    final loc = AppLocalizations.of(context);
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(Icons.privacy_tip_outlined, color: text2),
+      title: Text(
+        loc.adPrivacyTitle,
+        style: TextStyle(color: text1, fontSize: 15),
+      ),
+      subtitle: Text(
+        loc.adPrivacyHint,
+        style: TextStyle(color: text2.withValues(alpha: 0.7), fontSize: 12),
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () async {
+        final shown = await context.read<AdManager>().showPrivacyOptions();
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              shown ? loc.adPrivacyUpdated : loc.adPrivacyUnavailable,
+            ),
+          ),
+        );
+      },
     );
   }
 

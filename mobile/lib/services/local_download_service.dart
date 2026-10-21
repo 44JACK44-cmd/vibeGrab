@@ -32,6 +32,19 @@ class _UploadPart {
   const _UploadPart(this.field, this.path, this.filename);
 }
 
+class _IncompleteTransferException implements Exception {
+  final int received;
+  final int expected;
+  const _IncompleteTransferException(this.received, this.expected);
+
+  @override
+  String toString() => 'Incomplete transfer: $received of $expected bytes';
+}
+
+class _DownloadCancelledException implements Exception {
+  const _DownloadCancelledException();
+}
+
 class LocalDownloadService {
   final YoutubeExplode _ytc = YoutubeExplode();
   final Map<String, bool> _activeDownloads = {};
@@ -1378,186 +1391,297 @@ class LocalDownloadService {
   }) async {
     _log('HTTP GET [$operation]: ${url.host}${url.path.substring(0, url.path.length.clamp(0, 40))}...');
     final sw = Stopwatch()..start();
-
-    final httpClient = HttpClient();
-    httpClient.connectionTimeout = const Duration(seconds: 30);
-    httpClient.idleTimeout = const Duration(seconds: 30);
-    IOSink? sink;
+    final partPath = _partialPathFor(filePath, task.id, url);
+    var offset = 0;
 
     try {
-      _log('Creating HTTP request...');
-      final request = await httpClient.getUrl(url).timeout(
-        const Duration(seconds: 30),
-        onTimeout: () {
-          _log('HTTP: getConnection timed out (30s)');
-          throw TimeoutException('Connection timed out');
-        },
-      );
-
-      for (final entry in headers.entries) {
-        request.headers.set(entry.key, entry.value);
+      final part = File(partPath);
+      if (await part.exists()) offset = await part.length();
+      // Without a known total there is no way to prove the old bytes belong
+      // to this stream. Starting clean is cheaper than a corrupt media file.
+      if (offset <= 0 || totalBytes <= 0 || offset >= totalBytes) {
+        if (offset > 0) await _deleteIfExists(partPath);
+        offset = 0;
+      } else {
+        _log('HTTP: resuming from $offset bytes');
       }
-      request.headers.set('Range', 'bytes=0-');
-      request.followRedirects = true;
-      request.maxRedirects = 10;
-
-      _log('HTTP: Sending request with Range: bytes=0-...');
-      final response = await request.close().timeout(
-        responseTimeout,
-        onTimeout: () {
-          _log('HTTP: getResponse timed out (${responseTimeout.inSeconds}s)');
-          throw TimeoutException('Server response timed out');
-        },
-      );
-
-      _log('HTTP: status=${response.statusCode} contentLength=${response.contentLength} contentType=${response.headers.contentType}');
-
-      if (response.statusCode != 200 && response.statusCode != 206) {
-        String body = '';
-        try {
-          body = await response.transform(utf8.decoder).join();
-        } catch (_) {}
-        final info = parseBackendError(response.statusCode, body);
-        final code = errorTypeOf(info);
-        final detail = describeBackendError(info, operation: operation);
-        _log('HTTP FAILED [$operation]: $detail time=${sw.elapsedMilliseconds}ms');
-        return task.copyWith(
-          status: 'failed',
-          error: detail,
-          errorCode: code.name,
-        );
-      }
-
-      final responseBytes = response.contentLength;
-      final effectiveTotal = responseBytes > 0 ? responseBytes : totalBytes;
-      _log('HTTP: effectiveTotal=$effectiveTotal (${(effectiveTotal / 1024 / 1024).toStringAsFixed(1)} MB)');
-
-      final file = File(filePath);
-      final fileSink = file.openWrite();
-      sink = fileSink;
-      int bytesDownloaded = 0;
-      int chunkCount = 0;
-      int limitBps = 0;
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        limitBps = (prefs.getInt(AppSettingKeys.speedLimitKbps) ?? 0) * 1024;
-      } catch (_) {}
-      final paceSw = Stopwatch()..start();
-
-      _log('HTTP: Starting SINGLE stream consumption... limitKbps=${limitBps ~/ 1024}');
-
-      await for (final chunk
-          in response.timeout(const Duration(seconds: 60))) {
-        if (!_activeDownloads.containsKey(task.id)) {
-          _log('HTTP: Download cancelled');
-          await fileSink.close();
-          try {
-            await file.delete();
-          } catch (_) {
-            // El fichero parcial puede no existir todavia: se ignora.
-          }
-          throw Exception('Download cancelled');
-        }
-
-        fileSink.add(chunk);
-        bytesDownloaded += chunk.length;
-        chunkCount++;
-        final progress = effectiveTotal > 0 ? bytesDownloaded / effectiveTotal : 0.0;
-        // A merged/relayed stream has no Content-Length: the estimate can be
-        // smaller than the real file, and a progress bar above 100% is worse
-        // than one that simply stays full.
-        onProgress(progress > 1.0 ? 1.0 : progress, bytesDownloaded);
-
-        if (limitBps > 0) {
-          final targetMs = bytesDownloaded * 1000.0 / limitBps;
-          final waitMs = targetMs - paceSw.elapsedMilliseconds;
-          if (waitMs >= 20) {
-            await Future<void>.delayed(Duration(milliseconds: waitMs.round()));
-          }
-        }
-
-        if (chunkCount % 50 == 0 || bytesDownloaded == effectiveTotal) {
-          _log('HTTP: ${(progress * 100).toStringAsFixed(1)}% (${(bytesDownloaded / 1024 / 1024).toStringAsFixed(1)} MB) chunks=$chunkCount time=${sw.elapsedMilliseconds}ms');
-        }
-      }
-
-      await fileSink.close();
-      sw.stop();
-
-      _log('HTTP: Stream finished, closing file...');
-      final verified = await file.exists();
-      final size = await file.length();
-      _log('HTTP DONE: exists=$verified size=$size (${(size / 1024 / 1024).toStringAsFixed(1)} MB) time=${sw.elapsedMilliseconds}ms');
-
-      if (!verified || size == 0) {
-        await _deleteIfExists(filePath);
-        return task.copyWith(status: 'failed', error: 'Downloaded file is empty', errorCode: 'fileEmpty');
-      }
-
-      // The server announced N bytes and the socket closed early. Never keep
-      // a truncated media file: many players open it and stop midway.
-      if (responseBytes > 0 && size < responseBytes) {
-        await _deleteIfExists(filePath);
-        _log('HTTP: truncated $size < announced $responseBytes');
-        return task.copyWith(
-          status: 'failed',
-          error: 'Incomplete download',
-          errorCode: DownloadErrorType.fileEmpty.name,
-        );
-      }
-      if (responseBytes <= 0 && totalBytes > 0 && size < (totalBytes * 0.90).floor()) {
-        await _deleteIfExists(filePath);
-        _log('HTTP: truncated $size < expected ~$totalBytes');
-        return task.copyWith(
-          status: 'failed',
-          error: 'Incomplete download',
-          errorCode: DownloadErrorType.fileEmpty.name,
-        );
-      }
-
-      // Signature check: a CDN error page saved under .mp4 is not a download.
-      final outExt = filePath.contains('.')
-          ? filePath.substring(filePath.lastIndexOf('.') + 1).toLowerCase()
-          : '';
-      if (!await _matchesContainer(filePath, outExt)) {
-        await _deleteIfExists(filePath);
-        _log('HTTP: downloaded bytes are not a valid .$outExt container');
-        return task.copyWith(
-          status: 'failed',
-          error: 'The downloaded file is not a valid .$outExt container',
-          errorCode: DownloadErrorType.unexpectedResponse.name,
-        );
-      }
-
-      onProgress(1.0, size);
-
-      return task.copyWith(
-        status: 'completed',
-        progress: 1.0,
-        bytesDownloaded: size,
-        totalBytes: size,
-        filePath: filePath,
-      );
-    } catch (e) {
-      sw.stop();
-      try {
-        await sink?.close();
-      } catch (_) {}
-      // A timeout/failed socket leaves a half file with a valid media
-      // extension. Delete it here; otherwise it survives a restart and is
-      // listed as a finished download.
-      await _deleteIfExists(filePath);
-      _log('[ERROR] HTTP EXCEPTION: $e time=${sw.elapsedMilliseconds}ms');
-      if (e is TimeoutException) {
-        return task.copyWith(status: 'failed', error: 'Connection timed out', errorCode: 'connectionTimeout');
-      }
-      if (e.toString().contains('cancelled') || e.toString().contains('Cancel')) {
-        return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
-      }
-      return task.copyWith(status: 'failed', error: 'Connection failed', errorCode: 'connectionFailed');
-    } finally {
-      httpClient.close();
+    } catch (_) {
+      offset = 0;
     }
+
+    const maxAttempts = 2;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      final httpClient = HttpClient();
+      httpClient.connectionTimeout = const Duration(seconds: 30);
+      httpClient.idleTimeout = const Duration(seconds: 30);
+      IOSink? sink;
+
+      try {
+        _log('Creating HTTP request...');
+        final request = await httpClient.getUrl(url).timeout(
+          const Duration(seconds: 30),
+          onTimeout: () {
+            _log('HTTP: getConnection timed out (30s)');
+            throw TimeoutException('Connection timed out');
+          },
+        );
+
+        for (final entry in headers.entries) {
+          request.headers.set(entry.key, entry.value);
+        }
+        // Only ask for a range when there is something to append to. The old
+        // unconditional "bytes=0-" made every first request a 206 and some
+        // CDNs answer it more slowly than a plain GET.
+        if (offset > 0) {
+          request.headers.set('Range', 'bytes=$offset-');
+        }
+        request.followRedirects = true;
+        request.maxRedirects = 10;
+
+        _log('HTTP: Sending request${offset > 0 ? ' (resume at $offset)' : ''}...');
+        final response = await request.close().timeout(
+          responseTimeout,
+          onTimeout: () {
+            _log('HTTP: getResponse timed out (${responseTimeout.inSeconds}s)');
+            throw TimeoutException('Server response timed out');
+          },
+        );
+
+        _log('HTTP: status=${response.statusCode} contentLength=${response.contentLength} contentType=${response.headers.contentType}');
+
+        if (response.statusCode != 200 && response.statusCode != 206) {
+          // A transient 5xx is worth one retry; a 403/404 is not and must go
+          // back to the candidate loop so another route can be tried.
+          final transient = response.statusCode == 408 ||
+              response.statusCode == 429 ||
+              response.statusCode >= 500;
+          if (transient && attempt + 1 < maxAttempts) {
+            throw HttpException('HTTP ${response.statusCode}');
+          }
+          String body = '';
+          try {
+            body = await response.transform(utf8.decoder).join();
+          } catch (_) {}
+          final info = parseBackendError(response.statusCode, body);
+          final code = errorTypeOf(info);
+          final detail = describeBackendError(info, operation: operation);
+          _log('HTTP FAILED [$operation]: $detail time=${sw.elapsedMilliseconds}ms');
+          return task.copyWith(
+            status: 'failed',
+            error: detail,
+            errorCode: code.name,
+          );
+        }
+
+        final responseBytes = response.contentLength;
+        var resumed = offset;
+        if (response.statusCode == 200) {
+          // The server ignored Range and is sending the whole file again.
+          if (resumed > 0) _log('HTTP: server ignored Range, restarting');
+          resumed = 0;
+        } else {
+          final start = _contentRangeStart(
+                response.headers.value('Content-Range'),
+              ) ??
+              resumed;
+          if (start != resumed) {
+            // A server that answers a different range than requested would
+            // make us append unrelated bytes. Restart cleanly instead.
+            if (resumed > 0) await _deleteIfExists(partPath);
+            offset = 0;
+            throw const HttpException('Unexpected Content-Range');
+          }
+        }
+
+        final effectiveTotal = responseBytes > 0
+            ? resumed + responseBytes
+            : (totalBytes > 0 ? totalBytes : 0);
+        _log('HTTP: effectiveTotal=$effectiveTotal (${(effectiveTotal / 1024 / 1024).toStringAsFixed(1)} MB)');
+
+        final fileSink = File(partPath)
+            .openWrite(mode: resumed > 0 ? FileMode.append : FileMode.write);
+        sink = fileSink;
+        var bytesDownloaded = resumed;
+        var chunkCount = 0;
+        var limitBps = 0;
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          limitBps = (prefs.getInt(AppSettingKeys.speedLimitKbps) ?? 0) * 1024;
+        } catch (_) {}
+        final paceSw = Stopwatch()..start();
+
+        _log('HTTP: Starting SINGLE stream consumption... limitKbps=${limitBps ~/ 1024}');
+
+        await for (final chunk
+            in response.timeout(const Duration(seconds: 60))) {
+          if (!_activeDownloads.containsKey(task.id)) {
+            _log('HTTP: Download cancelled');
+            throw const _DownloadCancelledException();
+          }
+
+          fileSink.add(chunk);
+          bytesDownloaded += chunk.length;
+          chunkCount++;
+          final transferred = bytesDownloaded - resumed;
+          final progress =
+              effectiveTotal > 0 ? bytesDownloaded / effectiveTotal : 0.0;
+          // A merged/relayed stream has no Content-Length: the estimate can be
+          // smaller than the real file, and a progress bar above 100% is worse
+          // than one that simply stays full.
+          onProgress(progress > 1.0 ? 1.0 : progress, bytesDownloaded);
+
+          if (limitBps > 0) {
+            final targetMs = transferred * 1000.0 / limitBps;
+            final waitMs = targetMs - paceSw.elapsedMilliseconds;
+            if (waitMs >= 20) {
+              await Future<void>.delayed(Duration(milliseconds: waitMs.round()));
+            }
+          }
+
+          if (chunkCount % 50 == 0 || bytesDownloaded == effectiveTotal) {
+            _log('HTTP: ${(progress * 100).toStringAsFixed(1)}% (${(bytesDownloaded / 1024 / 1024).toStringAsFixed(1)} MB) chunks=$chunkCount time=${sw.elapsedMilliseconds}ms');
+          }
+        }
+
+        await fileSink.close();
+        sink = null;
+        sw.stop();
+
+        _log('HTTP: Stream finished, closing file...');
+        final file = File(partPath);
+        final verified = await file.exists();
+        final size = verified ? await file.length() : 0;
+        _log('HTTP DONE: exists=$verified size=$size (${(size / 1024 / 1024).toStringAsFixed(1)} MB) time=${sw.elapsedMilliseconds}ms');
+
+        if (!verified || size == 0) {
+          await _deleteIfExists(partPath);
+          return task.copyWith(
+              status: 'failed',
+              error: 'Downloaded file is empty',
+              errorCode: 'fileEmpty');
+        }
+
+        // The socket closed before the announced length. Keep the bytes for
+        // one resume attempt instead of deleting a 90%-complete video.
+        if (responseBytes > 0 && size < resumed + responseBytes) {
+          throw _IncompleteTransferException(size, resumed + responseBytes);
+        }
+        if (responseBytes <= 0 &&
+            totalBytes > 0 &&
+            size < (totalBytes * 0.90).floor()) {
+          throw _IncompleteTransferException(
+              size, (totalBytes * 0.90).floor());
+        }
+
+        // Signature check: a CDN error page saved under .mp4 is not a download.
+        final outExt = filePath.contains('.')
+            ? filePath.substring(filePath.lastIndexOf('.') + 1).toLowerCase()
+            : '';
+        if (!await _matchesContainer(partPath, outExt)) {
+          await _deleteIfExists(partPath);
+          _log('HTTP: downloaded bytes are not a valid .$outExt container');
+          return task.copyWith(
+            status: 'failed',
+            error: 'The downloaded file is not a valid .$outExt container',
+            errorCode: DownloadErrorType.unexpectedResponse.name,
+          );
+        }
+
+        await _deleteIfExists(filePath);
+        await file.rename(filePath);
+        onProgress(1.0, size);
+
+        return task.copyWith(
+          status: 'completed',
+          progress: 1.0,
+          bytesDownloaded: size,
+          totalBytes: size,
+          filePath: filePath,
+        );
+      } catch (e) {
+        try {
+          await sink?.close();
+        } catch (_) {}
+
+        if (e is _DownloadCancelledException ||
+            e.toString().contains('cancelled') ||
+            e.toString().contains('Cancelled')) {
+          // Cancelling means "I don't want these bytes": dropping the .part
+          // also prevents them from resuming into a later task.
+          await _deleteIfExists(partPath);
+          return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
+        }
+
+        if (attempt + 1 < maxAttempts && _isRecoverableTransferError(e)) {
+          try {
+            final size = await File(partPath).length();
+            if (size > 0 && totalBytes > 0 && size < totalBytes) {
+              offset = size;
+              _log('HTTP: retrying from $offset bytes after ${e.runtimeType}');
+              continue;
+            }
+          } catch (_) {
+            // The partial file vanished: fall through to cleanup.
+          }
+        }
+
+        // Never leave a half file with a media extension: players happily
+        // open it and stop in the middle.
+        await _deleteIfExists(partPath);
+        await _deleteIfExists(filePath);
+        _log('[ERROR] HTTP EXCEPTION: $e time=${sw.elapsedMilliseconds}ms');
+        if (e is TimeoutException) {
+          return task.copyWith(
+              status: 'failed',
+              error: 'Connection timed out',
+              errorCode: 'connectionTimeout');
+        }
+        return task.copyWith(
+            status: 'failed',
+            error: 'Connection failed',
+            errorCode: 'connectionFailed');
+      } finally {
+        httpClient.close(force: true);
+      }
+    }
+
+    return task.copyWith(
+        status: 'failed',
+        error: 'Connection failed',
+        errorCode: 'connectionFailed');
+  }
+
+  static bool _isRecoverableTransferError(Object error) =>
+      error is TimeoutException ||
+      error is SocketException ||
+      error is HttpException ||
+      error is _IncompleteTransferException;
+
+  /// Race-free resume name: task plus a stable URL hash. A different format
+  /// or CDN route gets a different file, so bytes are never appended to a
+  /// stream they did not come from.
+  @visibleForTesting
+  static String partialPathFor(String filePath, String taskId, Uri url) =>
+      _partialPathFor(filePath, taskId, url);
+
+  static String _partialPathFor(String filePath, String taskId, Uri url) {
+    final safeId = taskId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    var hash = 0x811c9dc5;
+    for (final unit in url.toString().codeUnits) {
+      hash ^= unit;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+    }
+    return '$filePath.$safeId.${hash.toRadixString(16).padLeft(8, '0')}.part';
+  }
+
+  @visibleForTesting
+  static int? contentRangeStartForTest(String? header) =>
+      _contentRangeStart(header);
+
+  static int? _contentRangeStart(String? header) {
+    if (header == null) return null;
+    final match = RegExp(r'bytes\s+(\d+)-').firstMatch(header);
+    return int.tryParse(match?.group(1) ?? '');
   }
 
   Future<void> cancelDownload(String taskId) async {

@@ -143,6 +143,7 @@ class MainActivity : AudioServiceActivity() {
                         putExtra("taskId", args?.get("taskId") as? String)
                         putExtra("title", args?.get("title") as? String)
                         putExtra("progress", (args?.get("progress") as? Number)?.toDouble() ?: 0.0)
+                        putExtra("speedBps", (args?.get("speedBps") as? Number)?.toLong() ?: 0L)
                     }
                     startForegroundService(intent)
                     result.success(true)
@@ -153,6 +154,8 @@ class MainActivity : AudioServiceActivity() {
                         putExtra("command", "completed")
                         putExtra("taskId", args?.get("taskId") as? String)
                         putExtra("title", args?.get("title") as? String)
+                        putExtra("timeoutMs", (args?.get("timeoutMs") as? Number)?.toLong()
+                            ?: DownloadNotificationService.MIN_RESULT_TIMEOUT_MS)
                     }
                     startForegroundService(intent)
                     result.success(true)
@@ -164,6 +167,8 @@ class MainActivity : AudioServiceActivity() {
                         putExtra("taskId", args?.get("taskId") as? String)
                         putExtra("title", args?.get("title") as? String)
                         putExtra("error", args?.get("error") as? String)
+                        putExtra("timeoutMs", (args?.get("timeoutMs") as? Number)?.toLong()
+                            ?: DownloadNotificationService.MIN_RESULT_TIMEOUT_MS)
                     }
                     startForegroundService(intent)
                     result.success(true)

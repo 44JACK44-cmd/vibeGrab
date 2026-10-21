@@ -7,13 +7,27 @@ import '../../../services/local_extraction_service.dart';
 import '../../../services/api_service.dart';
 import '../../../services/connectivity_service.dart';
 
+class _CachedAnalysis {
+  final AnalyzeResponse response;
+  final DateTime storedAt;
+  const _CachedAnalysis(this.response, this.storedAt);
+}
+
 class AnalyzeController extends ChangeNotifier {
   final LocalExtractionService _extraction;
   final ApiService _api;
+  final Duration _cacheTtl;
+  final DateTime Function() _clock;
 
-  AnalyzeController({LocalExtractionService? extraction, ApiService? api})
-      : _extraction = extraction ?? LocalExtractionService(),
-        _api = api ?? ApiService();
+  AnalyzeController({
+    LocalExtractionService? extraction,
+    ApiService? api,
+    Duration cacheTtl = const Duration(minutes: 10),
+    DateTime Function()? clock,
+  })  : _extraction = extraction ?? LocalExtractionService(),
+        _api = api ?? ApiService(),
+        _cacheTtl = cacheTtl,
+        _clock = clock ?? DateTime.now;
 
   bool _isLoading = false;
   bool get isLoading => _isLoading;
@@ -27,6 +41,16 @@ class AnalyzeController extends ChangeNotifier {
 
   AnalyzeResponse? _result;
   AnalyzeResponse? get result => _result;
+
+  /// URL that produced [_result]. Re-analysing the same URL keeps the old
+  /// result visible while loading, and a failed refresh must not erase it.
+  String? _resultKey;
+
+  /// Repeated taps (and the format sheet reopening) must not start another
+  /// device+backend race for a URL that is already being analysed.
+  final Map<String, Future<AnalyzeResponse>> _inFlight = {};
+  final Map<String, _CachedAnalysis> _cache = {};
+  static const _maxCached = 16;
 
   MediaInfo? get media => _result?.media;
   List<FormatOption> get formats => _result?.formats ?? [];
@@ -52,9 +76,34 @@ class AnalyzeController extends ChangeNotifier {
       return;
     }
 
+    final key = _cacheKey(url);
+
+    // A recent analysis of the same URL is reused immediately. This is the
+    // normal path when the user closes the format sheet and taps Analyze
+    // again, or when a saved URL is reopened.
+    final cached = _cache[key];
+    if (cached != null &&
+        _clock().difference(cached.storedAt) < _cacheTtl) {
+      _analyzeSeq++;
+      _isLoading = false;
+      _error = null;
+      _result = cached.response;
+      _resultKey = key;
+      notifyListeners();
+      // Local metric: how long the UI had to wait for the answer. The URL is
+      // NOT logged (it can be private).
+      debugPrint('[Analyze] cache hit in 0ms');
+      return;
+    }
+
+    final stopwatch = Stopwatch()..start();
+
+    final sameUrl = _resultKey == key;
     _isLoading = true;
     _error = null;
-    _result = null;
+    // Keep the previous result of THIS URL while refreshing; a new URL must
+    // not show metadata from a different video.
+    if (!sameUrl) _result = null;
     notifyListeners();
 
     // Generation of this request: the analyzer races the device against the
@@ -62,15 +111,35 @@ class AnalyzeController extends ChangeNotifier {
     // what a newer one already resolved.
     final seq = ++_analyzeSeq;
 
-    try {
+    // One device+backend race per URL. A second tap joins the running one
+    // instead of doubling network traffic and provider quota.
+    var shared = _inFlight[key];
+    if (shared == null) {
       // Race device vs backend: whichever answers first wins. The device
       // side is capped so a hanging phone network can't stall analysis.
-      final response = await _firstSuccess<AnalyzeResponse>([
+      final race = _firstSuccess<AnalyzeResponse>([
         _extraction.extractMedia(url).timeout(const Duration(seconds: 25)),
         _api.analyze(url),
       ]);
+      late final Future<AnalyzeResponse> tracked;
+      tracked = race.then((response) {
+        _store(key, response);
+        return response;
+      }).whenComplete(() {
+        // The cleanup is part of the future every caller awaits, so a tap
+        // right after completion starts a fresh request when the TTL allows.
+        if (identical(_inFlight[key], tracked)) _inFlight.remove(key);
+      });
+      _inFlight[key] = tracked;
+      shared = tracked;
+    }
+
+    try {
+      final response = await shared;
+      debugPrint('[Analyze] resolved in ${stopwatch.elapsedMilliseconds}ms');
       if (seq != _analyzeSeq) return;
       _result = response;
+      _resultKey = key;
     } on NetworkException catch (e) {
       if (seq != _analyzeSeq) return;
       _error = (e.type == 'connection' || e.type == 'timeout')
@@ -88,10 +157,23 @@ class AnalyzeController extends ChangeNotifier {
     }
   }
 
+  static String _cacheKey(String url) => LocalExtractionService.sanitizeUrl(url);
+
+  void _store(String key, AnalyzeResponse response) {
+    if (!response.success) return;
+    // Re-insert so the most recently used entry is the last one evicted.
+    _cache.remove(key);
+    _cache[key] = _CachedAnalysis(response, _clock());
+    while (_cache.length > _maxCached) {
+      _cache.remove(_cache.keys.first);
+    }
+  }
+
   void clear() {
     // Abandons any in-flight analysis: its response can no longer land.
     _analyzeSeq++;
     _result = null;
+    _resultKey = null;
     _error = null;
     _isLoading = false;
     notifyListeners();

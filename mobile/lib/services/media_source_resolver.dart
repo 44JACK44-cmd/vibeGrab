@@ -95,6 +95,16 @@ class MediaSourceResolver {
     _manifestFor(videoId);
   }
 
+  /// Drops the cached payload and manifest of [videoId].
+  ///
+  /// A retry has to ask the server again: the cached URL may be expired or
+  /// refused (403), and reusing it would fail exactly like the first try.
+  void invalidate(String videoId) {
+    if (videoId.isEmpty) return;
+    _urlCache.remove(videoId);
+    _manifestCache.remove(videoId);
+  }
+
   Future<MediaResolution> resolve(
     String videoId, {
     required void Function(String stageKey) onStage,

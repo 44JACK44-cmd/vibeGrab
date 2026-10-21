@@ -16,12 +16,16 @@ import 'services/download_persistence_service.dart';
 import 'services/media_engine.dart';
 import 'services/media_metadata_service.dart';
 import 'services/equalizer_service.dart';
+import 'services/player_style_service.dart';
+import 'services/browser_blocker_service.dart';
 import 'services/pip_service.dart';
 import 'services/local_extraction_service.dart';
 import 'services/local_download_service.dart';
 import 'services/trash_service.dart';
 import 'services/api_service.dart';
 import 'features/analyzer/controllers/analyze_controller.dart';
+import 'features/ads/services/ad_manager.dart';
+import 'features/ads/widgets/app_ad_banner_host.dart';
 import 'features/downloads/controllers/downloads_controller.dart';
 import 'features/downloads/widgets/download_queue_panel.dart';
 import 'features/explore/controllers/explore_controller.dart';
@@ -57,6 +61,10 @@ Future<void> main() async {
 
     final themeProvider = ThemeProvider();
     await themeProvider.init();
+
+    await PlayerStyleService.instance.init();
+
+    await BrowserBlockerService.instance.init();
 
     final metaService = MediaMetadataService();
     await metaService.init();
@@ -135,6 +143,7 @@ class VibeGrabApp extends StatelessWidget {
         Provider<DownloadPersistenceService>.value(value: persistence),
         ChangeNotifierProvider.value(value: metaService),
         ChangeNotifierProvider.value(value: EqualizerService.instance),
+        ChangeNotifierProvider.value(value: PlayerStyleService.instance),
         ChangeNotifierProvider(create: (_) => AnalyzeController()),
         ChangeNotifierProvider(
           create: (_) => DownloadsController(
@@ -147,6 +156,7 @@ class VibeGrabApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => LibraryController()),
         ChangeNotifierProvider(create: (_) => SettingsController()),
         ChangeNotifierProvider(create: (_) => SharedDownloadController()),
+        ChangeNotifierProvider(create: (_) => AdManager()),
         ChangeNotifierProvider(create: (_) => MediaEngine()),
       ],
       child: Consumer2<LanguageProvider, ThemeProvider>(
@@ -287,6 +297,12 @@ context.read<MediaEngine>().initAudioService().then((_) {
         if (!mounted) return;
         UpdateDialog.checkAndShow(context);
       });
+      // Consent and SDK initialisation are optional and must never delay the
+      // first frame. The manager also waits before requesting any banner.
+      Future.delayed(const Duration(seconds: 2), () {
+        if (!mounted) return;
+        context.read<AdManager>().initialize();
+      });
     });
   }
 
@@ -368,6 +384,7 @@ context.read<MediaEngine>().initAudioService().then((_) {
             ),
           ),
           const MiniPlayer(),
+          AppAdBannerHost(tabIndex: _currentIndex),
         ],
       ),
       bottomNavigationBar: NavigationBar(

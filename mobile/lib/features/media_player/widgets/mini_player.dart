@@ -2,11 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../services/media_engine.dart';
+import '../../../services/player_style_service.dart';
 import '../../../data/models/explore_video.dart';
 import '../../explore/views/video_detail_view.dart';
+import '../views/audio_player_view.dart';
 import '../views/video_fullscreen_view.dart';
+import 'equalizer_sheet.dart';
+import 'lyrics_sheet.dart';
 import 'media_artwork.dart';
-import 'play_mode_button.dart';
+import 'player_backdrop.dart';
 
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key});
@@ -14,6 +18,15 @@ class MiniPlayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+
+    return AnimatedBuilder(
+      animation: PlayerStyleService.instance,
+      builder: (context, _) => _buildPlayer(context, cs),
+    );
+  }
+
+  Widget _buildPlayer(BuildContext context, ColorScheme cs) {
+    final style = PlayerStyleService.instance.style;
 
     return Consumer<MediaEngine>(
       builder: (context, engine, _) {
@@ -46,7 +59,6 @@ class MiniPlayer extends StatelessWidget {
                   child: Container(
                     height: 64,
                     decoration: BoxDecoration(
-                      color: cs.surface,
                       boxShadow: [
                         BoxShadow(
                           color: Colors.black.withValues(alpha: 0.3),
@@ -55,7 +67,11 @@ class MiniPlayer extends StatelessWidget {
                         ),
                       ],
                     ),
-                    child: Column(
+                    child: PlayerBackdrop(
+                      style: style,
+                      artworkPath: engine.currentThumbnailPath,
+                      artworkUrl: engine.currentThumbnail,
+                      child: Column(
                       children: [
                         _buildProgressBar(engine, cs),
                         Expanded(
@@ -118,6 +134,45 @@ class MiniPlayer extends StatelessWidget {
                                     constraints: const BoxConstraints(),
                                   ),
                                 const SizedBox(width: 4),
+                                PopupMenuButton<String>(
+                                  icon: Icon(Icons.more_vert,
+                                      color: cs.onSurfaceVariant, size: 20),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                  onSelected: (value) {
+                                    if (value == 'equalizer') {
+                                      showEqualizerSheet(context);
+                                    } else if (value == 'lyrics') {
+                                      showLyricsSheet(context);
+                                    }
+                                  },
+                                  itemBuilder: (_) => [
+                                    PopupMenuItem(
+                                      value: 'equalizer',
+                                      child: ListTile(
+                                        dense: true,
+                                        contentPadding: EdgeInsets.zero,
+                                        leading: const Icon(Icons.equalizer,
+                                            size: 20),
+                                        title: Text(
+                                            AppLocalizations.of(context)
+                                                .equalizer),
+                                      ),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'lyrics',
+                                      child: ListTile(
+                                        dense: true,
+                                        contentPadding: EdgeInsets.zero,
+                                        leading: const Icon(Icons.lyrics_outlined,
+                                            size: 20),
+                                        title: Text(
+                                            AppLocalizations.of(context)
+                                                .lyrics),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                                 IconButton(
                                   icon: Icon(Icons.close, color: cs.onSurfaceVariant, size: 20),
                                   onPressed: () => engine.stop(),
@@ -129,6 +184,7 @@ class MiniPlayer extends StatelessWidget {
                           ),
                         ),
                       ],
+                      ),
                     ),
                   ),
                 )
@@ -236,214 +292,9 @@ class MiniPlayer extends StatelessWidget {
         ),
       );
     } else {
-      Navigator.push(
-        context,
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => ChangeNotifierProvider.value(
-            value: engine,
-            child: const _AudioPlayerFullScreen(),
-          ),
-          transitionDuration: const Duration(milliseconds: 400),
-          reverseTransitionDuration: const Duration(milliseconds: 300),
-          transitionsBuilder: (_, animation, __, child) {
-            final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
-            return SlideTransition(
-              position: Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero).animate(curved),
-              child: FadeTransition(
-                opacity: CurvedAnimation(parent: animation, curve: const Interval(0.3, 1.0)),
-                child: child,
-              ),
-            );
-          },
-        ),
-      );
+      // Same full audio screen as the library: EQ, lyrics, queue and media
+      // session controls live there. Opening it must not restart the song.
+      openAudioPlayer(context);
     }
-  }
-}
-
-class _AudioPlayerFullScreen extends StatelessWidget {
-  const _AudioPlayerFullScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Consumer<MediaEngine>(
-          builder: (_, engine, __) => Text(
-            engine.currentTitle ?? '',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        actions: [
-IconButton(
-icon: const Icon(Icons.queue_music),
-onPressed: () => _showQueueSheet(context),
-),
-const PlayModeButton(size: 22),
-        ],
-      ),
-      body: Consumer<MediaEngine>(
-        builder: (context, engine, _) {
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: Column(
-              children: [
-                const Spacer(flex: 2),
-                Container(
-                  width: 240, height: 240,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    color: cs.surfaceContainerHighest,
-                    boxShadow: [BoxShadow(color: cs.primary.withValues(alpha: 0.15), blurRadius: 30, offset: const Offset(0, 10))],
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: mediaArtwork(engine, cs, iconSize: 80),
-                ),
-                const Spacer(),
-                Text(engine.currentTitle ?? '', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: cs.onSurface),
-                  textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis),
-                if (engine.currentArtist != null) ...[
-                  const SizedBox(height: 6),
-                  Text(engine.currentArtist!, style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant.withValues(alpha: 0.7))),
-                ],
-                const Spacer(),
-                SliderTheme(
-                  data: SliderTheme.of(context).copyWith(trackHeight: 4,
-                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 16)),
-                  child: Slider(value: engine.progress, onChanged: (v) => engine.seekProgress(v)),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text(engine.positionFormatted, style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant.withValues(alpha: 0.7))),
-                    Text(engine.durationFormatted, style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant.withValues(alpha: 0.7))),
-                  ]),
-                ),
-                const Spacer(),
-                Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  IconButton(
-                    icon: Icon(
-                      engine.state.isShuffle ? Icons.shuffle : Icons.shuffle,
-                      color: engine.state.isShuffle ? cs.primary : cs.onSurface,
-                    ),
-                    onPressed: () => engine.toggleShuffle(),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.skip_previous, size: 32),
-                    color: cs.onSurface,
-                    onPressed: () => engine.skipToPrevious(),
-                  ),
-                  const SizedBox(width: 12),
-                  Container(width: 72, height: 72, decoration: BoxDecoration(color: cs.primary, shape: BoxShape.circle),
-                    child: IconButton(
-                      icon: Icon(engine.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white, size: 42),
-                      onPressed: () => engine.togglePlayPause(),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  IconButton(
-                    icon: const Icon(Icons.skip_next, size: 32),
-                    color: cs.onSurface,
-                    onPressed: () => engine.skipToNext(),
-                  ),
-const SizedBox(width: 8),
-const PlayModeButton(),
-]),
-                const Spacer(flex: 2),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  void _showQueueSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      builder: (_) => ChangeNotifierProvider.value(
-        value: context.read<MediaEngine>(),
-        child: _QueueSheet(),
-      ),
-    );
-  }
-}
-
-class _QueueSheet extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final loc = AppLocalizations.of(context);
-    return Consumer<MediaEngine>(
-      builder: (context, engine, _) {
-        return Container(
-          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.6),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    Text(loc.queue, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: cs.onSurface)),
-                    const SizedBox(width: 8),
-                    Text('(${engine.queue.length})', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14)),
-                    const Spacer(),
-                    TextButton(
-                      onPressed: () => engine.clearQueue(),
-                      child: Text(loc.clearQueue, style: TextStyle(color: cs.error)),
-                    ),
-                  ],
-                ),
-              ),
-              Flexible(
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: engine.queue.length,
-                  itemBuilder: (context, index) {
-                    final item = engine.queue[index];
-                    final isCurrent = index == engine.currentIndex;
-                    return ListTile(
-                      leading: Container(
-                        width: 40, height: 40,
-                        decoration: BoxDecoration(borderRadius: BorderRadius.circular(6), color: cs.surfaceContainerHighest),
-                        clipBehavior: Clip.antiAlias,
-                        child: item.artUri != null
-                            ? Image.network(item.artUri!.toString(), fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => Icon(Icons.music_note, size: 18, color: cs.onSurfaceVariant))
-                            : Icon(Icons.music_note, size: 18, color: cs.onSurfaceVariant),
-                      ),
-                      title: Text(
-                        item.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: isCurrent ? cs.primary : cs.onSurface,
-                          fontWeight: isCurrent ? FontWeight.w600 : FontWeight.normal,
-                        ),
-                      ),
-                      subtitle: Text(item.artist ?? '', maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                      trailing: IconButton(
-                        icon: Icon(Icons.close, size: 18, color: cs.onSurfaceVariant),
-                        onPressed: () => engine.removeFromQueue(index),
-                      ),
-                      onTap: () => engine.skipToIndex(index),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
   }
 }

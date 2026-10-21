@@ -74,15 +74,32 @@ jobs:
 
       - name: Compilar APK de release (firmado)
         working-directory: mobile
+        env:
+          ADMOB_ENABLED: ${{ vars.ADMOB_ENABLED }}
+          ADMOB_BANNER_ID: ${{ secrets.ADMOB_BANNER_ID }}
+          ADMOB_INTERSTITIAL_ID: ${{ secrets.ADMOB_INTERSTITIAL_ID }}
+          ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID }}
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           BUILD_NUMBER="${TAG##*-}"
           BUILD_NAME="${TAG#v}"
           BUILD_NAME="${BUILD_NAME%-*}"
+          ADMOB_ENABLED="${ADMOB_ENABLED:-false}"
+          if [ "$ADMOB_ENABLED" = "true" ]; then
+            for v in ADMOB_APP_ID ADMOB_BANNER_ID; do
+              if [ -z "${!v:-}" ]; then
+                echo "::error::ADMOB_ENABLED=true requiere el secreto $v"; exit 1
+              fi
+            done
+          fi
           flutter build apk --release \
             --build-name="$BUILD_NAME" \
-            --build-number="$BUILD_NUMBER"
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=ADMOB_ENABLED="$ADMOB_ENABLED" \
+            --dart-define=ADMOB_BANNER_ID="${ADMOB_BANNER_ID:-}" \
+            --dart-define=ADMOB_INTERSTITIAL_ID="${ADMOB_INTERSTITIAL_ID:-}" \
+            -PadmobAppId="${ADMOB_APP_ID:-}"
 
       - name: Preparar artefacto
         run: cp mobile/build/app/outputs/flutter-apk/app-release.apk VibeGrab.apk

@@ -50,6 +50,8 @@ class DownloadsController extends ChangeNotifier {
 
   bool _initialized = false;
   final Map<String, DateTime> _lastProgressNotify = {};
+  final Map<String, int> _lastProgressBytes = {};
+  final Map<String, DateTime> _lastProgressAt = {};
   int _activeCount = 0;
   int _maxConcurrent = 2;
   final List<DownloadTask> _pendingQueue = [];
@@ -440,6 +442,17 @@ class DownloadsController extends ChangeNotifier {
           }
           _lastProgressNotify[task.id] = now;
 
+          // Real transfer speed from the last sample (not an estimate from
+          // the total size): the notification shows what the user gets now.
+          final lastBytes = _lastProgressBytes[task.id] ?? 0;
+          final elapsedMs = now.difference(_lastProgressAt[task.id] ?? now).inMilliseconds;
+          var bytesPerSecond = 0;
+          if (elapsedMs > 0 && bytesDownloaded > lastBytes) {
+            bytesPerSecond = ((bytesDownloaded - lastBytes) * 1000 / elapsedMs).round();
+          }
+          _lastProgressBytes[task.id] = bytesDownloaded;
+          _lastProgressAt[task.id] = now;
+
           final i = _tasks.indexWhere((t) => t.id == task.id);
           if (i != -1) {
             _tasks[i] = _tasks[i].copyWith(
@@ -452,6 +465,7 @@ class DownloadsController extends ChangeNotifier {
               taskId: task.id,
               title: task.title,
               progress: progress,
+              bytesPerSecond: bytesPerSecond,
             );
             notifyListeners();
           }
@@ -477,6 +491,8 @@ class DownloadsController extends ChangeNotifier {
       );
 
       _lastProgressNotify.remove(task.id);
+      _lastProgressBytes.remove(task.id);
+      _lastProgressAt.remove(task.id);
       _log('Download returned: status=${updatedTask.status.name} filePath=${updatedTask.filePath} error=${updatedTask.error}');
 
       final i = _tasks.indexWhere((t) => t.id == task.id);
@@ -507,6 +523,8 @@ class DownloadsController extends ChangeNotifier {
       _log('[ERROR] _startDownload exception: $e');
       _log('[ERROR] Stack trace: $st');
       _lastProgressNotify.remove(task.id);
+      _lastProgressBytes.remove(task.id);
+      _lastProgressAt.remove(task.id);
       final i = _tasks.indexWhere((t) => t.id == task.id);
       if (i != -1) {
         _tasks[i] = _tasks[i].copyWith(status: 'failed', error: e.toString());

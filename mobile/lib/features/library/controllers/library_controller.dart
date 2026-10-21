@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import '../../../data/models/library_file.dart';
@@ -49,6 +50,75 @@ class LibraryController extends ChangeNotifier {
   bool get permissionsGranted => _permissionsGranted;
 
   MediaMetadataService get meta => _meta;
+
+  /// The library is built from MediaStore AND from the app's own download
+  /// folder. The same download is often present in both: MediaStore returns
+  /// it keyed by `content://...` while the folder scan returns its filename,
+  /// so the old merge produced two cards. Deleting one hid both because the
+  /// delete action is by filename. Identity is the filename, not the URI.
+  @visibleForTesting
+  static List<LibraryFile> mergeUnique(
+    Iterable<LibraryFile> deviceMedia,
+    Iterable<LibraryFile> downloadedFiles,
+  ) {
+    final byName = <String, LibraryFile>{};
+
+    void add(LibraryFile file) {
+      final key = file.filename.trim().toLowerCase();
+      if (key.isEmpty) return;
+      final existing = byName[key];
+      if (existing == null) {
+        byName[key] = file;
+        return;
+      }
+      // MediaStore entries have a contentUri and can be streamed on Android
+      // 13+ without a storage path, so they win over a plain folder entry.
+      if (file.hasContentUri && !existing.hasContentUri) {
+        byName[key] = _enrich(file, existing);
+      } else {
+        byName[key] = _enrich(existing, file);
+      }
+    }
+
+    for (final file in deviceMedia) {
+      add(file);
+    }
+    for (final file in downloadedFiles) {
+      add(file);
+    }
+    return byName.values.toList();
+  }
+
+  /// Keeps the playable entry and fills the fields only the other copy knows
+  /// (embedded duration, sidecar thumbnail, artist...).
+  static LibraryFile _enrich(LibraryFile primary, LibraryFile fallback) {
+    return LibraryFile(
+      filename: primary.filename,
+      title: primary.title.trim().isEmpty ? fallback.title : primary.title,
+      filePath:
+          primary.filePath.isNotEmpty ? primary.filePath : fallback.filePath,
+      fileSize: primary.fileSize > 0 ? primary.fileSize : fallback.fileSize,
+      fileSizeFormatted: primary.fileSizeFormatted.isNotEmpty
+          ? primary.fileSizeFormatted
+          : fallback.fileSizeFormatted,
+      fileType: primary.fileType != 'unknown'
+          ? primary.fileType
+          : fallback.fileType,
+      extension:
+          primary.extension.isNotEmpty ? primary.extension : fallback.extension,
+      createdAt: primary.createdAt.isNotEmpty
+          ? primary.createdAt
+          : fallback.createdAt,
+      thumbnail: primary.thumbnail ?? fallback.thumbnail,
+      thumbnailPath: primary.thumbnailPath ?? fallback.thumbnailPath,
+      source: primary.source ?? fallback.source,
+      sourceType: primary.hasContentUri ? 'local' : primary.sourceType,
+      contentUri: primary.contentUri ?? fallback.contentUri,
+      album: primary.album ?? fallback.album,
+      artist: primary.artist ?? fallback.artist,
+      durationMs: primary.durationMs ?? fallback.durationMs,
+    );
+  }
 
   List<LibraryFile> get files {
     var result = List<LibraryFile>.from(_allFiles);
@@ -150,20 +220,7 @@ class LibraryController extends ChangeNotifier {
       final deviceMedia = await LocalMediaService.getDeviceMedia();
       final downloadedFiles = LocalMediaService.getDownloadedFiles();
 
-      final merged = <String, LibraryFile>{};
-
-      for (final f in deviceMedia) {
-        final key = f.hasContentUri ? (f.contentUri ?? f.filename) : f.filename;
-        merged[key] = f;
-      }
-
-      for (final f in downloadedFiles) {
-        if (!merged.containsKey(f.filename)) {
-          merged[f.filename] = f;
-        }
-      }
-
-      _allFiles = merged.values.toList()
+      _allFiles = mergeUnique(deviceMedia, downloadedFiles)
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
       _loadThumbnailsFromMeta();

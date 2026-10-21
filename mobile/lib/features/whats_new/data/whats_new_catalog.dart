@@ -23,6 +23,153 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.42
+    WhatsNewEntry(
+      id: 'wn-1142-player-styles',
+      version: '1.1.42',
+      build: 49,
+      category: WhatsNewCategory.features,
+      emoji: '🎨',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Tres estilos de reproductor',
+        en: 'Three player styles',
+      ),
+      description: LocalizedText(
+        es: 'Elige en Ajustes entre el estilo clásico, el inmersivo con la carátula de fondo y el compacto. El estilo se aplica igual en la biblioteca, en Explorar y en el mini reproductor.',
+        en: 'Choose between the classic style, the immersive one with the artwork in the background and the compact one in Settings. The style is applied the same way in your library, in Explore and in the mini player.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142-audio-player',
+      version: '1.1.42',
+      build: 49,
+      category: WhatsNewCategory.fixes,
+      emoji: '🎚️',
+      order: 1,
+      featured: true,
+      title: LocalizedText(
+        es: 'El ecualizador y las letras ya están en la música',
+        en: 'Equalizer and lyrics are now in the music player',
+      ),
+      description: LocalizedText(
+        es: 'Al abrir una canción se abre su reproductor completo, con ecualizador, cola y control de reproducción. Las letras se buscan con el título real de la canción y puedes reintentar la búsqueda.',
+        en: 'Opening a song now opens its full player, with the equalizer, the queue and the playback controls. Lyrics are searched with the real song title and you can retry the search.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142-library-duplicates',
+      version: '1.1.42',
+      build: 49,
+      category: WhatsNewCategory.fixes,
+      emoji: '🧹',
+      order: 2,
+      title: LocalizedText(
+        es: 'Cada descarga aparece una sola vez',
+        en: 'Each download shows up only once',
+      ),
+      description: LocalizedText(
+        es: 'Lo que descargas ya no se repite en Local: la biblioteca unifica el archivo del teléfono y el de la carpeta de descargas, y al borrar una entrada solo se borra esa.',
+        en: 'What you download no longer repeats in your library: the library merges the phone file with the one in the downloads folder, and deleting one entry only removes that one.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142-notifications',
+      version: '1.1.42',
+      build: 49,
+      category: WhatsNewCategory.improvements,
+      emoji: '🔔',
+      order: 3,
+      title: LocalizedText(
+        es: 'Las notificaciones de descarga se cierran solas',
+        en: 'Download notifications close on their own',
+      ),
+      description: LocalizedText(
+        es: 'El aviso de descarga terminada o fallida desaparece solo tras unos segundos y nunca tapa el trabajo que sigue en marcha. Con varias descargas a la vez hay un aviso por descarga, con su porcentaje y su velocidad real.',
+        en: 'The finished or failed download notice disappears on its own after a few seconds and never covers work that is still running. With several downloads at once there is one notice per download, with its percentage and its real speed.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142-analysis-speed',
+      version: '1.1.42',
+      build: 49,
+      category: WhatsNewCategory.improvements,
+      emoji: '⚡',
+      order: 4,
+      title: LocalizedText(
+        es: 'Analizar un enlace va más rápido',
+        en: 'Analysing a link is faster',
+      ),
+      description: LocalizedText(
+        es: 'Repetir el análisis del mismo enlace ya no vuelve a lanzar la búsqueda, y el resultado se reutiliza un rato antes de volver a preguntarse al servidor. Si una actualización falla, no pierdes lo que ya tenías.',
+        en: 'Repeating the analysis of the same link no longer starts the search again, and the result is reused for a while before asking the server again. If an update fails, you do not lose what you already had.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142-resume',
+      version: '1.1.42',
+      build: 49,
+      category: WhatsNewCategory.stability,
+      emoji: '📥',
+      order: 5,
+      title: LocalizedText(
+        es: 'Las descargas que se cortan se reanudan',
+        en: 'Interrupted downloads pick up where they stopped',
+      ),
+      description: LocalizedText(
+        es: 'Si la conexión se cae a mitad de una descarga, VibeGrab guarda lo descargado y lo retoma con una sola pasada más, en lugar de empezar de cero. El archivo solo aparece en tu carpeta cuando está completo y es válido.',
+        en: 'If the connection drops halfway through a download, VibeGrab keeps what was downloaded and resumes it with one extra attempt instead of starting over. The file only appears in your folder when it is complete and valid.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142-shorts',
+      version: '1.1.42',
+      build: 49,
+      category: WhatsNewCategory.fixes,
+      emoji: '🎬',
+      order: 6,
+      title: LocalizedText(
+        es: 'Los Shorts dicen qué les pasa',
+        en: 'Shorts now tell you what is wrong',
+      ),
+      description: LocalizedText(
+        es: 'Si un Shorts no puede reproducir el vídeo, la app lo explica y te ofrece reintentar pidiendo enlaces nuevos, en lugar de dejar una carátula quieta sin decir nada.',
+        en: 'If a Short cannot play the video, the app explains it and offers to retry with fresh links instead of leaving a still thumbnail with no explanation.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142-browser-blocker',
+      version: '1.1.42',
+      build: 49,
+      category: WhatsNewCategory.features,
+      emoji: '🌐',
+      order: 7,
+      title: LocalizedText(
+        es: 'Filtro de publicidad en el navegador',
+        en: 'Ad filter in the browser',
+      ),
+      description: LocalizedText(
+        es: 'El navegador integrado puede detener los anuncios y rastreadores de terceros más conocidos, con un contador discreto, un interruptor para desactivarlo y la opción de permitir un sitio concreto. Los recursos que ya venían en la primera respuesta de la página no se pueden filtrar.',
+        en: 'The built-in browser can stop the best known third-party ads and trackers, with a discreet counter, a switch to turn it off and the option to allow a specific site. Resources already included in the first page response cannot be filtered.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142-explorer-parallel',
+      version: '1.1.42',
+      build: 49,
+      category: WhatsNewCategory.improvements,
+      emoji: '🚀',
+      order: 8,
+      title: LocalizedText(
+        es: 'Explorar carga antes',
+        en: 'Explore loads sooner',
+      ),
+      description: LocalizedText(
+        es: 'Para ti y Tendencias buscan en varias fuentes a la vez en lugar de una detrás de otra, así que los resultados aparecen antes sin esperar a que termine cada búsqueda.',
+        en: 'For you and Trending search several sources at once instead of one after another, so results appear sooner without waiting for every search to finish.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.41
     WhatsNewEntry(
       id: 'wn-1141-mp3-real',

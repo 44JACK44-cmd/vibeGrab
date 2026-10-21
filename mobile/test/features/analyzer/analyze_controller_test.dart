@@ -10,23 +10,34 @@ import 'package:vibegrab/services/local_extraction_service.dart';
 
 /// Both halves of the device-vs-backend race answer from the same gate, so a
 /// test can decide which request answers first and how slowly.
-Future<AnalyzeResponse> _gate(String url) =>
-    _gates.putIfAbsent(url, Completer<AnalyzeResponse>.new).future;
+Future<AnalyzeResponse> _gate(String url) {
+  final failure = _failures[url];
+  if (failure != null) return Future<AnalyzeResponse>.error(failure);
+  return _gates.putIfAbsent(url, Completer<AnalyzeResponse>.new).future;
+}
 
 final Map<String, Completer<AnalyzeResponse>> _gates = {};
+final Map<String, Object> _failures = {};
+var apiCalls = 0;
+var extractionCalls = 0;
 
 class _FakeApi extends ApiService {
   _FakeApi() : super();
 
   @override
-  Future<AnalyzeResponse> analyze(String url) => _gate(url);
+  Future<AnalyzeResponse> analyze(String url) {
+    apiCalls++;
+    return _gate(url);
+  }
 }
 
 class _FakeExtraction extends LocalExtractionService {
   @override
   Future<AnalyzeResponse> extractMedia(String url,
-          {void Function(MediaInfo media)? onMetadata}) =>
-      _gate(url);
+      {void Function(MediaInfo media)? onMetadata}) {
+    extractionCalls++;
+    return _gate(url);
+  }
 }
 
 AnalyzeResponse _response(String id) => AnalyzeResponse(
@@ -41,7 +52,12 @@ AnalyzeController _controller() => AnalyzeController(
     );
 
 void main() {
-  setUp(_gates.clear);
+  setUp(() {
+    _gates.clear();
+    _failures.clear();
+    apiCalls = 0;
+    extractionCalls = 0;
+  });
 
   test('a single analysis resolves and clears the loading flag', () async {
     final controller = _controller();
@@ -95,6 +111,81 @@ void main() {
 
     expect(controller.result, isNull);
     expect(controller.error, isNull);
+    expect(controller.isLoading, isFalse);
+  });
+
+  test('two taps for the same URL share one device+backend race', () async {
+    final controller = _controller();
+    final first = controller.analyze('same');
+    final second = controller.analyze('same');
+
+    expect(extractionCalls, 1);
+    expect(apiCalls, 1);
+
+    _gates['same']!.complete(_response('same'));
+    await Future.wait([first, second]);
+
+    expect(controller.result?.media.id, 'same');
+    expect(extractionCalls, 1);
+    expect(apiCalls, 1);
+    expect(controller.isLoading, isFalse);
+  });
+
+  test('a completed analysis is reused without touching the network', () async {
+    final controller = _controller();
+    final first = controller.analyze('cached');
+    _gates['cached']!.complete(_response('cached'));
+    await first;
+    expect(extractionCalls, 1);
+
+    await controller.analyze('cached');
+
+    expect(controller.result?.media.id, 'cached');
+    expect(controller.isLoading, isFalse);
+    expect(extractionCalls, 1);
+    expect(apiCalls, 1);
+  });
+
+  test('the cache expires after its TTL', () async {
+    var now = DateTime(2026, 1, 1, 12);
+    final controller = AnalyzeController(
+      extraction: _FakeExtraction(),
+      api: _FakeApi(),
+      cacheTtl: const Duration(minutes: 5),
+      clock: () => now,
+    );
+
+    final first = controller.analyze('expiring');
+    _gates['expiring']!.complete(_response('expiring'));
+    await first;
+    expect(extractionCalls, 1);
+
+    now = now.add(const Duration(minutes: 6));
+    await controller.analyze('expiring');
+
+    expect(extractionCalls, 2);
+  });
+
+  test('a failed refresh keeps the previous result of the same URL', () async {
+    var now = DateTime(2026, 1, 1, 12);
+    final controller = AnalyzeController(
+      extraction: _FakeExtraction(),
+      api: _FakeApi(),
+      cacheTtl: const Duration(minutes: 1),
+      clock: () => now,
+    );
+
+    final first = controller.analyze('refresh');
+    _gates['refresh']!.complete(_response('refresh'));
+    await first;
+    expect(controller.result?.media.id, 'refresh');
+
+    now = now.add(const Duration(minutes: 2));
+    _failures['refresh'] = const NetworkException('offline', type: 'connection');
+    await controller.analyze('refresh');
+
+    expect(controller.result?.media.id, 'refresh');
+    expect(controller.error, 'serverUnreachable');
     expect(controller.isLoading, isFalse);
   });
 }

@@ -209,6 +209,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   Timer? _pipConfirmTimer;
   Timer? _playWatchdog;
   String? playbackError;
+
+  /// Set when a VIDEO request could only be satisfied with the audio track.
+  /// The audio plays, but the screen would otherwise show a frozen cover
+  /// with no explanation, so the UI turns this into a visible, retryable
+  /// notice instead of pretending everything is fine.
+  String? videoFallbackNotice;
   String? _lastVideoError;
   String? _lastAudioError;
   String? _lastStreamError;
@@ -1394,10 +1400,34 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _currentIndex = index;
     _completionHandled = false;
     playbackError = null;
+    videoFallbackNotice = null;
     _syncQueueToHandler();
     notifyListeners();
 
     await _playQueueItemVideo(items[index], startAt: resume);
+  }
+
+  /// Retries the current video with FRESH stream URLs.
+  ///
+  /// The cached payload can hold an expired or refused URL, so a retry drops
+  /// the local cache and asks the server again. Without that, "Retry" would
+  /// replay exactly the same dead URL.
+  Future<void> retryVideoPlayback() async {
+    final mediaId = _state.mediaId;
+    if (mediaId == null) return;
+    final videoId = _parseVideoIdFromUrl(mediaId);
+    if (videoId != null) _resolver.invalidate(videoId);
+    final saved = _state.position;
+    playbackError = null;
+    videoFallbackNotice = null;
+    notifyListeners();
+    if (_currentIndex >= 0 && _currentIndex < _queue.length) {
+      final item = _queue[_currentIndex];
+      await _playQueueItemVideo(item, startAt: saved);
+      return;
+    }
+    await _playYouTubeVideo(mediaId, _createMediaItemFromState(),
+        startAt: saved);
   }
 
   /// Shared video path for Explorer queue items: state, stall watchdog and
@@ -1427,6 +1457,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     await _stopCurrent();
     _completionHandled = false;
     playbackError = null;
+    videoFallbackNotice = null;
     _videoQuality = 0;
 
     _state = _state.copyWith(
@@ -1651,6 +1682,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           streamUri: res.audioUri);
       if (ok) {
         _clearStage();
+        // Every video candidate failed: the audio takes over, but the user
+        // must be told that there is no image.
+        videoFallbackNotice = 'audioOnly';
+        notifyListeners();
         return;
       }
       errs.add('audio: ${_lastAudioError ?? "falló"}');
@@ -1667,6 +1702,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
       if (ok) {
         _clearStage();
+        videoFallbackNotice = 'audioOnly';
+        notifyListeners();
         return;
       }
       errs.add('audio directo: ${_lastAudioError ?? "falló"}');
@@ -1858,6 +1895,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         startAt: startAt, initTimeout: initTimeout, playToken: playToken);
     if (!started) return false;
     playbackError = null;
+    videoFallbackNotice = null;
 
     MediaMetadataService().recordPlay(
       filename: youtubeUrl,

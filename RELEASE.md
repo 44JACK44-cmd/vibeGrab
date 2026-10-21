@@ -108,6 +108,98 @@ flutter build apk --release --build-name=1.1.41 --build-number=48
 
 ---
 
+## Publicidad (Google AdMob)
+
+El SDK oficial `google_mobile_ads` ya esta integrado, pero **la monetizacion
+real esta pendiente de configuracion**. No hay identificadores reales en el
+repositorio y no se deben inventar.
+
+### Que hace hoy la app
+
+- En **debug** usa los identificadores de prueba oficiales de Google. No
+  generan ingresos y no deben presentarse como ganancias.
+- En **release** la publicidad queda **desactivada** salvo que se aporten IDs
+  reales al compilar. Asi nunca se muestran anuncios de prueba a usuarios.
+- Un banner adaptativo compartido puede aparecer en Inicio/Explorar, navegador,
+  descargas (solo sin descargas activas) y biblioteca/historial/favoritos.
+- No hay anuncios en Analizador, Ajustes, reproductor de audio/video, PiP ni
+  controles multimedia.
+- Los banners no se recargan por reconstrucciones de widgets ni por cambiar de
+  pestana; se reutiliza el mismo objeto cargado.
+- Los intersticiales estan implementados en el proveedor y la politica, pero
+  **no se disparan automaticamente**: VibeGrab no tiene todavia una transicion
+  natural que sea segura para mostrarlos. Limites configurados: 1 cada 10 min,
+  3 por sesion, ninguno en los primeros 60 s y ninguno durante reproduccion,
+  descargas, PiP o entrada de texto.
+- Los anuncios recompensados **no** estan implementados porque el producto no
+  tiene una economia de recompensas definida.
+
+### Configuracion pendiente en la consola de AdMob
+
+1. Crear la app Android en AdMob con el package `com.example.vibegrab`.
+2. Crear un bloque de anuncios **Banner** para esa app.
+3. Opcional: crear un bloque **Intersticial** si se decide activar ese formato
+   mas adelante.
+4. Crear y publicar un mensaje de consentimiento UMP para las regiones que lo
+   requieran. La app ya llama a `ConsentInformation` y ofrece
+   "Privacidad y anuncios" en Ajustes cuando la publicidad esta activa y la
+   region requiere opciones de privacidad.
+5. Copiar el **App ID** (`ca-app-pub-...~...`) y los IDs de bloque
+   (`ca-app-pub-.../...`).
+6. Verificar la entrega real en un dispositivo/emulador con una build de
+   release firmada. Hasta entonces no se puede afirmar que la monetizacion
+   funciona.
+
+### Activar en GitHub Actions
+
+En el repositorio, configurar:
+
+| Nombre | Tipo | Valor |
+|--------|------|-------|
+| `ADMOB_ENABLED` | Variable | `true` |
+| `ADMOB_APP_ID` | Secreto | App ID de AdMob |
+| `ADMOB_BANNER_ID` | Secreto | ID del banner |
+| `ADMOB_INTERSTITIAL_ID` | Secreto opcional | ID del intersticial |
+
+El workflow pasa esos valores a `--dart-define` y a `-PadmobAppId`. Si
+`ADMOB_ENABLED=true` falta el App ID o el banner, el build **falla antes de
+publicar**. Sin esos valores, el APK de release se publica sin publicidad.
+
+### Activacion manual (solo pruebas)
+
+```bash
+cd mobile
+flutter build apk --release \
+  --dart-define=ADMOB_ENABLED=true \
+  --dart-define=ADMOB_BANNER_ID=ca-app-pub-XXXXXXXX/YYYYYYYY \
+  --dart-define=ADMOB_INTERSTITIAL_ID=ca-app-pub-XXXXXXXX/ZZZZZZZZ \
+  -PadmobAppId=ca-app-pub-XXXXXXXX~WWWWWWWW
+```
+
+`google_mobile_ads` 9.1.0 exige `minSdk 24` y `compileSdk 36`; el proyecto ya
+los fija. El App ID de prueba se usa por defecto en el manifiesto si no se pasa
+uno real.
+
+### Privacidad y limitaciones
+
+- El consentimiento UMP se pide antes de que VibeGrab inicialice el SDK. Si
+  falla o el usuario no da consentimiento, no se solicitan anuncios.
+- `AdMetrics` solo guarda eventos locales y acotados (solicitud, carga,
+  impresion, clic, fallo). No envia URLs, busquedas, historial ni identificadores
+  y no estima ingresos.
+- El SDK de AdMob puede acceder al ID de publicidad y declara el permiso
+  `com.google.android.gms.permission.AD_ID` (Android 13+). Hay que reflejarlo en
+  la seccion de seguridad de datos de Play Console y respetar la eleccion de
+  consentimiento. VibeGrab no lee ese ID directamente.
+- Los fallos del proveedor se gestionan con backoff y la app sigue funcionando.
+- El navegador **no** bloquea todos los anuncios de terceros: `webview_flutter`
+  solo controla navegaciones, no subrecursos. La publicidad propia de VibeGrab
+  vive en la interfaz y es independiente de ese filtrado.
+- AdMob puede requerir pasos adicionales (por ejemplo `app-ads.txt`) para
+  completar la verificacion de la cuenta. No se ha publicado ninguno.
+
+---
+
 ## Firma del APK (MUY IMPORTANTE)
 
 La clave de firma **no esta en el repositorio**. Vive en los **secretos de

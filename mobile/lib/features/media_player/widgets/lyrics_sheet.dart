@@ -31,6 +31,12 @@ class _LyricsSheetState extends State<LyricsSheet> {
   }
 
   Future<void> _load() async {
+    if (mounted && !_loading) {
+      setState(() {
+        _loading = true;
+        _lyrics = null;
+      });
+    }
     final l = await LyricsService.instance.fetch(_artist, _title);
     if (!mounted) return;
     setState(() {
@@ -136,9 +142,23 @@ class _LyricsSheetState extends State<LyricsSheet> {
     final lyrics = _lyrics;
     if (lyrics == null || lyrics.isEmpty) {
       return Center(
-        child: Text(loc.lyricsNotFound,
-            textAlign: TextAlign.center,
-            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.lyrics_outlined,
+                size: 42, color: cs.onSurfaceVariant.withValues(alpha: 0.5)),
+            const SizedBox(height: 10),
+            Text(loc.lyricsNotFound,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14)),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: _load,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: Text(loc.retry),
+            ),
+          ],
+        ),
       );
     }
     if (lyrics.isSynced) return _buildSynced(lyrics, cs);

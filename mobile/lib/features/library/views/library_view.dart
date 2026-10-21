@@ -6,6 +6,7 @@ import '../../../core/theme/app_animations.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../data/models/library_file.dart';
 import '../../../services/media_engine.dart';
+import '../../media_player/views/audio_player_view.dart';
 import '../../media_player/views/video_player_view.dart';
 import '../controllers/library_controller.dart';
 import '../widgets/library_grid_card.dart';
@@ -495,7 +496,9 @@ class _LibraryViewState extends State<LibraryView> {
         ),
       );
     } else {
-      engine.playFile(file);
+      // Audio has a full player too: EQ and lyrics live there. It starts the
+      // song from its initState so there is exactly one play call.
+      openAudioPlayer(context, file: file);
     }
   }
 

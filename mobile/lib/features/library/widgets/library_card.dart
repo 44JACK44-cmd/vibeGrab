@@ -6,6 +6,7 @@ import '../../../core/localization/app_localizations.dart';
 import '../../../data/models/library_file.dart';
 import '../../../services/media_metadata_service.dart';
 import '../../../services/media_engine.dart';
+import '../../media_player/views/audio_player_view.dart';
 import '../../media_player/views/video_player_view.dart';
 import '../controllers/library_controller.dart';
 
@@ -48,7 +49,7 @@ class LibraryCard extends StatelessWidget {
               ),
             );
           } else {
-            context.read<MediaEngine>().playFile(file);
+            openAudioPlayer(context, file: file);
           }
         },
         child: Padding(
@@ -214,7 +215,7 @@ class LibraryCard extends StatelessWidget {
             ),
           );
         } else {
-          context.read<MediaEngine>().playFile(file);
+          openAudioPlayer(context, file: file);
         }
         break;
       case 'info':

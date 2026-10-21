@@ -356,7 +356,9 @@ class ExploreController extends ChangeNotifier {
       final seenIds = <String>{};
       final excluded = _homeIds(continueWatching: true);
       var first = true;
-      for (final q in queries.take(3)) {
+      // The fallback queries run together: the first batch that lands paints
+      // the rail, the rest only fill it.
+      await _runWithLimit(queries.take(3).toList(), 3, (q) async {
         List<ExploreVideo> batch = const [];
         try {
           batch = await _extraction.search(q, limit: 12);
@@ -378,7 +380,7 @@ class ExploreController extends ChangeNotifier {
           _trendingLoading = false;
           notifyListeners();
         }
-      }
+      });
       _trending = _dedupe(_preferUnseen(merged)
               .where((v) => !excluded.contains(_keyOf(v))))
           .take(12)
@@ -606,17 +608,14 @@ class ExploreController extends ChangeNotifier {
         } catch (_) {}
       }
 
-      for (final kw in interests.take(3)) {
-        if (fresh.length >= 10) break;
-        await searchAny(kw);
-      }
+      // The interest and rotating queries are independent network calls: run
+      // them with a small concurrency instead of one after the other. Five
+      // serial searches took as long as the slowest provider five times.
+      await _runWithLimit(interests.take(3).toList(), 3, searchAny);
       final rotating =
           List<String>.from(LocalExtractionService.feedTrendingQueries)
             ..shuffle();
-      for (final q in rotating.take(2)) {
-        if (fresh.length >= 14) break;
-        await searchAny(q);
-      }
+      await _runWithLimit(rotating.take(2).toList(), 2, searchAny);
       try {
         final cats = List<String>.from(LocalExtractionService.categories)
           ..shuffle();
@@ -634,6 +633,29 @@ class ExploreController extends ChangeNotifier {
       notifyListeners();
       _saveFeedCache();
     }
+  }
+
+  /// Runs [action] over [items] keeping at most [concurrency] calls in
+  /// flight. The order of the results is not guaranteed, but the merge is
+  /// done by the caller with a de-duplication set.
+  Future<void> _runWithLimit<T>(
+    List<T> items,
+    int concurrency,
+    Future<void> Function(T) action,
+  ) async {
+    if (items.isEmpty) return;
+    var index = 0;
+    Future<void> worker() async {
+      while (index < items.length) {
+        final current = index++;
+        await action(items[current]);
+      }
+    }
+    final workers = List.generate(
+      concurrency.clamp(1, items.length),
+      (_) => worker(),
+    );
+    await Future.wait(workers);
   }
 
   static const _shortsCacheKey = 'explore_shorts_cache_v1';
