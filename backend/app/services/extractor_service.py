@@ -497,12 +497,48 @@ def _collect_formats(
     return audio_by_quality, video_combined, video_only
 
 
+def _mp3_option(source: FormatOption) -> FormatOption:
+    """A real MP3 entry for the audio menu.
+
+    The backend re-encodes the selected stream with libmp3lame, so the file
+    the user gets is always MPEG audio even when the provider only offers
+    m4a/webm. The ``__mp3`` suffix keeps the menu id unique while preserving
+    the provider stream tag the converter needs.
+    """
+    return FormatOption(
+        id=f"{source.id}__mp3",
+        type="audio",
+        extension="mp3",
+        quality="192 kbps",
+        has_video=False,
+        has_audio=True,
+        size_bytes=None,
+        direct_url=source.direct_url,
+    )
+
+
 def _pick_best_formats(raw_formats: list[dict]) -> list[FormatOption]:
     audio_by_quality, video_combined, video_only = _collect_formats(raw_formats)
 
     formats: list[FormatOption] = []
-    for q in sorted(audio_by_quality, key=_audio_sort_key, reverse=True):
+    sorted_audio = sorted(
+        audio_by_quality, key=_audio_sort_key, reverse=True
+    )
+    for q in sorted_audio:
         formats.append(audio_by_quality[q])
+
+    # Always expose MP3 when the media has audio. If the provider publishes
+    # no audio-only track, the smallest muxed video is used as the source and
+    # ffmpeg extracts its audio; otherwise the best audio track is used.
+    mp3_source: FormatOption | None = None
+    if sorted_audio:
+        mp3_source = audio_by_quality[sorted_audio[0]]
+    elif video_combined:
+        smallest = min(video_combined)
+        mp3_source = video_combined[smallest]
+    if mp3_source is not None and mp3_source.extension.lower() != "mp3":
+        formats.append(_mp3_option(mp3_source))
+
     for h in sorted(video_combined, reverse=True):
         formats.append(video_combined[h])
     for h in sorted(video_only, reverse=True):

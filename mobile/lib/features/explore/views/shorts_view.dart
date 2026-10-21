@@ -120,6 +120,9 @@ class _ShortsViewState extends State<ShortsView> {
     // The whole feed is the queue: auto-next, the notification controls and
     // previous/next all walk it through the shared MediaEngine.
     _engine.playExploreQueue(shorts, startIndex: i);
+    if (i + 1 < shorts.length) {
+      _engine.prefetchExplore(shorts[i + 1]);
+    }
   }
 
   /// A swipe (or the feed scrolling back from [_syncToEngine]) changed the
@@ -170,6 +173,7 @@ class _ShortsViewState extends State<ShortsView> {
             itemBuilder: (context, i) => _ShortPage(
               video: shorts[i],
               active: i == _index,
+              onActivate: () => _playAt(i, shorts),
             ),
           );
         },
@@ -181,8 +185,13 @@ class _ShortsViewState extends State<ShortsView> {
 class _ShortPage extends StatelessWidget {
   final ExploreVideo video;
   final bool active;
+  final VoidCallback onActivate;
 
-  const _ShortPage({required this.video, required this.active});
+  const _ShortPage({
+    required this.video,
+    required this.active,
+    required this.onActivate,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -190,7 +199,12 @@ class _ShortPage extends StatelessWidget {
     return Consumer<MediaEngine>(
       builder: (context, engine, _) {
         final vc = engine.videoController;
+        // The controller is shared by the whole app: showing the current
+        // surface on every page is what made two shorts look active, and
+        // what made an error on short A block short B.
         final showing = active &&
+            engine.currentMediaId == video.url &&
+            engine.isVideo &&
             vc != null &&
             vc.value.isInitialized &&
             !vc.value.hasError;
@@ -199,7 +213,13 @@ class _ShortPage extends StatelessWidget {
           children: [
             GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: () => engine.togglePlayPause(),
+              onTap: () {
+                if (showing) {
+                  engine.togglePlayPause();
+                } else {
+                  onActivate();
+                }
+              },
               child: Container(
                 color: Colors.black,
                 alignment: Alignment.center,

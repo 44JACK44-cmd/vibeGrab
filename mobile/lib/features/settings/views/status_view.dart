@@ -37,10 +37,15 @@ class _StatusViewState extends State<StatusView> with WidgetsBindingObserver {
   }
 
   Future<void> _refresh() async {
-    final access = await StatusService.instance.checkAccess();
+    StatusAccess access;
     List<StatusFile> statuses = const [];
-    if (access == StatusAccess.granted) {
-      statuses = await StatusService.instance.list();
+    try {
+      access = await StatusService.instance.checkAccess();
+      if (access == StatusAccess.granted) {
+        statuses = await StatusService.instance.list();
+      }
+    } catch (_) {
+      access = StatusAccess.unsupported;
     }
     if (!mounted) return;
     setState(() {
@@ -89,7 +94,7 @@ class _StatusViewState extends State<StatusView> with WidgetsBindingObserver {
     if (ok == _statuses.length) {
       _snack(loc.statusSaved);
     } else if (ok > 0) {
-      _snack('$ok/${_statuses.length} ${loc.statusSaved}');
+      _snack(loc.statusSavedPartial('$ok', '${_statuses.length}'));
     } else {
       _snack(loc.statusSaveError);
     }
@@ -292,9 +297,10 @@ class _StatusViewState extends State<StatusView> with WidgetsBindingObserver {
 
   Future<void> _share(StatusFile status, AppLocalizations loc) async {
     try {
-      await StatusService.instance.share(status);
+      final shared = await StatusService.instance.share(status);
+      if (!shared) _snack(loc.statusShareError);
     } catch (e) {
-      _snack(loc.statusSaveError);
+      _snack(loc.statusShareError);
     }
   }
 

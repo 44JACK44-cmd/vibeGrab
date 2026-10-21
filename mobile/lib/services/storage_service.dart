@@ -107,6 +107,35 @@ class StorageService {
     _initialized = true;
   }
 
+  /// Free bytes on the volume that holds [path], or -1 when the platform
+  /// cannot report it. Used to fail a download before writing 300 MB into a
+  /// full disk, instead of surfacing a random write error mid-download.
+  Future<int> availableBytes(String path) async {
+    try {
+      final value = await _channel.invokeMethod<int>(
+        'availableBytes',
+        {'path': path},
+      );
+      return value ?? -1;
+    } catch (_) {
+      return -1;
+    }
+  }
+
+  /// Deletes a MediaStore item owned by another app. Returns false when the
+  /// platform refused (the caller must not remove it from the library).
+  Future<bool> deleteMedia(String contentUri) async {
+    try {
+      final value = await _channel.invokeMethod<bool>(
+        'deleteMedia',
+        {'uri': contentUri},
+      );
+      return value ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<bool> testDirectoryWritable(String dirPath) async {
     _log('Testing directory writable: $dirPath');
     try {
@@ -281,7 +310,7 @@ class StorageService {
     _log('=== END STORAGE STATE ===');
   }
 
-  List<FileSystemEntity> listMediaFiles() {
+  List<File> listMediaFiles() {
     if (_downloadDir == null || !_downloadDir!.existsSync()) return [];
     return _downloadDir!
         .listSync()

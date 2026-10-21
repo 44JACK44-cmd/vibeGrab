@@ -312,6 +312,12 @@ Future<void> _toggleLike() async {
     final cs = Theme.of(context).colorScheme;
     final video = _current;
 
+    // In PiP the system window must contain ONLY the video surface. Keeping
+    // the detail page mounted behind it is what produced the grey page and
+    // the wrong aspect ratio in the floating window.
+    final inPiP = context.select<MediaEngine, bool>((e) => e.isInPiP);
+    if (inPiP) return _buildPipWindow();
+
     return Scaffold(
       body: Column(
         children: [
@@ -440,6 +446,39 @@ Future<void> _toggleLike() async {
 
   // --- Player ---
 
+  /// Bare video surface for the Android PiP window.
+  Widget _buildPipWindow() {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Consumer<MediaEngine>(
+        builder: (context, engine, _) {
+          final controller = engine.videoController;
+          final ready =
+              controller != null && controller.value.isInitialized;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              if (ready)
+                Center(
+                  child: AspectRatio(
+                    aspectRatio: controller.value.aspectRatio,
+                    child: VideoPlayer(controller),
+                  ),
+                )
+              else
+                Center(
+                  child: _buildPoster(
+                    Theme.of(context).colorScheme,
+                    engine,
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildPlayerArea() {
     final loc = AppLocalizations.of(context);
     return Consumer<MediaEngine>(
@@ -462,20 +501,6 @@ Future<void> _toggleLike() async {
         // The window is black even when the surface is not ready yet: falling
         // back to the page UI (whose background is the light theme surface)
         // made the floating window flash white on every minimize and resize.
-        if (engine.isInPiP) {
-          final pip = showingVideo ? controller : null;
-          return Container(
-            color: Colors.black,
-            alignment: Alignment.center,
-            child: pip != null
-                ? AspectRatio(
-                    aspectRatio: pip.value.aspectRatio,
-                    child: VideoPlayer(pip),
-                  )
-                : const SizedBox.shrink(),
-          );
-        }
-
         return Container(
           color: Colors.black,
           child: SafeArea(
@@ -1098,6 +1123,12 @@ return Row(
       source: video.channel,
       hasVideo: format.hasVideo,
       hasAudio: format.hasAudio,
+      mediaType: format.type == 'audio'
+          ? DownloadMediaType.audio
+          : DownloadMediaType.video,
+      directUrl: format.directUrl,
+      fileExt: format.extension,
+      totalBytes: format.sizeBytes,
       createdAt: DateTime.now().toIso8601String(),
     );
 

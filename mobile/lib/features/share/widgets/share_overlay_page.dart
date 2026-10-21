@@ -30,6 +30,7 @@ class _ShareOverlayPageState extends State<ShareOverlayPage> {
     final handler = ShareIntentHandler();
     final url = handler.pendingUrl;
     if (url == null || url.isEmpty) {
+      handler.exitOverlay();
       _close();
       return;
     }
@@ -68,6 +69,9 @@ class _ShareOverlayPageState extends State<ShareOverlayPage> {
   void _close() {
     if (_closed) return;
     _closed = true;
+    // Every close path must drop overlay mode. Leaving it true made the next
+    // normal launch open the translucent overlay and replay the old link.
+    ShareIntentHandler().exitOverlay();
     const MethodChannel('com.example.vibegrab/app')
         .invokeMethod('closeActivity')
         .catchError((_) {});

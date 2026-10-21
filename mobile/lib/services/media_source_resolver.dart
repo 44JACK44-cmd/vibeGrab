@@ -87,6 +87,14 @@ class MediaSourceResolver {
   /// Human quality label for a stream height.
   static String qualityLabel(int height) => '${height}p';
 
+  /// Warms the two network legs for the next feed item while the current one
+  /// plays. No result is awaited and no player state is touched.
+  void prefetch(String videoId) {
+    if (videoId.isEmpty) return;
+    _payloadFor(videoId);
+    _manifestFor(videoId);
+  }
+
   Future<MediaResolution> resolve(
     String videoId, {
     required void Function(String stageKey) onStage,

@@ -204,6 +204,33 @@ class LocalDownloadService {
     return result;
   }
 
+  /// Real container of a direct media URL, independent of the format label.
+  /// Provider URLs often end in `videoplayback` with no extension, so the
+  /// `mime`/`ext` query parameters are checked first.
+  String _directAudioExtension(Uri uri) {
+    const known = {'mp3', 'm4a', 'mp4', 'aac', 'webm', 'ogg', 'opus'};
+    final mime = (uri.queryParameters['mime'] ?? '').toLowerCase();
+    if (mime.contains('audio/mpeg') || mime.contains('audio/mp3')) {
+      return 'mp3';
+    }
+    if (mime.contains('audio/mp4') || mime.contains('audio/aac')) return 'm4a';
+    if (mime.contains('audio/webm')) return 'webm';
+    if (mime.contains('audio/ogg') || mime.contains('audio/opus')) return 'ogg';
+    if (mime.contains('video/mp4')) return 'mp4';
+    if (mime.contains('video/webm')) return 'webm';
+
+    final queryExt = (uri.queryParameters['ext'] ?? '').toLowerCase();
+    if (known.contains(queryExt)) return queryExt;
+
+    final path = uri.path.toLowerCase();
+    final dot = path.lastIndexOf('.');
+    if (dot > -1 && dot < path.length - 1) {
+      final ext = path.substring(dot + 1);
+      if (known.contains(ext)) return ext;
+    }
+    return '';
+  }
+
   String _directExtension(DownloadTask task) {
     final fromTask = task.fileExt?.trim();
     if (fromTask != null && fromTask.isNotEmpty && fromTask != 'none') return fromTask;
@@ -266,6 +293,14 @@ class LocalDownloadService {
   ///
   /// A task that asked for MP3 never ends as an m4a/webm renamed to `.mp3`:
   /// when no real MP3 can be produced it fails with a typed error.
+  bool _wantsMp3(DownloadTask task) {
+    if (task.mediaType != DownloadMediaType.audio) return false;
+    final ext = (task.fileExt ?? '').trim().toLowerCase();
+    if (ext.isEmpty) return true; // tasks saved by older versions
+    if (ext == 'mp3') return true;
+    return task.formatId.trim().toLowerCase().endsWith('__mp3');
+  }
+
   Future<DownloadTask> _downloadAudioAsMp3({
     required DownloadTask task,
     required String dir,
@@ -279,72 +314,124 @@ class LocalDownloadService {
     final tempFiles = <String>[];
     DownloadErrorType? lastError;
 
+    // 1) The analyser already gave us a signed media URL. For a non-YouTube
+    //    source, or an audio-only YouTube row, downloading it directly skips
+    //    a whole extra manifest round-trip (1-3 s on a phone network).
+    final directRaw = (task.directUrl ?? '').trim();
+    final directUri = directRaw.isEmpty ? null : Uri.tryParse(directRaw);
+    final canUseDirectFirst = directUri != null &&
+        directUri.hasScheme &&
+        directUri.host.isNotEmpty &&
+        (videoId == null || !task.hasVideo);
+    if (canUseDirectFirst) {
+      // The synthetic `__mp3` format has fileExt=mp3, but its directUrl is
+      // the provider's m4a/webm/mp4 source that still needs conversion.
+      // Trust the URL/mime, never the label, before copying bytes as MP3.
+      final sourceExt = _directAudioExtension(directUri);
+      final ext = sourceExt.isEmpty ? 'm4a' : sourceExt;
+      if (ext == 'mp3') {
+        // Already a real MP3 container: copy the bytes as-is, no re-encode.
+        onStep(const DownloadStep('downloading', 'Downloading MP3...'));
+        final direct = await _downloadViaHttpClient(
+          url: directUri,
+          filePath: filePath,
+          totalBytes: task.totalBytes ?? 0,
+          onProgress: onProgress,
+          task: task,
+          headers: _headersFor(directUri),
+          responseTimeout: const Duration(seconds: 60),
+          operation: 'mp3_direct',
+        );
+        if (direct.status == DownloadStatus.completed) return direct;
+        lastError = direct.errorCode;
+        if (!_retriableErrors.contains(direct.errorCode)) return direct;
+      } else {
+        final tempPath = '$dir/${safeTitle}__audio.$ext';
+        tempFiles.add(tempPath);
+        onStep(const DownloadStep('downloading', 'Downloading audio track...'));
+        final track = await _downloadViaHttpClient(
+          url: directUri,
+          filePath: tempPath,
+          totalBytes: task.totalBytes ?? 0,
+          onProgress: _scaledProgressInRange(onProgress, 0.0, 0.5),
+          task: task,
+          headers: _headersFor(directUri),
+          responseTimeout: const Duration(seconds: 60),
+          operation: 'mp3_source',
+        );
+        if (track.status == DownloadStatus.completed) {
+          return _convertToMp3(
+            task: task,
+            tempPath: tempPath,
+            ext: ext,
+            filePath: filePath,
+            onProgress: onProgress,
+            onStep: onStep,
+            sw: sw,
+          );
+        }
+        lastError = track.errorCode;
+        await _deleteIfExists(tempPath);
+        if (track.status == DownloadStatus.cancelled) return track;
+        if (!_retriableErrors.contains(track.errorCode)) return track;
+      }
+    }
+
+    // 2) Device manifest: audio-only tracks first. If the video has no
+    //    audio-only track (common for old/odd uploads) the smallest muxed
+    //    track is used as a last resort and its audio is extracted by the
+    //    backend. That is what makes "MP3" available for those videos.
     if (videoId != null) {
       try {
         final manifest = await _ytc.videos.streamsClient
             .getManifest(videoId)
-            .timeout(const Duration(seconds: 30));
-        final candidates = _buildCandidateList(
-          manifest,
-          task.formatId,
-          DownloadMediaType.audio,
-        );
+            .timeout(const Duration(seconds: 20));
+        final candidates = _mp3Candidates(manifest, task.formatId);
         onStep(const DownloadStep('resolving', 'Selecting audio track...'));
-        _log('MP3: device manifest -> ${candidates.length} audio candidates');
+        _log('MP3: device manifest -> ${candidates.length} candidates');
 
         for (final candidate in candidates) {
           if (!_activeDownloads.containsKey(task.id)) {
             return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
           }
-          // The audio-only option must never download the video track.
-          if (!_streamHasAudio(candidate.stream) ||
-              _streamHasVideo(candidate.stream)) {
-            continue;
-          }
-          final ext = _getExtension(candidate.stream);
+          final isVideo = _streamHasVideo(candidate);
+          if (!_streamHasAudio(candidate)) continue;
+          final ext = isVideo ? 'mp4' : _getExtension(candidate);
           final tempPath = '$dir/${safeTitle}__audio.$ext';
           tempFiles.add(tempPath);
 
-          onStep(const DownloadStep('downloading', 'Downloading audio track...'));
+          onStep(DownloadStep('downloading',
+              isVideo ? 'Downloading source track...' : 'Downloading audio track...'));
           final track = await _downloadViaHttpClient(
-            url: candidate.stream.url,
+            url: candidate.url,
             filePath: tempPath,
-            totalBytes: candidate.stream.size.totalBytes,
-            onProgress: _scaledProgress(onProgress, 0.45),
+            totalBytes: candidate.size.totalBytes,
+            onProgress: _scaledProgressInRange(onProgress, 0.0, 0.5),
             task: task,
-            headers: _headersFor(candidate.stream.url),
+            headers: _headersFor(candidate.url),
             responseTimeout: const Duration(seconds: 60),
+            operation: 'mp3_source',
           );
           if (track.status != DownloadStatus.completed) {
             lastError = track.errorCode;
             await _deleteIfExists(tempPath);
+            if (track.status == DownloadStatus.cancelled) return track;
+            if (!_retriableErrors.contains(track.errorCode)) return track;
             continue;
           }
 
-          onStep(const DownloadStep('processing', 'Converting to MP3...'));
-          final converted = await _uploadAndSave(
-            uri: Uri.parse(ApiConfig.convertAudioUrl).replace(queryParameters: {
-              if (task.title.isNotEmpty) 'title': task.title,
-              if ((task.source ?? '').isNotEmpty) 'artist': task.source!,
-              if ((task.thumbnail ?? '').isNotEmpty) 'cover': task.thumbnail!,
-              'ext': ext,
-            }),
-            parts: [_UploadPart('audio', tempPath, 'audio.$ext')],
-            outputPath: filePath,
+          final converted = await _convertToMp3(
             task: task,
+            tempPath: tempPath,
+            ext: ext,
+            filePath: filePath,
             onProgress: onProgress,
-            responseTimeout: const Duration(minutes: 5),
-            operation: 'convert_audio',
+            onStep: onStep,
+            sw: sw,
           );
-          await _deleteIfExists(tempPath);
-          if (converted.status == DownloadStatus.completed) {
-            _log('MP3: real mp3 saved ${converted.filePath} '
-                '(${converted.bytesDownloaded} bytes) in ${sw.elapsedMilliseconds}ms');
-            return converted;
-          }
-          // The track itself is irrelevant to a conversion/upload failure
-          // (405 from an old backend, 413, ffmpeg error): retrying another
-          // audio stream would only re-upload the same bytes. Surface it.
+          if (converted.status == DownloadStatus.completed) return converted;
+          // The bytes were fine but ffmpeg/the backend failed. Another track
+          // would upload the same content again and fail identically.
           return converted;
         }
       } catch (e) {
@@ -355,10 +442,10 @@ class LocalDownloadService {
       }
     }
 
-    // Sources that are not YouTube have no device manifest: the backend is the
-    // only one that can resolve and convert them. It may also succeed for
-    // YouTube when it is not blocked (development, other hosts).
-    final canAskServer = task.url.isNotEmpty || (task.directUrl ?? '').isNotEmpty;
+    // 3) Sources that are not YouTube have no device manifest: the backend is
+    //    the only one that can resolve and convert them. It may also succeed
+    //    for YouTube when it is not blocked (development, other hosts).
+    final canAskServer = task.url.isNotEmpty || directRaw.isNotEmpty;
     if (canAskServer) {
       final converted = await _downloadMp3Converted(
         task: task,
@@ -383,13 +470,73 @@ class LocalDownloadService {
     );
   }
 
+  /// Audio-only streams by bitrate, then the smallest muxed stream. The
+  /// muxed fallback exists only because some videos publish no audio-only
+  /// row at all; it is never used when a real audio track is downloadable.
+  List<StreamInfo> _mp3Candidates(StreamManifest manifest, String formatId) {
+    final result = <StreamInfo>[];
+    final tag = int.tryParse(formatId.replaceAll('__mp3', ''));
+    final audio = manifest.audioOnly.toList()
+      ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+    if (tag != null) {
+      result.addAll(audio.where((s) => s.tag == tag));
+    }
+    for (final s in audio) {
+      if (!result.contains(s)) result.add(s);
+    }
+    final muxed = manifest.muxed.toList()
+      ..sort((a, b) => a.videoResolution.height.compareTo(b.videoResolution.height));
+    if (tag != null) {
+      result.addAll(muxed.where((s) => s.tag == tag));
+    }
+    for (final s in muxed) {
+      if (!result.contains(s)) result.add(s);
+    }
+    return result;
+  }
+
+  Future<DownloadTask> _convertToMp3({
+    required DownloadTask task,
+    required String tempPath,
+    required String ext,
+    required String filePath,
+    required Function(double progress, int bytesDownloaded) onProgress,
+    required Function(DownloadStep step) onStep,
+    required Stopwatch sw,
+  }) async {
+    onStep(const DownloadStep('processing', 'Converting to MP3...'));
+    final uri = Uri.parse(ApiConfig.convertAudioUrl).replace(queryParameters: {
+      if (task.title.isNotEmpty) 'title': task.title,
+      if ((task.source ?? '').isNotEmpty) 'artist': task.source!,
+      if ((task.thumbnail ?? '').isNotEmpty) 'cover': task.thumbnail!,
+      'ext': ext,
+    });
+    final converted = await _uploadAndSave(
+      uri: uri,
+      parts: [_UploadPart('audio', tempPath, 'audio.$ext')],
+      outputPath: filePath,
+      task: task,
+      onProgress: _scaledProgressInRange(onProgress, 0.5, 0.5),
+      responseTimeout: const Duration(minutes: 5),
+      operation: 'convert_audio',
+    );
+    await _deleteIfExists(tempPath);
+    if (converted.status == DownloadStatus.completed) {
+      _log('MP3: real mp3 saved ${converted.filePath} '
+          '(${converted.bytesDownloaded} bytes) in ${sw.elapsedMilliseconds}ms');
+    }
+    return converted;
+  }
+
   /// Wraps [onProgress] so a phase that feeds into a later one reports its own
-  /// share (real bytes, not a simulation).
-  static Function(double, int) _scaledProgress(
+  /// real share of the bar (no fake/simulated progress).
+  static Function(double, int) _scaledProgressInRange(
     Function(double, int) onProgress,
-    double share,
+    double start,
+    double span,
   ) =>
-      (p, b) => onProgress(p * share, (b * share).round());
+      (p, b) =>
+          onProgress(start + p.clamp(0.0, 1.0) * span, b);
 
   /// Real MP3 from a provider URL, resolved and converted by the backend.
   Future<DownloadTask> _downloadMp3Converted({
@@ -407,7 +554,10 @@ class LocalDownloadService {
       // signed URLs); the direct CDN URL is only used when there is no format
       // id to ask for.
       if (task.url.isNotEmpty) 'url': task.url,
-      if (task.formatId.trim().isNotEmpty) 'format_id': task.formatId.trim(),
+      // A synthetic MP3 menu entry carries the source stream tag with a
+      // __mp3 suffix; the backend expects the real provider format id.
+      if (task.formatId.trim().isNotEmpty)
+        'format_id': task.formatId.trim().replaceAll('__mp3', ''),
       if (task.formatId.trim().isEmpty && (task.directUrl ?? '').isNotEmpty)
         'direct': task.directUrl!,
       if (task.title.isNotEmpty) 'title': task.title,
@@ -505,9 +655,27 @@ class LocalDownloadService {
       }
       _log('STEP 0 OK: directory writable = true (${sw.elapsedMilliseconds}ms)');
 
-      // MP3/audio-only: a real MP3 or a typed failure. The device downloads
-      // the track and the backend encodes it (see _downloadAudioAsMp3).
-      if (task.mediaType == DownloadMediaType.audio &&
+      // Refuse before downloading 300 MB into a full disk. When the exact
+      // size is unknown only the write failure can detect it.
+      final expected = task.totalBytes ?? 0;
+      if (expected > 0) {
+        final available = await StorageService.instance.availableBytes(dir);
+        const margin = 64 * 1024 * 1024;
+        if (available > 0 && available < expected + margin) {
+          _log('STEP 0 FAILED: need ${expected + margin} bytes, free=$available');
+          return task.copyWith(
+            status: 'failed',
+            error: 'Not enough free storage',
+            errorCode: DownloadErrorType.insufficientSpace.name,
+          );
+        }
+      }
+
+      // MP3: a real MP3 or a typed failure. The device downloads the track
+      // and the backend encodes it (see _downloadAudioAsMp3). M4A/WebM
+      // selections use the normal audio-only track path below, so the
+      // extension shown in the UI is the extension actually saved.
+      if (_wantsMp3(task) &&
           (task.url.isNotEmpty || (task.directUrl ?? '').isNotEmpty)) {
         final mp3 = await _downloadAudioAsMp3(
           task: task,
@@ -747,6 +915,16 @@ class LocalDownloadService {
       }
 
       _log('===== ALL CANDIDATES EXHAUSTED id=${task.id} =====');
+      if (task.mediaType == DownloadMediaType.audio) {
+        // The relay would have to download a muxed video to return audio,
+        // and could save video bytes under a .m4a name. Fail honestly.
+        sw.stop();
+        return task.copyWith(
+          status: 'failed',
+          error: 'No audio-only track is available for this video',
+          errorCode: DownloadErrorType.noStreams.name,
+        );
+      }
       // Last line of defence: relay the requested format through the
       // backend /api/fetch (yt-dlp re-extracts fresh, working URLs
       // server-side) instead of forcing a generic 403 failure.
@@ -922,7 +1100,7 @@ class LocalDownloadService {
         url: videoOnlyStream.url,
         filePath: videoTempPath,
         totalBytes: totalVideoBytes,
-        onProgress: _scaledProgress(onProgress, 0.45),
+        onProgress: _scaledProgressInRange(onProgress, 0.0, 0.45),
         task: task,
         headers: _headersFor(videoOnlyStream.url),
       );
@@ -937,7 +1115,7 @@ class LocalDownloadService {
         url: audioStream.url,
         filePath: audioTempPath,
         totalBytes: audioStream.size.totalBytes,
-        onProgress: _scaledProgress(onProgress, 0.45),
+        onProgress: _scaledProgressInRange(onProgress, 0.45, 0.45),
         task: task,
         headers: _headersFor(audioStream.url),
       );
@@ -958,7 +1136,7 @@ class LocalDownloadService {
         // The extension is decided by the server (mp4, or mkv when needed).
         outputPath: '$dir/$safeTitle.mp4',
         task: task,
-        onProgress: onProgress,
+        onProgress: _scaledProgressInRange(onProgress, 0.9, 0.1),
         responseTimeout: const Duration(minutes: 10),
         operation: 'merge',
       );
@@ -1285,7 +1463,29 @@ class LocalDownloadService {
       _log('HTTP DONE: exists=$verified size=$size (${(size / 1024 / 1024).toStringAsFixed(1)} MB) time=${sw.elapsedMilliseconds}ms');
 
       if (!verified || size == 0) {
+        await _deleteIfExists(filePath);
         return task.copyWith(status: 'failed', error: 'Downloaded file is empty', errorCode: 'fileEmpty');
+      }
+
+      // The server announced N bytes and the socket closed early. Never keep
+      // a truncated media file: many players open it and stop midway.
+      if (responseBytes > 0 && size < responseBytes) {
+        await _deleteIfExists(filePath);
+        _log('HTTP: truncated $size < announced $responseBytes');
+        return task.copyWith(
+          status: 'failed',
+          error: 'Incomplete download',
+          errorCode: DownloadErrorType.fileEmpty.name,
+        );
+      }
+      if (responseBytes <= 0 && totalBytes > 0 && size < (totalBytes * 0.90).floor()) {
+        await _deleteIfExists(filePath);
+        _log('HTTP: truncated $size < expected ~$totalBytes');
+        return task.copyWith(
+          status: 'failed',
+          error: 'Incomplete download',
+          errorCode: DownloadErrorType.fileEmpty.name,
+        );
       }
 
       // Signature check: a CDN error page saved under .mp4 is not a download.
@@ -1316,6 +1516,10 @@ class LocalDownloadService {
       try {
         await sink?.close();
       } catch (_) {}
+      // A timeout/failed socket leaves a half file with a valid media
+      // extension. Delete it here; otherwise it survives a restart and is
+      // listed as a finished download.
+      await _deleteIfExists(filePath);
       _log('[ERROR] HTTP EXCEPTION: $e time=${sw.elapsedMilliseconds}ms');
       if (e is TimeoutException) {
         return task.copyWith(status: 'failed', error: 'Connection timed out', errorCode: 'connectionTimeout');
@@ -1357,39 +1561,39 @@ class LocalDownloadService {
   }
 
   String? _parseVideoId(String url) {
-    final idMatch = RegExp(r'(?:v=|/vi/|youtu\.be/|/shorts/|/embed/|/v/)([A-Za-z0-9_-]{11})').firstMatch(url);
-    if (idMatch != null) return idMatch.group(1);
-
     final uri = Uri.tryParse(url);
-    if (uri == null) return null;
-
-    if (uri.host.contains('youtube.com') || uri.host.contains('youtu.be')) {
-      if (uri.host.contains('youtu.be')) {
-        final id = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
-        if (id != null && id.length == 11) return id;
-      }
-
-      final vParam = uri.queryParameters['v'];
-      if (vParam != null && vParam.length == 11) return vParam;
-
-      if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'shorts') {
-        final id = uri.pathSegments.last;
-        if (id.length == 11) return id;
-      }
-
-      if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'embed') {
-        final id = uri.pathSegments.last;
-        if (id.length == 11) return id;
-      }
-
-      if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'v') {
-        final id = uri.pathSegments.last;
-        if (id.length == 11) return id;
-      }
+    if (uri == null) {
+      return url.length == 11 &&
+              RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(url)
+          ? url
+          : null;
     }
+    final host = uri.host.toLowerCase();
+    final isYouTubeHost = host == 'youtube.com' ||
+        host.endsWith('.youtube.com') ||
+        host == 'youtube-nocookie.com' ||
+        host.endsWith('.youtube-nocookie.com') ||
+        host == 'youtu.be' ||
+        host.endsWith('.youtu.be');
+    if (!isYouTubeHost) return null;
 
-    if (url.length == 11 && RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(url)) {
-      return url;
+    bool valid(String? id) =>
+        id != null && RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(id);
+
+    if (host == 'youtu.be' || host.endsWith('.youtu.be')) {
+      if (uri.pathSegments.isNotEmpty && valid(uri.pathSegments.first)) {
+        return uri.pathSegments.first;
+      }
+      return null;
+    }
+    final vParam = uri.queryParameters['v'];
+    if (valid(vParam)) return vParam;
+
+    final segments = uri.pathSegments;
+    const kinds = {'shorts', 'embed', 'v', 'vi', 'live'};
+    if (segments.length >= 2 && kinds.contains(segments[segments.length - 2])) {
+      final id = segments.last;
+      if (valid(id)) return id;
     }
     return null;
   }

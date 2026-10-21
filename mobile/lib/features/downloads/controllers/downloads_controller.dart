@@ -54,6 +54,12 @@ class DownloadsController extends ChangeNotifier {
   int _maxConcurrent = 2;
   final List<DownloadTask> _pendingQueue = [];
 
+  /// Tasks that already have a worker. This is the single source of truth
+  /// against double starts: [_retryStuckTasks] used to requeue a task while
+  /// its first worker was still awaiting the notification service, so two
+  /// workers downloaded the same file and both consumed a slot.
+  final Set<String> _runningTaskIds = {};
+
   String get downloadPath => StorageService.instance.downloadPath;
 
   static String _ts() {
@@ -107,7 +113,9 @@ class DownloadsController extends ChangeNotifier {
 
     _migrateLegacyThumbnails();
     _loadLocalFiles();
-    _retryStuckTasks();
+    // Active tasks were already requeued above. Do not call
+    // _retryStuckTasks() here: it would reset the status of the workers
+    // started a few lines earlier and start a second copy of each one.
   }
 
   void _migrateLegacyThumbnails() {
@@ -164,31 +172,6 @@ class DownloadsController extends ChangeNotifier {
     _reprocessQueue();
   }
 
-  void _retryStuckTasks() {
-    final List<DownloadTask> stuckTasks = [];
-    for (int i = 0; i < _tasks.length; i++) {
-      if (_tasks[i].status == DownloadStatus.downloading ||
-          _tasks[i].status == DownloadStatus.preparing ||
-          _tasks[i].status == DownloadStatus.resolving ||
-          _tasks[i].status == DownloadStatus.connecting ||
-          _tasks[i].status == DownloadStatus.saving ||
-          _tasks[i].status == DownloadStatus.processing) {
-        _log('Resetting stuck task: ${_tasks[i].id} (${_tasks[i].status})');
-        final reset = _tasks[i].copyWith(status: 'queued', progress: 0.0, step: null);
-        _tasks[i] = reset;
-        stuckTasks.add(reset);
-      }
-    }
-    if (stuckTasks.isNotEmpty) {
-      _log('Reprocessing ${stuckTasks.length} stuck tasks');
-    }
-    for (final task in stuckTasks) {
-      _enqueueDownload(task);
-    }
-    _reprocessQueue();
-    notifyListeners();
-  }
-
   void _loadLocalFiles() {
     _loading = true;
     notifyListeners();
@@ -199,6 +182,20 @@ class DownloadsController extends ChangeNotifier {
         final files = StorageService.instance.listMediaFiles();
         for (final file in files) {
           final filename = file.path.split(Platform.pathSeparator).last;
+          final lower = filename.toLowerCase();
+          // Never show half-written downloads as finished library items.
+          if (lower.startsWith('.') ||
+              lower.endsWith('.part') ||
+              lower.endsWith('.tmp') ||
+              lower.endsWith('.download') ||
+              lower.endsWith('.crdownload')) {
+            continue;
+          }
+          try {
+            if (file.lengthSync() <= 0) continue;
+          } catch (_) {
+            continue;
+          }
           if (!_tasks.any((t) => t.filePath == file.path)) {
             final baseName = filename.contains('.')
                 ? filename.substring(0, filename.lastIndexOf('.'))
@@ -272,6 +269,37 @@ class DownloadsController extends ChangeNotifier {
     return task;
   }
 
+  /// Direct file download for the in-app browser (pdf, zip, apk, audio or a
+  /// plain media file). No provider/manifest is involved: the service
+  /// streams [url] straight to the configured downloads folder.
+  DownloadTask addDirectFileDownload({
+    required String url,
+    required String title,
+    required String fileExt,
+  }) {
+    // The extension comes from a URL path. Strip anything that is not part of
+    // a real extension so a crafted link cannot inject a path separator.
+    var ext = fileExt
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]'), '');
+    if (ext.isEmpty) ext = 'bin';
+    if (ext.length > 10) ext = ext.substring(0, 10);
+    final task = DownloadTask(
+      id: 'dl_${DateTime.now().millisecondsSinceEpoch}',
+      url: url,
+      title: title,
+      formatId: '',
+      hasVideo: false,
+      hasAudio: false,
+      directUrl: url,
+      fileExt: ext,
+      createdAt: DateTime.now().toIso8601String(),
+    );
+    addTask(task);
+    return task;
+  }
+
   void _enqueueDownload(DownloadTask task) {
     _log('enqueue download: id=${task.id} activeCount=$_activeCount max=$_maxConcurrent');
     if (_activeCount < _maxConcurrent) {
@@ -304,11 +332,16 @@ class DownloadsController extends ChangeNotifier {
       _log('ABORT: task not found in list: ${task.id}');
       return;
     }
+    if (_runningTaskIds.contains(task.id)) {
+      _log('ABORT: already running: ${task.id}');
+      return;
+    }
     if (_tasks[index].status != DownloadStatus.queued) {
       _log('ABORT: status=${_tasks[index].status.name} (expected queued): ${task.id}');
       return;
     }
 
+    _runningTaskIds.add(task.id);
     _activeCount++;
     _tasks[index] = _tasks[index].copyWith(
       status: 'preparing',
@@ -411,9 +444,20 @@ class DownloadsController extends ChangeNotifier {
         notifyListeners();
       }
     } finally {
+      _runningTaskIds.remove(task.id);
       _activeCount--;
       _log('worker finished: activeCount=$_activeCount pending=${_pendingQueue.length}');
       _reprocessQueue();
+      _stopServiceIfIdle();
+    }
+  }
+
+  Future<void> _stopServiceIfIdle() async {
+    if (_activeCount > 0 || _pendingQueue.isNotEmpty) return;
+    try {
+      await _notifService.stopService();
+    } catch (e) {
+      _log('stopService failed (non-fatal): $e');
     }
   }
 
@@ -426,7 +470,9 @@ class DownloadsController extends ChangeNotifier {
         return;
       }
       final dir = file.parent.path;
-      final baseName = task.filePath!.split(Platform.pathSeparator).last.split('.').first;
+      final fileName = task.filePath!.split(Platform.pathSeparator).last;
+      final dot = fileName.lastIndexOf('.');
+      final baseName = dot > 0 ? fileName.substring(0, dot) : fileName;
       final metaFile = File('$dir${Platform.pathSeparator}$baseName.meta.json');
       final meta = {
         'title': task.title,
@@ -493,14 +539,37 @@ class DownloadsController extends ChangeNotifier {
         return 'image/png';
       case 'webp':
         return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      case 'pdf':
+        return 'application/pdf';
+      case 'zip':
+        return 'application/zip';
+      case 'apk':
+        return 'application/vnd.android.package-archive';
       default:
-        return 'video/mp4';
+        return 'application/octet-stream';
     }
+  }
+
+  static bool _isGalleryMedia(String path) {
+    final dot = path.lastIndexOf('.');
+    if (dot < 0) return false;
+    final ext = path.substring(dot + 1).toLowerCase();
+    return const {
+      'mp4', 'm4v', 'webm', 'mkv', 'mov', 'avi', //
+      'm4a', 'mp3', 'opus', 'wav', 'flac', 'aac', //
+      'jpg', 'jpeg', 'png', 'webp', 'gif',
+    }.contains(ext);
   }
 
   Future<void> _publishToGallery(DownloadTask task) async {
     final path = task.filePath;
     if (path == null || path.isEmpty) return;
+    // A browser download (pdf/zip/apk) already lives in the public
+    // Downloads folder; copying it into the gallery would create a duplicate
+    // and MediaStore would reject it anyway.
+    if (!_isGalleryMedia(path)) return;
     final normalized = path.replaceAll('\\', '/');
     try {
       final isPublic = normalized.startsWith('/storage/') ||
@@ -566,6 +635,8 @@ class DownloadsController extends ChangeNotifier {
       await _downloadService.cancelDownload(taskId);
     }
     _pendingQueue.removeWhere((t) => t.id == taskId);
+    _runningTaskIds.remove(taskId);
+    await _notifService.removeTask(taskId);
 
     if (task.filePath != null) {
       try {
@@ -624,7 +695,10 @@ class DownloadsController extends ChangeNotifier {
       notifyListeners();
     }
     _pendingQueue.removeWhere((t) => t.id == taskId);
+    _runningTaskIds.remove(taskId);
+    await _notifService.removeTask(taskId);
     _reprocessQueue();
+    _stopServiceIfIdle();
   }
 
   Future<void> cancelTask(String taskId) => cancelDownload(taskId);

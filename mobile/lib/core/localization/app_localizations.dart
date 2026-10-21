@@ -67,6 +67,13 @@ class AppLocalizations {
   String get browserOpenExternal => _get('browserOpenExternal');
   String get browserPopularSites => _get('browserPopularSites');
   String get browserTagline => _get('browserTagline');
+  String get browserDesktopSite => _get('browserDesktopSite');
+  String get browserClearData => _get('browserClearData');
+  String get browserClearDataConfirm => _get('browserClearDataConfirm');
+  String get browserDownloadStarted => _get('browserDownloadStarted');
+  String get browserLoadError => _get('browserLoadError');
+  String get browserOpenFailed => _get('browserOpenFailed');
+  String get browserStop => _get('browserStop');
   String get back => _get('back');
 
   String get urlHint => _get('urlHint');
@@ -128,6 +135,8 @@ class AppLocalizations {
   String get downloadErrorConversionFailed => _get('downloadErrorConversionFailed');
   String get downloadErrorMergeFailed => _get('downloadErrorMergeFailed');
   String get downloadErrorFileTooLarge => _get('downloadErrorFileTooLarge');
+  String get downloadErrorInsufficientSpace => _get('downloadErrorInsufficientSpace');
+  String get downloadErrorPermissionDenied => _get('downloadErrorPermissionDenied');
   String get downloadErrorInvalidRequest => _get('downloadErrorInvalidRequest');
   String get downloadErrorUnexpectedResponse => _get('downloadErrorUnexpectedResponse');
   String get downloadErrorCancelled => _get('downloadErrorCancelled');
@@ -158,6 +167,8 @@ class AppLocalizations {
       case 'conversionFailed': return downloadErrorConversionFailed;
       case 'mergeFailed': return downloadErrorMergeFailed;
       case 'fileTooLarge': return downloadErrorFileTooLarge;
+      case 'insufficientSpace': return downloadErrorInsufficientSpace;
+      case 'permissionDenied': return downloadErrorPermissionDenied;
       case 'invalidRequest': return downloadErrorInvalidRequest;
       case 'unexpectedResponse': return downloadErrorUnexpectedResponse;
       case 'cancelled': return downloadErrorCancelled;
@@ -262,7 +273,10 @@ class AppLocalizations {
   String get statusAllFiles => _get('statusAllFiles');
   String get statusAllFilesHint => _get('statusAllFilesHint');
   String get statusSaved => _get('statusSaved');
+  String statusSavedPartial(String count, String total) =>
+      _get('statusSavedPartial', {'count': count, 'total': total});
   String get statusSaveError => _get('statusSaveError');
+  String get statusShareError => _get('statusShareError');
   String get statusUnavailable => _get('statusUnavailable');
   String get statusSaveAll => _get('statusSaveAll');
   String get saveOne => _get('saveOne');
@@ -270,6 +284,18 @@ class AppLocalizations {
   String get backendUrl => _get('backendUrl');
   String get backendUrlHint => _get('backendUrlHint');
   String get backendUrlPlaceholder => _get('backendUrlPlaceholder');
+  String get backendUrlInvalid => _get('backendUrlInvalid');
+  String get dnsTitle => _get('dnsTitle');
+  String get dnsHint => _get('dnsHint');
+  String get dnsPrivateDns => _get('dnsPrivateDns');
+  String get dnsNetworkServers => _get('dnsNetworkServers');
+  String get dnsNone => _get('dnsNone');
+  String get dnsUnavailable => _get('dnsUnavailable');
+  String get dnsOpenSettings => _get('dnsOpenSettings');
+  String get dnsScopeTitle => _get('dnsScopeTitle');
+  String get dnsScopeBody => _get('dnsScopeBody');
+  String get trashRestoreFailed => _get('trashRestoreFailed');
+  String get trashDeleteFailed => _get('trashDeleteFailed');
   String get backendNotConfigured => _get('backendNotConfigured');
   String get backendConfigured => _get('backendConfigured');
   String get resetDefault => _get('resetDefault');

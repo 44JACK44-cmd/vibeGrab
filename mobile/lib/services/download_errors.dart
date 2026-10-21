@@ -74,6 +74,12 @@ DownloadErrorType errorTypeOf(BackendErrorInfo error) {
       return DownloadErrorType.mergeFailed;
     case 'file_too_large':
       return DownloadErrorType.fileTooLarge;
+    case 'no_space':
+    case 'insufficient_space':
+      return DownloadErrorType.insufficientSpace;
+    case 'permission_denied':
+    case 'storage_permission_denied':
+      return DownloadErrorType.permissionDenied;
     case 'invalid_request':
     case 'invalid_format':
     case 'unsupported_url':
@@ -143,7 +149,32 @@ bool matchesContainerHeader(List<int> head, String ext) {
           head[1] == 0x45 &&
           head[2] == 0xDF &&
           head[3] == 0xA3; // EBML
+    case 'jpg':
+    case 'jpeg':
+      return head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF;
+    case 'png':
+      return head[0] == 0x89 &&
+          head[1] == 0x50 &&
+          head[2] == 0x4E &&
+          head[3] == 0x47;
+    case 'gif':
+      return head[0] == 0x47 &&
+          head[1] == 0x49 &&
+          head[2] == 0x46 &&
+          head[3] == 0x38;
+    case 'webp':
+      return head.length >= 12 &&
+          head[0] == 0x52 &&
+          head[1] == 0x49 &&
+          head[2] == 0x46 &&
+          head[3] == 0x46 &&
+          head[8] == 0x57 &&
+          head[9] == 0x45 &&
+          head[10] == 0x42 &&
+          head[11] == 0x50;
     default:
+      // Arbitrary browser downloads (pdf, zip, apk…) have no common
+      // signature here; their final size is checked instead.
       return true;
   }
 }

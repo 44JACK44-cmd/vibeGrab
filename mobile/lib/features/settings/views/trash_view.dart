@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/localization/app_localizations.dart';
@@ -24,7 +26,10 @@ class _TrashViewState extends State<TrashView> {
   }
 
   Future<void> _load() async {
-    final entries = await TrashService.instance.list();
+    List<TrashEntry> entries = const [];
+    try {
+      entries = await TrashService.instance.list();
+    } catch (_) {}
     if (!mounted) return;
     setState(() {
       _entries = entries;
@@ -51,8 +56,11 @@ class _TrashViewState extends State<TrashView> {
           TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
-              await TrashService.instance.emptyTrash();
-              _snack(loc.emptyTrash);
+              final expected = _entries.length;
+              final removed = await TrashService.instance.emptyTrash();
+              _snack(removed == expected && removed > 0
+                  ? loc.emptyTrash
+                  : loc.trashDeleteFailed);
               _load();
               _refreshLibrary();
             },
@@ -77,8 +85,13 @@ class _TrashViewState extends State<TrashView> {
           TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
-              await TrashService.instance.deleteForever(entry);
+              final deleted =
+                  await TrashService.instance.deleteForever(entry);
+              if (!deleted) {
+                _snack(loc.trashDeleteFailed);
+              }
               _load();
+              _refreshLibrary();
             },
             child: Text(loc.delete, style: const TextStyle(color: AppColors.error)),
           ),
@@ -88,11 +101,13 @@ class _TrashViewState extends State<TrashView> {
   }
 
   Future<void> _restore(TrashEntry entry, AppLocalizations loc) async {
-    await TrashService.instance.restore(entry);
-    _snack(loc.trashRestored);
+    final restored = await TrashService.instance.restore(entry);
+    _snack(restored ? loc.trashRestored : loc.trashRestoreFailed);
     _load();
-    // The restored file must reappear in the Library right away.
-    _refreshLibrary();
+    if (restored) {
+      // The restored file must reappear in the Library right away.
+      _refreshLibrary();
+    }
   }
 
   /// Trash / Vault live outside the Library widget tree, so the Library has
@@ -184,6 +199,10 @@ class _TrashViewState extends State<TrashView> {
         ? entry.filename.substring(entry.filename.lastIndexOf('.') + 1)
         : '';
     final isVideo = StorageService.fileTypeFor(ext) == 'video';
+    final thumbFile = entry.hasThumb
+        ? File('${TrashService.instance.trashPath}/${entry.thumbName}')
+        : null;
+    final hasThumb = thumbFile != null && thumbFile.existsSync();
 
     return Card(
       margin: const EdgeInsets.only(bottom: 6),
@@ -196,11 +215,30 @@ class _TrashViewState extends State<TrashView> {
             color: cs.primary.withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Icon(
-            isVideo ? Icons.videocam_outlined : Icons.audiotrack_outlined,
-            color: cs.primary,
-            size: 22,
-          ),
+          child: hasThumb
+              ? ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.file(
+                    thumbFile,
+                    width: 42,
+                    height: 42,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Icon(
+                      isVideo
+                          ? Icons.videocam_outlined
+                          : Icons.audiotrack_outlined,
+                      color: cs.primary,
+                      size: 22,
+                    ),
+                  ),
+                )
+              : Icon(
+                  isVideo
+                      ? Icons.videocam_outlined
+                      : Icons.audiotrack_outlined,
+                  color: cs.primary,
+                  size: 22,
+                ),
         ),
         title: Text(
           base,

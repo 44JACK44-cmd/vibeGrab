@@ -20,6 +20,8 @@ enum DownloadErrorType {
   conversionFailed,
   mergeFailed,
   fileTooLarge,
+  insufficientSpace,
+  permissionDenied,
   invalidRequest,
   unexpectedResponse,
   cancelled,

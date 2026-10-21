@@ -11,6 +11,7 @@ import '../../../data/models/app_settings.dart';
 import '../../../services/api_service.dart';
 import '../../../services/media_engine.dart';
 import '../../../services/download_notification_service.dart';
+import '../../../services/dns_service.dart';
 import '../../../services/update_service.dart';
 import '../controllers/settings_controller.dart';
 import '../../downloads/controllers/downloads_controller.dart';
@@ -205,6 +206,7 @@ class _SettingsViewState extends State<SettingsView> {
                 cs: cs,
                 children: [
                   _buildBackendUrlTile(context, loc, text1, text2),
+                  _buildDnsTile(context, loc, text1, text2),
                   _buildServerStatusTile(loc, cs, text1, text2),
                 ],
               ),
@@ -294,6 +296,105 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
+  Widget _buildDnsTile(
+    BuildContext context,
+    AppLocalizations loc,
+    Color text1,
+    Color text2,
+  ) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(Icons.travel_explore_outlined, color: text2),
+      title: Text(loc.dnsTitle, style: TextStyle(color: text1, fontSize: 15)),
+      subtitle: Text(
+        loc.dnsHint,
+        style: TextStyle(color: text2.withValues(alpha: 0.7), fontSize: 12),
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => _showDnsDialog(context, loc),
+    );
+  }
+
+  Future<void> _showDnsDialog(
+    BuildContext context,
+    AppLocalizations loc,
+  ) async {
+    final status = await DnsService.getStatus();
+    if (!context.mounted) return;
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+        return AlertDialog(
+          title: Text(loc.dnsTitle),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  loc.dnsPrivateDns,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  status.supported
+                      ? status.privateDnsLabel
+                      : loc.dnsUnavailable,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  loc.dnsNetworkServers,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  status.servers.isEmpty
+                      ? loc.dnsNone
+                      : status.servers.join('\n'),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  loc.dnsScopeTitle,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  loc.dnsScopeBody,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: cs.onSurfaceVariant,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(loc.cancel),
+            ),
+            if (status.supported)
+              FilledButton(
+                onPressed: () async {
+                  Navigator.pop(ctx);
+                  final opened =
+                      await DnsService.openPrivateDnsSettings();
+                  if (!opened && context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(loc.dnsUnavailable)),
+                    );
+                  }
+                },
+                child: Text(loc.dnsOpenSettings),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _showBackendUrlDialog(BuildContext context, AppLocalizations loc) async {
     final ctrl = TextEditingController(text: ApiConfig.baseUrl);
     await showDialog(
@@ -333,7 +434,15 @@ class _SettingsViewState extends State<SettingsView> {
     while (url.endsWith('/')) {
       url = url.substring(0, url.length - 1);
     }
-    await ApiConfig.setBaseUrl(url);
+    final accepted = await ApiConfig.setBaseUrl(url);
+    if (!accepted) {
+      if (dialogContext.mounted) {
+        ScaffoldMessenger.of(dialogContext).showSnackBar(
+          SnackBar(content: Text(AppLocalizations.of(dialogContext).backendUrlInvalid)),
+        );
+      }
+      return;
+    }
     if (mounted) {
       setState(() {});
     }
@@ -1008,6 +1117,26 @@ return Padding(
                                       color: cs.onSurfaceVariant,
                                       fontSize: 11),
                                 ),
+                                if (r.operation.isNotEmpty ||
+                                    r.httpStatus != null ||
+                                    r.exceptionType != null)
+                                  Text(
+                                    [
+                                      if (r.operation.isNotEmpty) r.operation,
+                                      if (r.stage.isNotEmpty) r.stage,
+                                      if (r.httpStatus != null)
+                                        'HTTP ${r.httpStatus}',
+                                      if (r.exceptionType != null)
+                                        r.exceptionType!,
+                                      if (r.requestId != null)
+                                        'req ${r.requestId}',
+                                    ].join(' · '),
+                                    style: TextStyle(
+                                      color: cs.onSurfaceVariant
+                                          .withValues(alpha: 0.75),
+                                      fontSize: 10,
+                                    ),
+                                  ),
                               ],
                             ),
                           ),

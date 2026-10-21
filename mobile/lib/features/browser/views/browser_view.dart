@@ -5,6 +5,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/theme/app_animations.dart';
+import '../../downloads/controllers/downloads_controller.dart';
 import '../../share/controllers/shared_download_controller.dart';
 import '../../share/widgets/shared_download_sheet.dart';
 import '../url_detector/browser_url_detector.dart';
@@ -13,7 +14,11 @@ import '../url_detector/browser_url_detector.dart';
 /// (no site is auto-loaded), accepts any URL or free-text search, and downloads
 /// any detected media page through the shared format sheet.
 class BrowserView extends StatefulWidget {
-  const BrowserView({super.key});
+  /// False while another bottom tab is visible. Android's back button must
+  /// then leave the app instead of silently navigating the hidden WebView.
+  final bool isActive;
+
+  const BrowserView({super.key, this.isActive = true});
 
   @override
   State<BrowserView> createState() => _BrowserViewState();
@@ -48,13 +53,26 @@ class _BrowserViewState extends State<BrowserView> {
   double _progress = 0;
   bool _canGoBack = false;
   bool _canGoForward = false;
+  bool _desktopMode = true;
   String? _currentUrl;
+  String? _loadError;
 
   // Desktop UA: mobile YouTube pushes the native app overlay and hides the
   // normal watch page inside WebViews; the desktop site behaves like PC.
   static const _desktopUa =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+  /// Extensions that are a file, not a page. Clicking one downloads it with
+  /// the normal download manager instead of replacing the page with bytes.
+  static const _directFileExtensions = {
+    'pdf', 'zip', 'rar', '7z', 'tar', 'gz', 'apk', 'exe', 'msi', 'dmg',
+    'iso', 'torrent', 'epub', 'mobi', 'doc', 'docx', 'xls', 'xlsx', 'ppt',
+    'pptx', 'txt', 'csv', 'json', 'xml',
+    'mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'opus',
+    'mp4', 'm4v', 'webm', 'mkv', 'mov', 'avi',
+    'jpg', 'jpeg', 'png', 'webp', 'gif',
+  };
 
   // Host-like token ending in a real TLD, so "1.5" or "version 2" fall through
   // to a web search instead of being forced into a URL.
@@ -117,21 +135,56 @@ class _BrowserViewState extends State<BrowserView> {
   @override
   void initState() {
     super.initState();
+    _urlBar.addListener(_onUrlBarChanged);
     _web = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(_desktopUa)
       ..setBackgroundColor(Theme.of(context).colorScheme.surface)
       ..setNavigationDelegate(NavigationDelegate(
-        onProgress: (value) => setState(() => _progress = value / 100),
+        onProgress: (value) {
+          if (mounted) setState(() => _progress = value / 100);
+        },
         onPageStarted: (url) {
+          if (!mounted) return;
           setState(() {
             _loading = true;
+            _loadError = null;
             _currentUrl = url;
             _syncUrlBar(url);
           });
         },
         onPageFinished: _onPageFinished,
+        onNavigationRequest: (request) {
+          if (_isDirectFileUrl(request.url)) {
+            _downloadFile(request.url);
+            return NavigationDecision.prevent;
+          }
+          // Only web pages load inside the WebView. A page cannot use an
+          // intent://, file:// or content:// link to reach app-private data
+          // or launch arbitrary components.
+          final uri = Uri.tryParse(request.url);
+          final scheme = uri?.scheme.toLowerCase();
+          if (uri == null ||
+              (scheme != 'http' && scheme != 'https' && scheme != 'about')) {
+            return NavigationDecision.prevent;
+          }
+          return NavigationDecision.navigate;
+        },
+        onWebResourceError: (error) {
+          // Sub-resource errors (ads, trackers) are not a broken page.
+          if (error.isForMainFrame == false) return;
+          if (!mounted) return;
+          setState(() {
+            _loading = false;
+            _progress = 0;
+            _loadError = error.description;
+          });
+        },
       ));
+  }
+
+  void _onUrlBarChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _onPageFinished(String url) async {
@@ -157,7 +210,11 @@ class _BrowserViewState extends State<BrowserView> {
 
   Uri? _resolveUri(String text) {
     if (_looksLikeUrl(text)) {
-      return Uri.tryParse(text.contains('://') ? text : 'https://$text');
+      final uri = Uri.tryParse(text.contains('://') ? text : 'https://$text');
+      if (uri != null &&
+          (uri.scheme == 'http' || uri.scheme == 'https')) {
+        return uri;
+      }
     }
     return Uri.parse(
       'https://www.google.com/search?q=${Uri.encodeQueryComponent(text)}',
@@ -185,7 +242,7 @@ class _BrowserViewState extends State<BrowserView> {
   }
 
   void _goBack() {
-    if (_showHome) setState(() => _showHome = false);
+    if (_showHome) return;
     _web.goBack();
   }
 
@@ -201,8 +258,95 @@ class _BrowserViewState extends State<BrowserView> {
     SharedDownloadSheet.show(context, controller);
   }
 
+  bool _isDirectFileUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme) return false;
+    if (uri.scheme != 'http' && uri.scheme != 'https') return false;
+    if (uri.pathSegments.isEmpty) return false;
+    final name = uri.pathSegments.last;
+    final dot = name.lastIndexOf('.');
+    if (dot < 0 || dot == name.length - 1) return false;
+    return _directFileExtensions.contains(
+      name.substring(dot + 1).toLowerCase(),
+    );
+  }
+
+  /// Downloads a link the page itself points at (pdf, zip, apk, plain media).
+  /// The request is handled by the normal download manager: real progress,
+  /// foreground notification and a file in the user's Downloads folder.
+  void _downloadFile(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    final loc = AppLocalizations.of(context);
+    final rawName = uri.pathSegments.isEmpty ? '' : uri.pathSegments.last;
+    final name = Uri.decodeComponent(rawName);
+    final dot = name.lastIndexOf('.');
+    final ext = dot >= 0 ? name.substring(dot + 1).toLowerCase() : 'bin';
+    final title = dot > 0 ? name.substring(0, dot) : name;
+    context.read<DownloadsController>().addDirectFileDownload(
+          url: url,
+          title: title.isEmpty ? 'download' : title,
+          fileExt: ext,
+        );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(loc.browserDownloadStarted)),
+    );
+  }
+
+  void _stopLoading() {
+    // webview_flutter has no stopLoading() API. window.stop() is the web
+    // standard way to abort the current document load and is supported by
+    // the Android WebView.
+    _web.runJavaScript('window.stop();');
+    if (mounted) {
+      setState(() {
+        _loading = false;
+        _progress = 0;
+      });
+    }
+  }
+
+  Future<void> _toggleDesktopMode() async {
+    final next = !_desktopMode;
+    setState(() => _desktopMode = next);
+    await _web.setUserAgent(next ? _desktopUa : null);
+    if (!_showHome) await _web.reload();
+  }
+
+  Future<void> _clearBrowsingData() async {
+    final loc = AppLocalizations.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(loc.browserClearData),
+        content: Text(loc.browserClearDataConfirm),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(loc.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(loc.delete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await _web.clearCache();
+      await _web.clearLocalStorage();
+      await WebViewCookieManager().clearCookies();
+    } catch (_) {}
+    if (!mounted) return;
+    _urlBar.clear();
+    _web.loadRequest(Uri.parse('about:blank'));
+    _goHome();
+  }
+
   @override
   void dispose() {
+    _urlBar.removeListener(_onUrlBarChanged);
     _urlBar.dispose();
     _homeSearch.dispose();
     _urlFocus.dispose();
@@ -215,8 +359,16 @@ class _BrowserViewState extends State<BrowserView> {
     final loc = AppLocalizations.of(context);
     final cs = Theme.of(context).colorScheme;
     final downloadable = _showHome ? null : _downloadable;
+    final interceptBack = widget.isActive && !_showHome && _canGoBack;
 
-    return Stack(
+    return PopScope(
+      canPop: !interceptBack,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && widget.isActive && !_showHome && _canGoBack) {
+          _web.goBack();
+        }
+      },
+      child: Stack(
       children: [
         SafeArea(
           top: true,
@@ -229,6 +381,8 @@ class _BrowserViewState extends State<BrowserView> {
                 value: _progress > 0 ? _progress : null,
                 minHeight: 2,
               ),
+            if (_loadError != null && !_showHome)
+              _buildErrorBanner(cs, loc),
             Expanded(
               child: Stack(
                 children: [
@@ -261,6 +415,40 @@ class _BrowserViewState extends State<BrowserView> {
           ),
         ),
       ],
+      ),
+    );
+  }
+
+  Widget _buildErrorBanner(ColorScheme cs, AppLocalizations loc) {
+    return Material(
+      color: cs.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+        child: Row(
+          children: [
+            Icon(Icons.error_outline_rounded,
+                size: 18, color: cs.onErrorContainer),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '${loc.browserLoadError}: ${_loadError ?? ''}',
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: cs.onErrorContainer),
+              ),
+            ),
+            TextButton(
+              onPressed: () {
+                final url = _currentUrl;
+                if (url == null) return;
+                setState(() => _loadError = null);
+                _web.loadRequest(Uri.parse(url));
+              },
+              child: Text(loc.retry),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -341,9 +529,11 @@ class _BrowserViewState extends State<BrowserView> {
             ),
             const SizedBox(width: 2),
             _iconBtn(
-              Icons.refresh_rounded,
-              tooltip: loc.retry,
-              onPressed: _showHome ? null : () => _web.reload(),
+              _loading ? Icons.close_rounded : Icons.refresh_rounded,
+              tooltip: _loading ? loc.browserStop : loc.retry,
+              onPressed: _showHome
+                  ? null
+                  : (_loading ? _stopLoading : () => _web.reload()),
             ),
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert_rounded, size: 20),
@@ -357,9 +547,20 @@ class _BrowserViewState extends State<BrowserView> {
                   case 'external':
                     final url = _currentUrl;
                     if (url != null) {
-                      await launchUrl(Uri.parse(url),
+                      final opened = await launchUrl(Uri.parse(url),
                           mode: LaunchMode.externalApplication);
+                      if (!opened && mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(loc.browserOpenFailed)),
+                        );
+                      }
                     }
+                    break;
+                  case 'desktop':
+                    await _toggleDesktopMode();
+                    break;
+                  case 'clear':
+                    await _clearBrowsingData();
                     break;
                 }
               },
@@ -378,6 +579,27 @@ class _BrowserViewState extends State<BrowserView> {
                     const Icon(Icons.open_in_new_rounded, size: 18),
                     const SizedBox(width: 10),
                     Text(loc.browserOpenExternal),
+                  ]),
+                ),
+                PopupMenuItem(
+                  value: 'desktop',
+                  child: Row(children: [
+                    Icon(
+                      _desktopMode
+                          ? Icons.check_box_rounded
+                          : Icons.check_box_outline_blank_rounded,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(loc.browserDesktopSite),
+                  ]),
+                ),
+                PopupMenuItem(
+                  value: 'clear',
+                  child: Row(children: [
+                    const Icon(Icons.cleaning_services_outlined, size: 18),
+                    const SizedBox(width: 10),
+                    Text(loc.browserClearData),
                   ]),
                 ),
               ],

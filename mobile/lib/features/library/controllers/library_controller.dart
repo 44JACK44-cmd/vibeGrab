@@ -287,9 +287,18 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> deleteFile(String filename) async {
     try {
-      await TrashService.instance.moveToTrash(filename);
+      final entry = await TrashService.instance.moveToTrash(filename);
+      if (entry == null) {
+        // The file was not moved: keep it in the library and surface the
+        // failure instead of pretending it went to the trash.
+        _errorKey = 'errorFailedDeleteFile';
+        notifyListeners();
+        return;
+      }
       _allFiles.removeWhere((f) => f.filename == filename);
-      await _meta.removeFileData(filename);
+      // Keep the metadata (favorite, resume position) so restoring the file
+      // brings those back. Only the history entry is hidden while trashed.
+      await _meta.removeHistoryEntry(filename);
       if (_allFiles.isEmpty) {
         _status = LibraryStatus.empty;
       }

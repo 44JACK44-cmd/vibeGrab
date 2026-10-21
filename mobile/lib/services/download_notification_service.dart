@@ -20,7 +20,27 @@ class DownloadNotificationService {
   DownloadNotificationService._();
 
   final _actionController = StreamController<NotificationAction>.broadcast();
+
+  /// Actions that arrived before any screen subscribed (cold start from a
+  /// notification). A broadcast stream drops those, so keep them here until
+  /// [takePendingActions] is called.
+  final List<NotificationAction> _pendingActions = [];
+
   Stream<NotificationAction> get onAction => _actionController.stream;
+
+  List<NotificationAction> takePendingActions() {
+    final pending = List<NotificationAction>.from(_pendingActions);
+    _pendingActions.clear();
+    return pending;
+  }
+
+  void _emit(NotificationAction action) {
+    if (_actionController.hasListener) {
+      _actionController.add(action);
+    } else {
+      _pendingActions.add(action);
+    }
+  }
 
   bool _initialized = false;
 
@@ -37,11 +57,11 @@ class DownloadNotificationService {
         final taskId = args['taskId'] as String?;
         switch (action) {
           case 'cancel':
-            _actionController.add(NotificationAction(NotificationActionType.cancel, taskId));
+            _emit(NotificationAction(NotificationActionType.cancel, taskId));
           case 'retry':
-            _actionController.add(NotificationAction(NotificationActionType.retry, taskId));
+            _emit(NotificationAction(NotificationActionType.retry, taskId));
           case 'open':
-            _actionController.add(const NotificationAction(NotificationActionType.openLibrary));
+            _emit(const NotificationAction(NotificationActionType.openLibrary));
         }
       }
     });
@@ -58,11 +78,11 @@ class DownloadNotificationService {
         final taskId = args['taskId'] as String?;
         switch (action) {
           case 'cancel':
-            _actionController.add(NotificationAction(NotificationActionType.cancel, taskId));
+            _emit(NotificationAction(NotificationActionType.cancel, taskId));
           case 'retry':
-            _actionController.add(NotificationAction(NotificationActionType.retry, taskId));
+            _emit(NotificationAction(NotificationActionType.retry, taskId));
           case 'open':
-            _actionController.add(const NotificationAction(NotificationActionType.openLibrary));
+            _emit(const NotificationAction(NotificationActionType.openLibrary));
         }
       }
     } catch (_) {}
@@ -135,6 +155,12 @@ class DownloadNotificationService {
   Future<void> stopService() async {
     try {
       await _channel.invokeMethod('stopService');
+    } catch (_) {}
+  }
+
+  Future<void> removeTask(String taskId) async {
+    try {
+      await _channel.invokeMethod('removeTask', {'taskId': taskId});
     } catch (_) {}
   }
 

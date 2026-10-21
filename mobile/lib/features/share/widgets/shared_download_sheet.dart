@@ -22,6 +22,11 @@ class SharedDownloadSheet extends StatefulWidget {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
+      // The translucent share overlay has no app behind it: dismissing the
+      // sheet would leave an empty transparent activity. Its own close
+      // button decides between background and close.
+      isDismissible: !overlay,
+      enableDrag: !overlay,
       barrierColor: overlay ? Colors.black38 : Colors.black54,
       builder: (_) => ChangeNotifierProvider.value(
         value: controller,
@@ -295,13 +300,30 @@ class _SharedDownloadSheetState extends State<SharedDownloadSheet> {
   }
 
   Widget _buildTitle(AppLocalizations loc, ColorScheme cs) {
-    return Text(
-      loc.shareDownloadTitle,
-      style: TextStyle(
-        fontSize: 18,
-        fontWeight: FontWeight.w700,
-        color: cs.onSurface,
-      ),
+    final saving = _savingTaskId != null;
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            loc.shareDownloadTitle,
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: cs.onSurface,
+            ),
+          ),
+        ),
+        if (widget.overlay)
+          IconButton(
+            tooltip: saving ? loc.shareClose : loc.cancel,
+            onPressed: () => Navigator.of(context)
+                .pop(saving ? 'background' : 'close'),
+            icon: Icon(
+              saving ? Icons.minimize_rounded : Icons.close_rounded,
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+      ],
     );
   }
 

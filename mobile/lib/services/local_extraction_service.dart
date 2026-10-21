@@ -340,6 +340,32 @@ class LocalExtractionService {
       }
     }
 
+    // Always offer a real MP3 when the media has audio. If there is no
+    // audio-only track (some uploads only publish muxed rows) the smallest
+    // muxed stream is the source and the backend extracts its audio.
+    String? mp3Tag;
+    int? mp3Size;
+    if (sortedAudio.isNotEmpty) {
+      mp3Tag = sortedAudio.first.tag.toString();
+    } else if (manifest.muxed.isNotEmpty) {
+      final smallest = manifest.muxed.toList()
+        ..sort((a, b) =>
+            a.videoResolution.height.compareTo(b.videoResolution.height));
+      mp3Tag = smallest.first.tag.toString();
+      mp3Size = smallest.first.size.totalBytes;
+    }
+    if (mp3Tag != null) {
+      formats.add(FormatOption(
+        id: '${mp3Tag}__mp3',
+        type: 'audio',
+        extension: 'mp3',
+        quality: '192 kbps',
+        hasVideo: false,
+        hasAudio: true,
+        sizeBytes: mp3Size,
+      ));
+    }
+
     return formats;
   }
 
@@ -349,37 +375,56 @@ class LocalExtractionService {
     cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
     final hashIdx = cleaned.indexOf('#');
     if (hashIdx != -1) cleaned = cleaned.substring(0, hashIdx);
+
+    // Tracking-only parameter added by the YouTube share sheet. It is not a
+    // video id and must not be mistaken for one.
+    final uri = Uri.tryParse(cleaned);
+    if (uri != null && uri.hasScheme && uri.queryParameters.containsKey('si')) {
+      final params = Map<String, dynamic>.from(uri.queryParameters)
+        ..remove('si');
+      try {
+        cleaned = uri.replace(queryParameters: params).toString();
+      } catch (_) {}
+    }
     return cleaned;
   }
 
   String? _parseVideoId(String url) {
     final sanitized = sanitizeUrl(url);
-
-    final idMatch = RegExp(r'(?:v=|/vi/|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})').firstMatch(sanitized);
-    if (idMatch != null) return idMatch.group(1);
-
     final uri = Uri.tryParse(sanitized);
-    if (uri == null) return null;
-
-    if (uri.host.contains('youtube.com') || uri.host.contains('youtu.be')) {
-      if (uri.host.contains('youtu.be')) {
-        final id = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
-        if (id != null && id.length == 11) return id;
-      }
-
-      final vParam = uri.queryParameters['v'];
-      if (vParam != null && vParam.length == 11) return vParam;
-
-      if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'shorts') {
-        final id = uri.pathSegments.last;
-        if (id.length == 11) return id;
-      }
+    if (uri == null) {
+      return sanitized.length == 11 &&
+              RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(sanitized)
+          ? sanitized
+          : null;
     }
+    final host = uri.host.toLowerCase();
+    final isYouTubeHost = host == 'youtube.com' ||
+        host.endsWith('.youtube.com') ||
+        host == 'youtube-nocookie.com' ||
+        host.endsWith('.youtube-nocookie.com') ||
+        host == 'youtu.be' ||
+        host.endsWith('.youtu.be');
+    if (!isYouTubeHost) return null;
 
-    if (sanitized.length == 11 && RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(sanitized)) {
-      return sanitized;
+    bool valid(String? id) =>
+        id != null && RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(id);
+
+    if (host == 'youtu.be' || host.endsWith('.youtu.be')) {
+      if (uri.pathSegments.isNotEmpty && valid(uri.pathSegments.first)) {
+        return uri.pathSegments.first;
+      }
+      return null;
     }
+    final vParam = uri.queryParameters['v'];
+    if (valid(vParam)) return vParam;
 
+    final segments = uri.pathSegments;
+    const kinds = {'shorts', 'embed', 'v', 'vi', 'live'};
+    if (segments.length >= 2 && kinds.contains(segments[segments.length - 2])) {
+      final id = segments.last;
+      if (valid(id)) return id;
+    }
     return null;
   }
 

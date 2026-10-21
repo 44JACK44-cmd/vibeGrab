@@ -23,6 +23,88 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.40
+    WhatsNewEntry(
+      id: 'wn-1140-browser',
+      version: '1.1.40',
+      build: 45,
+      category: WhatsNewCategory.features,
+      emoji: '🌐',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Navegador integrado para encontrar y descargar',
+        en: 'Built-in browser to find and download',
+      ),
+      description: LocalizedText(
+        es: 'Abre páginas dentro de VibeGrab, vuelve atrás, detén o recarga, cambia a vista de escritorio y descarga los archivos que encuentres. El navegador solo carga páginas web seguras y no activa permisos por su cuenta.',
+        en: 'Open pages inside VibeGrab, go back, stop or reload, switch to desktop view and download the files you find. The browser only loads web pages and never grants site permissions on its own.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1140-trash',
+      version: '1.1.40',
+      build: 45,
+      category: WhatsNewCategory.features,
+      emoji: '🗑️',
+      order: 1,
+      title: LocalizedText(
+        es: 'Papelera con restauración real',
+        en: 'Trash with real restore',
+      ),
+      description: LocalizedText(
+        es: 'Al borrar un archivo va a la papelera junto con su carátula y sus datos. Puedes restaurarlo en su carpeta original o borrarlo definitivamente; nada se elimina sin confirmación.',
+        en: 'When you delete a file it goes to the trash together with its artwork and details. You can restore it to its original folder or delete it permanently; nothing is removed without confirmation.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1140-whatsapp-statuses',
+      version: '1.1.40',
+      build: 45,
+      category: WhatsNewCategory.features,
+      emoji: '💬',
+      order: 2,
+      title: LocalizedText(
+        es: 'Estados de WhatsApp disponibles para guardar',
+        en: 'WhatsApp statuses ready to save',
+      ),
+      description: LocalizedText(
+        es: 'VibeGrab muestra los estados que WhatsApp guarda en el teléfono y permite guardarlos en la galería o compartirlos. Solo aparecen archivos reales y accesibles; si Android bloquea la carpeta, la app lo indica y pide el permiso correcto.',
+        en: 'VibeGrab shows the statuses WhatsApp stores on the phone and lets you save them to the gallery or share them. Only real, accessible files are listed; if Android blocks the folder, the app says so and requests the correct permission.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1140-diagnostics-dns',
+      version: '1.1.40',
+      build: 45,
+      category: WhatsNewCategory.improvements,
+      emoji: '🩺',
+      order: 0,
+      title: LocalizedText(
+        es: 'Diagnóstico claro de red y DNS',
+        en: 'Clear network and DNS diagnostics',
+      ),
+      description: LocalizedText(
+        es: 'Las pruebas indican la operación, la etapa, el código HTTP y el tipo de error, sin mostrar enlaces firmados ni datos privados. El panel de DNS muestra el modo real del sistema y aclara que no cambia el DNS de otras aplicaciones ni del navegador interno.',
+        en: 'Checks report the operation, stage, HTTP status and error type without showing signed links or private data. The DNS panel shows the system’s real mode and makes clear that it does not change the DNS of other apps or the built-in browser.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1140-download-integrity',
+      version: '1.1.40',
+      build: 45,
+      category: WhatsNewCategory.fixes,
+      emoji: '🎵',
+      order: 0,
+      title: LocalizedText(
+        es: 'MP3 y descargas con el formato correcto',
+        en: 'MP3 and downloads keep the right format',
+      ),
+      description: LocalizedText(
+        es: 'El MP3 se genera a partir de la pista de audio real aunque la fuente sea vídeo, y se comprueba el contenido antes de darlo por terminado. Las descargas del navegador conservan su extensión y los archivos incompletos se descartan.',
+        en: 'MP3 is generated from the real audio track even when the source is video, and the content is checked before marking it complete. Browser downloads keep their extension and incomplete files are discarded.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.39
     WhatsNewEntry(
       id: 'wn-1139-device-downloads',

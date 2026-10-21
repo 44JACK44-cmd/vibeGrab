@@ -12,7 +12,41 @@ class ApiConfig {
     _customBaseUrl = prefs.getString(_prefKey);
   }
 
-  static Future<void> setBaseUrl(String url) async {
+  /// A custom backend must use HTTPS, except on explicit development hosts
+  /// (emulator loopback / localhost). Accepting `http://` here would send the
+  /// API key and download requests in clear text over the network.
+  static bool isAllowedBaseUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) return false;
+    if (uri.scheme == 'https') return true;
+    if (uri.scheme != 'http') return false;
+    final host = uri.host.toLowerCase();
+    if (host == 'localhost' || host == '127.0.0.1' || host == '::1') {
+      return true;
+    }
+    return _isPrivateIpv4(host);
+  }
+
+  /// True only for RFC 1918 addresses. A suffix/prefix check would accept
+  /// hostnames such as `10.evil.example` and allow cleartext to the internet.
+  static bool _isPrivateIpv4(String host) {
+    final parts = host.split('.');
+    if (parts.length != 4) return false;
+    final octets = <int>[];
+    for (final part in parts) {
+      if (part.isEmpty || !RegExp(r'^\d{1,3}$').hasMatch(part)) return false;
+      final value = int.tryParse(part);
+      if (value == null || value < 0 || value > 255) return false;
+      octets.add(value);
+    }
+    if (octets[0] == 10) return true;
+    if (octets[0] == 192 && octets[1] == 168) return true;
+    if (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) return true;
+    return false;
+  }
+
+  static Future<bool> setBaseUrl(String url) async {
+    if (url.isNotEmpty && !isAllowedBaseUrl(url)) return false;
     _customBaseUrl = url.isEmpty ? null : url;
     final prefs = await SharedPreferences.getInstance();
     if (url.isEmpty) {
@@ -20,11 +54,13 @@ class ApiConfig {
     } else {
       await prefs.setString(_prefKey, url);
     }
+    return true;
   }
 
   static String get baseUrl {
-    if (_customBaseUrl != null && _customBaseUrl!.isNotEmpty) {
-      return _customBaseUrl!;
+    final custom = _customBaseUrl;
+    if (custom != null && custom.isNotEmpty && isAllowedBaseUrl(custom)) {
+      return custom;
     }
     return _defaultBaseUrl;
   }

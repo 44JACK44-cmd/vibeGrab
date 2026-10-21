@@ -44,7 +44,7 @@ class DownloadNotificationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val command = intent?.getStringExtra("command") ?: return START_NOT_STICKY
 
-        if (!isForeground) {
+        if (!isForeground && command != "removeTask" && command != "stop") {
             ensureForeground()
         }
 
@@ -63,6 +63,10 @@ class DownloadNotificationService : Service() {
                 intent.getStringExtra("taskId") ?: return START_NOT_STICKY,
                 intent.getStringExtra("title") ?: "Download",
             )
+            "removeTask" -> {
+                activeTasks.remove(intent.getStringExtra("taskId"))
+                if (activeTasks.isEmpty()) stopClean()
+            }
             "stop" -> stopClean()
         }
         return START_STICKY
@@ -112,6 +116,7 @@ class DownloadNotificationService : Service() {
             .setContentTitle(title)
             .setContentText("$percentage%")
             .setProgress(100, percentage, false)
+            .setContentIntent(makeActionPI(taskId, "open", 20000))
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancel", cancelPI)
             .build()
         getSystemService(NotificationManager::class.java)

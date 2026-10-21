@@ -202,6 +202,22 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     }
   }
 
+  void _handleNotifAction(NotificationAction action) {
+    if (!mounted) return;
+    final dl = context.read<DownloadsController>();
+    switch (action.type) {
+      case NotificationActionType.cancel:
+        if (action.taskId != null) dl.cancelTask(action.taskId!);
+        break;
+      case NotificationActionType.retry:
+        if (action.taskId != null) dl.retryTask(action.taskId!);
+        break;
+      case NotificationActionType.openLibrary:
+        setState(() => _currentIndex = 4);
+        break;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -217,21 +233,14 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       SharedDownloadSheet.show(context, sharedController);
     });
 
-    _notifActionSubscription = DownloadNotificationService().onAction.listen((action) {
-      if (!mounted) return;
-      final dl = context.read<DownloadsController>();
-      switch (action.type) {
-        case NotificationActionType.cancel:
-          if (action.taskId != null) dl.cancelTask(action.taskId!);
-          break;
-        case NotificationActionType.retry:
-          if (action.taskId != null) dl.retryTask(action.taskId!);
-          break;
-        case NotificationActionType.openLibrary:
-          setState(() => _currentIndex = 4);
-          break;
-      }
-    });
+    _notifActionSubscription =
+        DownloadNotificationService().onAction.listen(_handleNotifAction);
+    // Actions received between the Android intent and this subscription
+    // (cold start, or while the share overlay temporarily replaces the
+    // shell) are kept by the service; replay them now.
+    for (final action in DownloadNotificationService().takePendingActions()) {
+      _handleNotifAction(action);
+    }
 
     PiPService.onPiPChanged.listen((isInPip) {
       if (!mounted) return;
@@ -334,7 +343,7 @@ context.read<MediaEngine>().initAudioService().then((_) {
                   index: _currentIndex,
                   children: [
                     const ExploreView(),
-                    const BrowserView(),
+                    BrowserView(isActive: _currentIndex == 1),
                     const AnalyzerView(),
                     DownloadsView(onNavigateToAnalyze: () => _navigateToTab(2)),
                     const LibraryView(),

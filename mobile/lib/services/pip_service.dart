@@ -25,9 +25,11 @@ class PiPService {
     }
   }
 
-  static Future<bool> enterPiP() async {
+  static Future<bool> enterPiP({double aspectRatio = 16 / 9}) async {
     try {
-      final result = await _channel.invokeMethod<bool>('enterPip');
+      final result = await _channel.invokeMethod<bool>('enterPip', {
+        'aspectRatio': aspectRatio,
+      });
       return result ?? false;
     } catch (_) {
       return false;

@@ -171,7 +171,16 @@ class MainActivity : AudioServiceActivity() {
                 "stopService" -> {
                     val intent = Intent(this, DownloadNotificationService::class.java)
                     intent.putExtra("command", "stop")
-                    startForegroundService(intent)
+                    startService(intent)
+                    result.success(true)
+                }
+                "removeTask" -> {
+                    val args = call.arguments as? Map<*, *>
+                    val intent = Intent(this, DownloadNotificationService::class.java).apply {
+                        putExtra("command", "removeTask")
+                        putExtra("taskId", args?.get("taskId") as? String)
+                    }
+                    startService(intent)
                     result.success(true)
                 }
                 "getPendingNotificationAction" -> {
@@ -208,6 +217,36 @@ class MainActivity : AudioServiceActivity() {
                 "getExternalStorageRoot" -> {
                     val externalRoot = android.os.Environment.getExternalStorageDirectory()
                     result.success(mapOf("path" to externalRoot?.absolutePath))
+                }
+                "availableBytes" -> {
+                    try {
+                        val args = call.arguments as? Map<*, *>
+                        val path = args?.get("path") as? String
+                        if (path.isNullOrBlank()) {
+                            result.success(-1)
+                        } else {
+                            val stat = android.os.StatFs(path)
+                            result.success(stat.availableBytes)
+                        }
+                    } catch (e: Exception) {
+                        result.success(-1)
+                    }
+                }
+                "deleteMedia" -> {
+                    try {
+                        val args = call.arguments as? Map<*, *>
+                        val uriText = args?.get("uri") as? String
+                        if (uriText.isNullOrBlank()) {
+                            result.success(false)
+                        } else {
+                            val deleted = contentResolver.delete(
+                                android.net.Uri.parse(uriText), null, null
+                            )
+                            result.success(deleted > 0)
+                        }
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
                 }
                 else -> result.notImplemented()
             }
@@ -258,8 +297,14 @@ class MainActivity : AudioServiceActivity() {
                 "enterPip" -> {
                     try {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            val args = call.arguments as? Map<*, *>
+                            val ratio = (args?.get("aspectRatio") as? Number)?.toDouble()
+                                ?: (16.0 / 9.0)
+                            val safeRatio = if (ratio.isFinite() && ratio > 0.3 && ratio < 3.0)
+                                ratio else (16.0 / 9.0)
+                            val width = (safeRatio * 1000).toInt()
                             val builder = PictureInPictureParams.Builder()
-                                .setAspectRatio(Rational(16, 9))
+                                .setAspectRatio(Rational(width, 1000))
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                 builder.setSeamlessResizeEnabled(true)
                             }
@@ -390,7 +435,71 @@ class MainActivity : AudioServiceActivity() {
                 // Screen brightness for the video player (window attribute).
                 "setBrightness" -> handleSetBrightness(call, result)
                 "getBrightness" -> handleGetBrightness(result)
+                "getDnsStatus" -> handleGetDnsStatus(result)
+                "openPrivateDnsSettings" -> handleOpenPrivateDnsSettings(result)
                 else -> result.notImplemented()
+            }
+        }
+    }
+
+    /// Read-only report of the DNS configuration Android is actually using.
+    /// VibeGrab cannot override DNS per app: the system resolver (and Android
+    /// Private DNS / DoT) applies to the app's sockets and to WebView. This is
+    /// reported as-is instead of pretending the app has its own DNS.
+    private fun handleGetDnsStatus(result: MethodChannel.Result) {
+        try {
+            val cm = getSystemService(android.net.ConnectivityManager::class.java)
+            val network = cm?.activeNetwork
+            val link = if (network != null) cm?.getLinkProperties(network) else null
+            val servers = link?.dnsServers
+                ?.mapNotNull { it.hostAddress }
+                ?.filter { it.isNotBlank() }
+                ?: emptyList()
+
+            var mode = "unknown"
+            var hostname = ""
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                // Documented Settings.Global keys; the Java constants are not
+                // part of the public SDK on every compileSdk.
+                mode = Settings.Global.getString(
+                    contentResolver, "private_dns_mode"
+                ) ?: "unknown"
+                hostname = Settings.Global.getString(
+                    contentResolver, "private_dns_specifier"
+                ) ?: ""
+            }
+            result.success(mapOf(
+                "mode" to mode,
+                "hostname" to hostname,
+                "servers" to servers,
+                "sdk" to Build.VERSION.SDK_INT
+            ))
+        } catch (e: Exception) {
+            result.success(mapOf(
+                "mode" to "unknown",
+                "hostname" to "",
+                "servers" to emptyList<String>(),
+                "sdk" to Build.VERSION.SDK_INT
+            ))
+        }
+    }
+
+    private fun handleOpenPrivateDnsSettings(result: MethodChannel.Result) {
+        try {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                Intent("android.settings.PRIVATE_DNS_SETTINGS")
+            } else {
+                Intent(Settings.ACTION_WIRELESS_SETTINGS)
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                result.success(true)
+            } catch (e2: Exception) {
+                result.success(false)
             }
         }
     }
@@ -907,22 +1016,39 @@ class MainActivity : AudioServiceActivity() {
     }
 
     private fun checkStatusAccess(): Map<String, Any?> {
-        if (!hasMediaReadPermission()) {
-            return mapOf("state" to "need_media", "path" to null)
+        val candidates = statusDirCandidates().distinctBy { it.absolutePath }
+        val existing = candidates.filter { it.exists() }
+        if (existing.isEmpty()) {
+            // No WhatsApp / Business status folder at all. Asking for
+            // permissions cannot create one, so this is not a permission
+            // problem.
+            return mapOf("state" to "unsupported", "path" to null, "paths" to emptyList<String>())
         }
-        val readable = statusDirCandidates().firstOrNull { it.isDirectory && it.listFiles() != null }
-        if (readable != null) {
-            return mapOf("state" to "granted", "path" to readable.absolutePath)
+        if (!hasMediaReadPermission()) {
+            return mapOf("state" to "need_media", "path" to null, "paths" to emptyList<String>())
+        }
+        val readable = existing.filter { it.isDirectory && it.canRead() && it.listFiles() != null }
+        if (readable.isNotEmpty()) {
+            return mapOf(
+                "state" to "granted",
+                "path" to readable.first().absolutePath,
+                "paths" to readable.map { it.absolutePath }
+            )
         }
         if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            return mapOf("state" to "need_manage", "path" to null)
+            return mapOf("state" to "need_manage", "path" to null, "paths" to emptyList<String>())
         }
-        return mapOf("state" to "unsupported", "path" to null)
+        // Some ROMs keep .Statuses readable only for WhatsApp itself. Never
+        // claim support we cannot deliver.
+        return mapOf("state" to "unsupported", "path" to null, "paths" to emptyList<String>())
     }
 
     private fun saveToGallery(path: String, displayName: String, mime: String): Boolean {
         val src = File(path)
-        if (!src.exists()) return false
+        // A zero-byte status (still being written by WhatsApp) must never be
+        // reported as saved: the gallery copy would be unplayable.
+        if (!src.exists() || src.length() <= 0) return false
+        val expectedBytes = src.length()
         val isVideo = mime.startsWith("video")
         val isAudio = mime.startsWith("audio")
 
@@ -956,7 +1082,14 @@ class MainActivity : AudioServiceActivity() {
                     values.clear()
                     values.put(MediaStore.MediaColumns.IS_PENDING, 0)
                     contentResolver.update(uri, values, null, null)
-                    true
+                    val copied = contentResolver.openFileDescriptor(uri, "r")
+                        ?.use { it.statSize } ?: -1L
+                    if (copied != expectedBytes) {
+                        contentResolver.delete(uri, null, null)
+                        false
+                    } else {
+                        true
+                    }
                 }
             } catch (e: Exception) {
                 contentResolver.delete(uri, null, null)
@@ -974,10 +1107,15 @@ class MainActivity : AudioServiceActivity() {
             dir.mkdirs()
             val dst = File(dir, displayName)
             src.copyTo(dst, overwrite = true)
-            android.media.MediaScannerConnection.scanFile(
-                this, arrayOf(dst.absolutePath), arrayOf(mime), null
-            )
-            true
+            if (!dst.exists() || dst.length() != expectedBytes) {
+                dst.delete()
+                false
+            } else {
+                android.media.MediaScannerConnection.scanFile(
+                    this, arrayOf(dst.absolutePath), arrayOf(mime), null
+                )
+                true
+            }
         } catch (e: Exception) {
             false
         }

@@ -68,6 +68,10 @@ class ShareIntentHandler {
   void exitOverlay() {
     _lastProcessedUrl = null;
     _overlayController.value = false;
+    // Clear the BehaviorSubject's current value too. Keeping the old URL as
+    // the latest event is what replayed the previous share when the overlay
+    // was opened again.
+    if (!_urlController.isClosed) _urlController.add('');
   }
 
   static String sanitizeUrl(String url) {

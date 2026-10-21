@@ -282,6 +282,37 @@ class MediaMetadataService extends ChangeNotifier {
     await _saveNow();
   }
 
+  /// Keeps the favorite flag and resume position when a restored file gets a
+  /// new name because another file already owns the original one.
+  Future<void> renameFileData(String oldName, String newName) async {
+    if (oldName == newName) return;
+    final old = _metadata.remove(oldName);
+    if (old != null) {
+      _metadata[newName] = MediaMetadata(
+        filename: newName,
+        isFavorite: old.isFavorite,
+        lastPlayedAt: old.lastPlayedAt,
+        lastPositionMs: old.lastPositionMs,
+        durationMs: old.durationMs,
+      );
+    }
+    for (var i = 0; i < _history.length; i++) {
+      final h = _history[i];
+      if (h.filename == oldName) {
+        _history[i] = HistoryEntry(
+          filename: newName,
+          title: h.title,
+          thumbnail: h.thumbnail,
+          source: h.source,
+          fileType: h.fileType,
+          playedAt: h.playedAt,
+        );
+      }
+    }
+    notifyListeners();
+    await _saveNow();
+  }
+
   /// Removes a single entry from the play history (keeps metadata).
   Future<void> removeHistoryEntry(String filename) async {
     _history.removeWhere((h) => h.filename == filename);

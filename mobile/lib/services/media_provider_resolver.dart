@@ -40,10 +40,16 @@ class YouTubeProvider implements MediaProvider {
 
   @override
   bool canHandle(String url) {
-    final id = extractVideoId(url);
-    if (id != null) return true;
     final host = _hostOf(url);
-    return host == 'youtube.com' || host.endsWith('.youtube.com') || host == 'youtu.be';
+    if (host == 'youtube.com' ||
+        host.endsWith('.youtube.com') ||
+        host == 'youtube-nocookie.com' ||
+        host.endsWith('.youtube-nocookie.com') ||
+        host == 'youtu.be' ||
+        host.endsWith('.youtu.be')) {
+      return extractVideoId(url) != null;
+    }
+    return false;
   }
 
   @override
@@ -93,24 +99,35 @@ class YouTubeProvider implements MediaProvider {
     if (text.isEmpty) return null;
     if (RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(text)) return text;
 
-    final patterns = [
-      RegExp(r'(?:v=|/vi/|youtu\.be/|/shorts/|/embed/|/v/)([A-Za-z0-9_-]{11})'),
-    ];
-    for (final p in patterns) {
-      final m = p.firstMatch(text);
-      if (m != null) return m.group(1);
-    }
-    try {
-      final uri = Uri.tryParse(text);
-      if (uri != null) {
-        final v = uri.queryParameters['v'];
-        if (v != null && v.length == 11) return v;
-        if (uri.pathSegments.isNotEmpty && uri.pathSegments.last.length == 11) {
-          final seg = uri.pathSegments.last;
-          if (RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(seg)) return seg;
-        }
+    final uri = Uri.tryParse(text);
+    if (uri == null) return null;
+    final host = uri.host.toLowerCase();
+    final isYouTube = host == 'youtube.com' ||
+        host.endsWith('.youtube.com') ||
+        host == 'youtube-nocookie.com' ||
+        host.endsWith('.youtube-nocookie.com') ||
+        host == 'youtu.be' ||
+        host.endsWith('.youtu.be');
+    if (!isYouTube) return null;
+
+    bool valid(String? id) =>
+        id != null && RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(id);
+
+    if (host == 'youtu.be' || host.endsWith('.youtu.be')) {
+      if (uri.pathSegments.isNotEmpty && valid(uri.pathSegments.first)) {
+        return uri.pathSegments.first;
       }
-    } catch (_) {}
+      return null;
+    }
+    final v = uri.queryParameters['v'];
+    if (valid(v)) return v;
+
+    final segments = uri.pathSegments;
+    const kinds = {'shorts', 'embed', 'v', 'vi', 'live'};
+    if (segments.length >= 2 && kinds.contains(segments[segments.length - 2])) {
+      final seg = segments.last;
+      if (valid(seg)) return seg;
+    }
     return null;
   }
 }

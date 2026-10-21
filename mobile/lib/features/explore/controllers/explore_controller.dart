@@ -496,8 +496,16 @@ class ExploreController extends ChangeNotifier {
         final page = await _serverSearch(_query, page: _searchPage + 1);
         if (seq != _searchSeq) return;
         if (page == null) {
+          // The server page failed: switch to the device search instead of
+          // declaring the result list complete with nothing appended.
           _serverSearchFailed = true;
-          _searchExhausted = true;
+          final more = await _extraction.searchMore(_query, limit: 10);
+          if (seq != _searchSeq) return;
+          if (more.isEmpty) {
+            _searchExhausted = true;
+          } else {
+            _appendUnique(_videos, more);
+          }
         } else {
           _searchPage++;
           _searchExhausted = !page.hasMore;
@@ -534,7 +542,14 @@ class ExploreController extends ChangeNotifier {
         final page = await _serverSearch(cat, page: _categoryPage + 1);
         if (seq != _searchSeq) return;
         if (page == null) {
-          _categoryExhausted = true;
+          _serverSearchFailed = true;
+          final more = await _extraction.searchMore('$cat popular', limit: 8);
+          if (seq != _searchSeq) return;
+          if (more.isEmpty) {
+            _categoryExhausted = true;
+          } else {
+            _appendUnique(_categoryResults, more);
+          }
         } else {
           _categoryPage++;
           _categoryExhausted = !page.hasMore;
@@ -788,6 +803,8 @@ class ExploreController extends ChangeNotifier {
     _categoryResults = [];
     _categoryExhausted = false;
     _categoryPage = 1;
+    _serverSearchFailed = false;
+    _loadingMore = false;
     _searchSeq++;
     final seq = _searchSeq;
     notifyListeners();
@@ -806,6 +823,7 @@ class ExploreController extends ChangeNotifier {
         _categoryResults = _dedupe(page.results);
         _categoryExhausted = !page.hasMore;
       } else {
+        _serverSearchFailed = true;
         final local = await _extraction.searchCategory(category, limit: 8);
         if (seq != _searchSeq) return;
         _categoryResults = _dedupe(local);
@@ -882,6 +900,7 @@ class ExploreController extends ChangeNotifier {
     _searchExhausted = false;
     _searchPage = 1;
     _serverSearchFailed = false;
+    _loadingMore = false;
     notifyListeners();
 
     try {
@@ -899,7 +918,9 @@ class ExploreController extends ChangeNotifier {
         _videos = _dedupe(page.results);
         _searchExhausted = !page.hasMore;
       } else {
-        if (page == null) _serverSearchFailed = true;
+        // Empty page or failed page: the device search owns the result from
+        // here, so pagination must not keep asking the server.
+        _serverSearchFailed = true;
         final local = await _extraction.search(_query);
         if (seq != _searchSeq) return;
         _videos = _dedupe(local);
@@ -950,11 +971,14 @@ class ExploreController extends ChangeNotifier {
   }
 
   void clearResults() {
+    _debounce?.cancel();
     _searchSeq++; // drop any in-flight search
     _videos = [];
     _query = '';
     _loading = false;
+    _loadingMore = false;
     _searchExhausted = false;
+    _serverSearchFailed = false;
     _exploreError = ExploreError.none;
     _error = null;
     notifyListeners();

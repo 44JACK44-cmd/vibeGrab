@@ -104,6 +104,10 @@ def _download(url: str, dest: Path, limit: int, *, allowlist: bool) -> None:
 
 
 def _download_with_ytdlp(url: str, format_id: str, work: Path) -> Path:
+    # Menu entries expose a synthetic ``<tag>__mp3`` id; yt-dlp expects the
+    # provider's real tag.
+    if format_id.endswith("__mp3"):
+        format_id = format_id[: -len("__mp3")]
     cmd = [
         settings.YT_DLP_PATH,
         "-f", format_id or "bestaudio/best",

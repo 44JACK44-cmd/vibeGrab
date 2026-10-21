@@ -361,6 +361,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
   /// Media id whose remote thumbnail has already been requested.
   String? _thumbCacheKey;
+  Timer? _thumbRetryTimer;
 
   /// Downloads the remote thumbnail once so the mini player, the audio sheet
   /// and the detail page can paint it from disk.
@@ -432,17 +433,31 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
         }
       }
 
-      if (!await file.exists() || await file.length() == 0) return;
+      if (!await file.exists() || await file.length() == 0) {
+        _scheduleThumbRetry(remote);
+        return;
+      }
       // The user may have moved on while the download was in flight.
       if (_state.thumbnail != remote) return;
       if (_disposed) return;
+      _thumbCacheKey = null;
       _state = _state.copyWith(thumbnailPath: file.path);
       _emitSessionSnapshot();
       _syncPlaybackStateToHandler();
       notifyListeners();
     } catch (e) {
       debugPrint('[MediaEngine] thumbnail cache failed: ${e.runtimeType}');
+      _scheduleThumbRetry(remote);
     }
+  }
+
+  void _scheduleThumbRetry(String remote) {
+    _thumbCacheKey = null;
+    _thumbRetryTimer?.cancel();
+    _thumbRetryTimer = Timer(const Duration(seconds: 20), () {
+      if (_disposed || _state.thumbnail != remote) return;
+      _cacheThumbnailIfNeeded();
+    });
   }
 
   /// Extracts YouTube video ID from various URL formats.
@@ -455,68 +470,41 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (sanitized.isEmpty) return null;
 
     final uri = Uri.tryParse(sanitized);
-    final host = uri?.host.toLowerCase() ?? '';
-    // Only real YouTube hosts may yield an id: a regex hit inside a
-    // TikTok/Instagram link (e.g. a `v=` query) would drag foreign links
-    // into the YouTube pipeline instead of the external one.
-    final isYouTubeHost =
-        host.contains('youtube.com') || host.contains('youtu.be');
-    if (uri != null && host.isNotEmpty && !isYouTubeHost) return null;
+    if (uri == null) {
+      return sanitized.length == 11 &&
+              RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(sanitized)
+          ? sanitized
+          : null;
+    }
+    final host = uri.host.toLowerCase();
+    // Strict host matching: `evil-youtube.com` must not enter this pipeline.
+    final isYouTubeHost = host == 'youtube.com' ||
+        host.endsWith('.youtube.com') ||
+        host == 'youtube-nocookie.com' ||
+        host.endsWith('.youtube-nocookie.com') ||
+        host == 'youtu.be' ||
+        host.endsWith('.youtu.be');
+    if (!isYouTubeHost) return null;
 
-    // First try the regex for common patterns
-    final idMatch = RegExp(r'(?:v=|/vi/|youtu\.be/|/shorts/|/embed/|/v/)([A-Za-z0-9_-]{11})').firstMatch(sanitized);
-    if (idMatch != null) return idMatch.group(1);
-    
-    if (uri == null) return null;
-    
-    final isYouTube = isYouTubeHost;
-    
-    if (!isYouTube) return null;
-    
-    // Handle youtu.be/VIDEO_ID
-    if (uri.host.contains('youtu.be')) {
-      final id = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
-      if (id != null && id.length == 11) return id;
+    bool valid(String? id) =>
+        id != null && RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(id);
+
+    if (host == 'youtu.be' || host.endsWith('.youtu.be')) {
+      if (uri.pathSegments.isNotEmpty && valid(uri.pathSegments.first)) {
+        return uri.pathSegments.first;
+      }
+      return null;
     }
-    
-    // Check for 'v' query parameter
+
     final vParam = uri.queryParameters['v'];
-    if (vParam != null && vParam.length == 11) return vParam;
-    
-    // Handle /shorts/VIDEO_ID
-    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'shorts') {
-      final id = uri.pathSegments.last;
-      if (id.length == 11) return id;
+    if (valid(vParam)) return vParam;
+
+    final segments = uri.pathSegments;
+    const kinds = {'shorts', 'embed', 'v', 'vi', 'live'};
+    if (segments.length >= 2 && kinds.contains(segments[segments.length - 2])) {
+      final id = segments.last;
+      if (valid(id)) return id;
     }
-    
-    // Handle /embed/VIDEO_ID
-    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'embed') {
-      final id = uri.pathSegments.last;
-      if (id.length == 11) return id;
-    }
-    
-    // Handle /v/VIDEO_ID
-    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'v') {
-      final id = uri.pathSegments.last;
-      if (id.length == 11) return id;
-    }
-    
-    // Check for 'vi' path parameter
-    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'vi') {
-      final id = uri.pathSegments.last;
-      if (id.length == 11) return id;
-    }
-    
-    // Check for 'vi' path parameter
-    if (uri.pathSegments.length >= 2 && uri.pathSegments[uri.pathSegments.length - 2] == 'vi') {
-      final id = uri.pathSegments.last;
-      if (id.length == 11) return id;
-    }
-    
-    // Check for 'si' parameter (shared videos)
-    final siParam = uri.queryParameters['si'];
-    if (siParam != null && siParam.length == 11) return siParam;
-    
     return null;
   }
 
@@ -1229,24 +1217,46 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final item = _queue[_currentIndex];
     _completionHandled = false;
 
+    // Auto-advance while the screen is off (or the background audio has
+    // taken over) must stay on the audio pipeline. Calling the video path
+    // here creates a controller the user cannot see and leaves the audio
+    // player idle, so playback silently stops at the next track.
+    final keepAudioOnly = _appInBackground || _isAudioBackgroundActive;
+    final startAt = await _resumePositionFor(item.id);
+
     final libFile = _resolveLibraryFileFromExtras(item.extras);
     if (libFile != null) {
+      final isVideoFile = libFile.fileType == 'video';
+      if (keepAudioOnly && isVideoFile && !libFile.hasContentUri) {
+        final file = File(libFile.filePath);
+        if (await file.exists()) {
+          await _playAudioFile(file, item);
+          if (_appInBackground) _isAudioBackgroundActive = true;
+          if (startAt > Duration.zero) await _player.seek(startAt);
+          return;
+        }
+      }
       await _playLocalFile(libFile);
       return;
     }
     if (item.extras?['isVideo'] == true) {
+      if (keepAudioOnly) {
+        await _playYouTubeAudio(item.id, item);
+        if (_appInBackground) _isAudioBackgroundActive = true;
+        if (startAt > Duration.zero) await _player.seek(startAt);
+        return;
+      }
       // Explorer / liked-video item: full video pipeline (audio fallback
       // included) instead of the audio-only shortcut.
-      await _playQueueItemVideo(item,
-          startAt: await _resumePositionFor(item.id));
+      await _playQueueItemVideo(item, startAt: startAt);
       return;
     }
     final videoId = _parseVideoIdFromUrl(item.id);
     if (videoId != null) {
-      final startAt = await _resumePositionFor(item.id);
       await _playYouTubeAudio(item.id, item);
       // Match the video path: restart audio where it stopped instead of 0.
       if (startAt > Duration.zero) await _player.seek(startAt);
+      if (!keepAudioOnly && _appInBackground) _isAudioBackgroundActive = true;
     } else {
       final localFile = StorageService.instance.getFile(item.id);
       if (localFile != null && localFile.existsSync()) {
@@ -1349,6 +1359,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       }
     },
   );
+
+  /// Warms sources for a feed item that will likely play next.
+  void prefetchExplore(ExploreVideo video) {
+    final id = _parseVideoIdFromUrl(video.url);
+    if (id == null) return;
+    _resolver.prefetch(id);
+  }
 
   /// Plays a single Explorer result, replacing the queue (Explorer owns its
   /// queue, same as every other screen).
@@ -2536,9 +2553,13 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _completionDebounce?.cancel();
     _wireAudioSubscriptions(mediaId);
     // Release the video only now: the sound is already coming from the audio
-    // player, so disposing cannot open an audible gap.
-    await _videoController?.dispose();
-    _videoController = null;
+    // player, so disposing cannot open an audible gap. Guard with identity:
+    // if another play replaced the controller while we were awaiting, it
+    // belongs to the new item and must survive.
+    if (identical(_videoController, videoBefore)) {
+      await videoBefore?.dispose();
+      _videoController = null;
+    }
 
     _state = _state.copyWith(
       status: MediaStatus.playing,
@@ -2546,6 +2567,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       duration: savedDuration,
     );
     _isAudioBackgroundActive = true;
+    // The warm source was tied to the stream URL that just started; a later
+    // screen-off must resolve a fresh one instead of reusing a stale URL.
+    _warmAudioSource = null;
+    _warmAudioMediaId = null;
     _syncPlaybackStateToHandler();
     notifyListeners();
   }
@@ -2820,9 +2845,16 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   Future<bool> enterPiP() async {
     if (isInPiP) return true;
     _isPiPEntering = true;
-    final result = await PiPService.enterPiP();
+    final controller = _videoController;
+    final ratio = controller != null &&
+            controller.value.isInitialized &&
+            controller.value.aspectRatio > 0.3
+        ? controller.value.aspectRatio
+        : (16 / 9);
+    final result = await PiPService.enterPiP(aspectRatio: ratio);
     if (!result) {
       _isPiPEntering = false;
+      notifyListeners();
       return false;
     }
     debugPrint('[MediaEngine] PiP enter requested, awaiting system confirmation');
@@ -2843,6 +2875,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (!inPiP) {
       debugPrint('[MediaEngine] PiP never started, lifecycle guard released');
     }
+    notifyListeners();
   }
 
   Future<bool> isPiPAvailable() async {
@@ -2854,6 +2887,9 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _pipConfirmTimer?.cancel();
     _isPiPEntering = false;
     _isInPiP = true;
+    // The detail page listens to this engine and only collapses to the bare
+    // video surface when the flag change is actually published.
+    notifyListeners();
   }
 
   void onPiPExited() {
@@ -2865,6 +2901,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (_videoController != null && _state.isPlaying) {
       _videoController!.play();
     }
+    notifyListeners();
   }
 
   /// Offset added to the audio-player clock while background audio runs on
@@ -2905,9 +2942,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
 
     _durSub = _player.durationStream.listen((dur) {
       if (dur != null) {
-        _state = _state.copyWith(duration: dur);
+        // A relay stream that starts at `?t=` reports the remaining time;
+        // add the logical offset so the total matches the content.
+        final logical = dur + _bgAudioOffset;
+        _state = _state.copyWith(duration: logical);
         if (_audioHandler?.mediaItem.value != null) {
-          _audioHandler?.updateMediaItem(_audioHandler!.mediaItem.value!.copyWith(duration: dur));
+          _audioHandler?.updateMediaItem(_audioHandler!.mediaItem.value!.copyWith(duration: logical));
         }
         _emitSessionSnapshot();
         notifyListeners();
@@ -3204,12 +3244,18 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     await _videoController?.dispose();
     _videoController = null;
     _isAudioBackgroundActive = false;
+    // A warm source belongs to the item that is being replaced. Keeping it
+    // would hand a stale/expired signed URL to the next screen-off.
+    _warmAudioSource = null;
+    _warmAudioMediaId = null;
   }
 
   @override
   Future<void> stop() async {
     _playToken++;
     await _stopCurrent();
+    _warmAudioSource = null;
+    _warmAudioMediaId = null;
     _state = MediaState();
     _syncPlaybackStateToHandler();
     _queue.clear();
@@ -3224,6 +3270,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _disposed = true;
     _completionDebounce?.cancel();
     _pipConfirmTimer?.cancel();
+    _thumbRetryTimer?.cancel();
     _playWatchdog?.cancel();
     _posSub?.cancel();
     _durSub?.cancel();

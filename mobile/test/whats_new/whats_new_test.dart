@@ -84,7 +84,7 @@ void main() {
   group('grouping and sections', () {
     test('groupByVersion sorts newest first', () {
       final groups = WhatsNewCatalog.groupByVersion(WhatsNewCatalog.entries);
-      expect(groups.first.version, '1.1.39');
+      expect(groups.first.version, '1.1.40');
       for (var i = 1; i < groups.length; i++) {
         expect(
           WhatsNewCatalog.compare(
