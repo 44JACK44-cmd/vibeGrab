@@ -89,6 +89,13 @@ android {
             // R8 (minificacion + ofuscacion) ya venia activo por el plugin de
             // Flutter; se declara de forma explicita para dejarlo constancia.
             isMinifyEnabled = true
+            // Reglas propias del proyecto: R8 tiene que conservar lo que se
+            // resuelve por reflexion en tiempo de ejecucion (Room busca su
+            // <BaseDeDatos>_Impl por nombre y WorkManager la instancia asi).
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             // Si hay clave de release configurada se usa; si no, se cae a la clave
             // debug para no romper a quien clone el repo (solo desarrollo).
             signingConfig = if (hasReleaseSigning) {

@@ -27,7 +27,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-player-styles',
       version: '1.1.42',
-      build: 52,
+      build: 53,
       category: WhatsNewCategory.features,
       emoji: '🎨',
       order: 0,
@@ -44,7 +44,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-audio-player',
       version: '1.1.42',
-      build: 52,
+      build: 53,
       category: WhatsNewCategory.fixes,
       emoji: '🎚️',
       order: 1,
@@ -61,7 +61,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-library-duplicates',
       version: '1.1.42',
-      build: 52,
+      build: 53,
       category: WhatsNewCategory.fixes,
       emoji: '🧹',
       order: 2,
@@ -77,7 +77,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-notifications',
       version: '1.1.42',
-      build: 52,
+      build: 53,
       category: WhatsNewCategory.improvements,
       emoji: '🔔',
       order: 3,
@@ -93,7 +93,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-analysis-speed',
       version: '1.1.42',
-      build: 52,
+      build: 53,
       category: WhatsNewCategory.improvements,
       emoji: '⚡',
       order: 4,
@@ -109,7 +109,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-resume',
       version: '1.1.42',
-      build: 52,
+      build: 53,
       category: WhatsNewCategory.stability,
       emoji: '📥',
       order: 5,
@@ -125,7 +125,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-shorts',
       version: '1.1.42',
-      build: 52,
+      build: 53,
       category: WhatsNewCategory.fixes,
       emoji: '🎬',
       order: 6,
@@ -141,7 +141,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-browser-blocker',
       version: '1.1.42',
-      build: 52,
+      build: 53,
       category: WhatsNewCategory.features,
       emoji: '🌐',
       order: 7,
@@ -157,7 +157,7 @@ class WhatsNewCatalog {
     WhatsNewEntry(
       id: 'wn-1142-explorer-parallel',
       version: '1.1.42',
-      build: 52,
+      build: 53,
       category: WhatsNewCategory.improvements,
       emoji: '🚀',
       order: 8,

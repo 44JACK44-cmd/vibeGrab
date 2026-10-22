@@ -156,7 +156,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
 
-      await tester.pumpWidget(_harness(_dialog(version: '1.1.42', build: 51)));
+      await tester.pumpWidget(_harness(_dialog(version: '1.1.42', build: 53)));
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);

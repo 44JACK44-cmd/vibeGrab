@@ -54,16 +54,26 @@ class UpdateService {
 
   /// Flutter builds the per-ABI APKs with `versionCode = abi * 1000 + build`
   /// (armeabi-v7a = 1, arm64-v8a = 2, x86_64 = 3) while the universal APK
-  /// keeps `versionCode = build`. Comparing the raw numbers of the release
-  /// against the installed one would make a phone that installed a split look
-  /// newer than the release itself, and the app would offer an update that
-  /// Android then refuses. Both sides are therefore compared with the same
-  /// rule.
+  /// keeps `versionCode = build`.
   static const Map<String, int> _abiOrder = {
     'armeabi-v7a': 1,
     'arm64-v8a': 2,
     'x86_64': 3,
   };
+
+  /// Build number of the release that produced an installed `versionCode`.
+  ///
+  /// Strips the ABI offset of the per-ABI APKs (`abi * 1000 + build`, abi in
+  /// 1..3, so the value stays below 4000 while the build numbers are in the
+  /// hundreds). The universal APK keeps its build. Without this, a phone with
+  /// an APK por ABI veia la MISMA version como mas nueva y se le ofrecia una
+  /// actualizacion que solo cambiaba el empaquetado.
+  static int tagBuild(int versionCode) {
+    if (versionCode >= 1000 && versionCode < 4000) {
+      return versionCode % 1000;
+    }
+    return versionCode;
+  }
 
   /// Real `versionCode` of an APK of this release.
   static int effectiveBuild(String? assetName, int build) {
@@ -110,11 +120,12 @@ class UpdateService {
     final picked = pickApk(assets, phoneAbi);
     final apkUrl = picked?.url ?? _fallbackApkUrl;
 
-    // La comparacion usa el versionCode REAL del APK elegido: los splits
-    // llevan `abi * 1000 + build` y el universal solo `build`.
-    final effectiveRemoteBuild = effectiveBuild(picked?.name, remoteBuild);
-    if (!_isNewer(remoteVersion, effectiveRemoteBuild, current.version,
-        current.build)) {
+    // Se compara el numero de build del tag, no el versionCode bruto: los
+    // APK por ABI llevan `abi * 1000 + build`, asi que compararlos contra el
+    // tag hacia que la MISMA version pareciese nueva solo por el empaquetado
+    // y la app ofrecia "actualizar" a lo que ya tenia instalado.
+    final installedBuild = tagBuild(current.build);
+    if (!_isNewer(remoteVersion, remoteBuild, current.version, installedBuild)) {
       return null;
     }
 
