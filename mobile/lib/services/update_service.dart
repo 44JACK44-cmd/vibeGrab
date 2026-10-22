@@ -196,6 +196,17 @@ class UpdateService {
       if (total > 0 && received != total) {
         throw Exception('Incomplete download ($received/$total)');
       }
+      // El servidor puede contestar 200 con una pagina de error (proxy,
+      // portal cautivo, redireccion rota). Entregar eso al instalador acaba
+      // en "el paquete no parece valido", asi que se comprueba antes.
+      if (!looksLikeApk(file)) {
+        try {
+          file.deleteSync();
+        } catch (_) {
+          // Si no se puede borrar, el siguiente intento lo sobrescribe.
+        }
+        throw Exception('Downloaded file is not a valid APK');
+      }
       return file.path;
     } finally {
       client.close();
@@ -204,6 +215,42 @@ class UpdateService {
 
   static Future<void> install(String path) =>
       _channel.invokeMethod('installApk', {'path': path});
+
+  /// An APK is a ZIP that starts with `PK\x03\x04` and ends with the central
+  /// directory record (`PK\x05\x06`). Checking both catches a saved error page
+  /// and a cut download (the second one even when the server did not announce
+  /// the length).
+  @visibleForTesting
+  static bool looksLikeApk(File file) {
+    try {
+      final length = file.lengthSync();
+      // Ningun APK real baja de unos cientos de KB.
+      if (length < 400 * 1024) return false;
+      final raf = file.openSync();
+      try {
+        final head = raf.readSync(4);
+        if (head.length < 4 || head[0] != 0x50 || head[1] != 0x4B) {
+          return false;
+        }
+        final tailSize = length < 65536 ? length : 65536;
+        raf.setPositionSync(length - tailSize);
+        final tail = raf.readSync(tailSize);
+        for (var i = 0; i + 3 < tail.length; i++) {
+          if (tail[i] == 0x50 &&
+              tail[i + 1] == 0x4B &&
+              tail[i + 2] == 0x05 &&
+              tail[i + 3] == 0x06) {
+            return true;
+          }
+        }
+        return false;
+      } finally {
+        raf.closeSync();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// True when the user already allowed this app to install packages.
   /// Android 8+ asks for that permission the first time an APK is opened.

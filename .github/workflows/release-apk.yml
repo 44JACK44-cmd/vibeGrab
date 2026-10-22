@@ -131,11 +131,19 @@ jobs:
         run: |
           set -euo pipefail
           cp mobile/build/app/outputs/flutter-apk/app-release.apk VibeGrab.apk
+          count=0
           for f in mobile/build/app/outputs/flutter-apk/app-*-release.apk; do
             [ -e "$f" ] || continue
             abi=$(basename "$f" | sed -E 's/^app-(.*)-release\.apk$/\1/')
             cp "$f" "VibeGrab-$abi.apk"
+            count=$((count+1))
           done
+          # La app elige el APK de su arquitectura: sin ellos se descargarian
+          # 67 MB en cada actualizacion, que es justo lo que se corta.
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No se generaron los APK por ABI (--split-per-abi)"
+            exit 1
+          fi
           ls -la VibeGrab*.apk
           sha256sum VibeGrab*.apk > SHA256SUMS.txt
           cat SHA256SUMS.txt

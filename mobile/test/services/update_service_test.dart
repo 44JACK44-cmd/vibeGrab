@@ -45,7 +45,13 @@ void main() {
   });
 
   test('the download follows the redirect of the release asset', () async {
-    final payload = List<int>.generate(4096, (i) => i % 256);
+    // A payload that passes the APK sanity check: a ZIP header, a body and
+    // the end of central directory record.
+    final payload = <int>[
+      0x50, 0x4B, 0x03, 0x04,
+      ...List<int>.generate(500 * 1024, (i) => i % 256),
+      0x50, 0x4B, 0x05, 0x06,
+    ];
     server.listen((request) async {
       if (request.uri.path == '/redirect') {
         // This is what GitHub answers for a release asset.
@@ -167,6 +173,60 @@ void main() {
       expect(UpdateService.effectiveBuild('vibegrab-arm64-v8a.apk', 51), 2051);
       expect(UpdateService.effectiveBuild('vibegrab-x86_64.apk', 51), 3051);
       expect(UpdateService.effectiveBuild(null, 51), 51);
+    });
+  });
+
+  group('APK validation', () {
+    late Directory dir;
+
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('vibegrab_apk_check');
+    });
+
+    tearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+
+    File write(String name, List<int> bytes) {
+      final f = File('${dir.path}/$name');
+      f.writeAsBytesSync(bytes);
+      return f;
+    }
+
+    test('a real APK is accepted', () {
+      final bytes = <int>[
+        0x50, 0x4B, 0x03, 0x04,
+        ...List.filled(500 * 1024, 0),
+        0x50, 0x4B, 0x05, 0x06,
+      ];
+      expect(UpdateService.looksLikeApk(write('ok.apk', bytes)), isTrue);
+    });
+
+    test('a saved error page is rejected', () {
+      const html = '<html><body>404 Not Found</body></html>';
+      final bytes = List<int>.filled(400 * 1024, 0x20);
+      final page = html.codeUnits;
+      for (var i = 0; i < page.length; i++) {
+        bytes[i] = page[i];
+      }
+      expect(UpdateService.looksLikeApk(write('error.apk', bytes)), isFalse);
+    });
+
+    test('a cut download is rejected even with a valid start', () {
+      final bytes = <int>[
+        0x50, 0x4B, 0x03, 0x04,
+        ...List.filled(500 * 1024, 0),
+      ];
+      expect(UpdateService.looksLikeApk(write('cut.apk', bytes)), isFalse);
+    });
+
+    test('a tiny file is rejected', () {
+      expect(
+        UpdateService.looksLikeApk(
+          write('tiny.apk', <int>[0x50, 0x4B, 0x03, 0x04, 0, 0]),
+        ),
+        isFalse,
+      );
     });
   });
 }
