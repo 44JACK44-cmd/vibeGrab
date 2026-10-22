@@ -45,6 +45,29 @@ de ningun portatil concreto: lo hace GitHub Actions.
   real del APK elegido y no el número del tag. `SHA256SUMS.txt` acompaña a los
   APK para poder comprobar la descarga.
 
+## 1b. El APK de release se prueba SIEMPRE antes de publicarlo
+
+El release está minificado con R8. Una clase que solo se usa por reflexión
+(Room, Gson, serializadores, SDKs) puede desaparecer y el fallo ocurre **antes
+de que Flutter arranque**: la app se abre y se cierra sin dejar nada en Dart.
+Por eso:
+
+- Toda librería nueva que resuelva clases por nombre necesita sus reglas en
+  `mobile/android/app/proguard-rules.pro` (Room: clases generadas `*_Impl`,
+  constructor, `@Entity`, `@Dao`).
+- Antes de etiquetar, instala el **APK release** en un emulador y comprueba que
+  arranca y se queda abierto:
+
+  ```
+  adb install -r build/app/outputs/flutter-apk/app-release.apk
+  adb logcat -c
+  adb shell am start -W -n com.example.vibegrab/.MainActivity
+  adb shell pidof com.example.vibegrab     # debe seguir vivo
+  adb logcat -d -b crash                   # debe estar vacío
+  ```
+
+  Un `flutter analyze` o un `gradle` en verde no detectan este tipo de fallo.
+
 ## 2. Anadir las novedades
 
 En `mobile/lib/features/whats_new/data/whats_new_catalog.dart`, copia el bloque
