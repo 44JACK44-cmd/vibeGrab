@@ -166,23 +166,13 @@ void main() {
       );
     });
 
-    test('the real versionCode of each APK is known', () {
-      // Flutter builds the per-ABI APKs as abi * 1000 + build.
-      expect(UpdateService.effectiveBuild('vibegrab.apk', 52), 52);
-      expect(UpdateService.effectiveBuild('vibegrab-armeabi-v7a.apk', 52), 1052);
-      expect(UpdateService.effectiveBuild('vibegrab-arm64-v8a.apk', 52), 2052);
-      expect(UpdateService.effectiveBuild('vibegrab-x86_64.apk', 52), 3052);
-      expect(UpdateService.effectiveBuild(null, 52), 52);
-    });
-
     test('an installed APK por ABI is compared by the release build', () {
-      // 2052 is build 51... 52 of the arm64 split, not "newer than 52".
-      expect(UpdateService.tagBuild(52), 52);
-      expect(UpdateService.tagBuild(1052), 52);
-      expect(UpdateService.tagBuild(2052), 52);
-      expect(UpdateService.tagBuild(3052), 52);
-      // Un versionCode grande que no sea de un split no se toca.
-      expect(UpdateService.tagBuild(5000), 5000);
+      // versionCode real de la release 53: universal = build, splits =
+      // abi * 1000 + build. x86_64 usa el indice 4, no el 3.
+      expect(UpdateService.tagBuild(53), 53);
+      expect(UpdateService.tagBuild(1053), 53);
+      expect(UpdateService.tagBuild(2053), 53);
+      expect(UpdateService.tagBuild(4053), 53);
     });
   });
 

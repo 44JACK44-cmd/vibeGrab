@@ -52,37 +52,20 @@ class UpdateService {
     return remoteBuild > localBuild;
   }
 
-  /// Flutter builds the per-ABI APKs with `versionCode = abi * 1000 + build`
-  /// (armeabi-v7a = 1, arm64-v8a = 2, x86_64 = 3) while the universal APK
-  /// keeps `versionCode = build`.
-  static const Map<String, int> _abiOrder = {
-    'armeabi-v7a': 1,
-    'arm64-v8a': 2,
-    'x86_64': 3,
-  };
-
   /// Build number of the release that produced an installed `versionCode`.
   ///
-  /// Strips the ABI offset of the per-ABI APKs (`abi * 1000 + build`, abi in
-  /// 1..3, so the value stays below 4000 while the build numbers are in the
-  /// hundreds). The universal APK keeps its build. Without this, a phone with
-  /// an APK por ABI veia la MISMA version como mas nueva y se le ofrecia una
-  /// actualizacion que solo cambiaba el empaquetado.
+  /// Flutter builds the per-ABI APKs with `versionCode = abi * 1000 + build`
+  /// (observed: armeabi-v7a 1053, arm64-v8a 2053, x86_64 4053) while the
+  /// universal APK keeps `versionCode = build`. Quitando los millares se
+  /// obtiene el build del tag sin depender de la tabla de ABIs, que cambia
+  /// segun la version de Flutter. Asume builds por debajo de 1000.
+  ///
+  /// Sin esto, un movil con un APK por ABI veia la MISMA version como mas
+  /// nueva (2053 > 53) y se le ofrecia una actualizacion que solo cambiaba el
+  /// empaquetado.
   static int tagBuild(int versionCode) {
-    if (versionCode >= 1000 && versionCode < 4000) {
-      return versionCode % 1000;
-    }
+    if (versionCode >= 1000) return versionCode % 1000;
     return versionCode;
-  }
-
-  /// Real `versionCode` of an APK of this release.
-  static int effectiveBuild(String? assetName, int build) {
-    if (assetName == null) return build;
-    final abi = RegExp(r'^vibegrab-(.+)\.apk$')
-        .firstMatch(assetName.toLowerCase())
-        ?.group(1);
-    final index = abi == null ? null : _abiOrder[abi];
-    return index == null ? build : index * 1000 + build;
   }
 
   static Future<UpdateInfo?> checkForUpdate() async {
