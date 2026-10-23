@@ -23,6 +23,73 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.43
+    WhatsNewEntry(
+      id: 'wn-1143-install',
+      version: '1.1.43',
+      build: 55,
+      category: WhatsNewCategory.fixes,
+      emoji: '🔄',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'La actualización ya se instala',
+        en: 'The update installs now',
+      ),
+      description: LocalizedText(
+        es: 'El botón «Actualizar ahora» abría una pantalla de ajustes que no existe en todos los móviles y la instalación no llegaba a empezar. Ahora abre la pantalla correcta y, al volver con el permiso concedido, continúa con el archivo ya descargado sin volver a bajarlo.',
+        en: 'The "Update now" button opened a settings screen that does not exist on every phone, so the installation never started. It now opens the right screen and, when you come back with the permission granted, it continues with the file already downloaded instead of downloading it again.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1143-playback',
+      version: '1.1.43',
+      build: 55,
+      category: WhatsNewCategory.features,
+      emoji: '▶️',
+      order: 1,
+      featured: true,
+      title: LocalizedText(
+        es: 'Reproducción sin depender del servidor',
+        en: 'Playback without depending on the server',
+      ),
+      description: LocalizedText(
+        es: 'Cuando el servidor no puede entregar el enlace del vídeo, la app usa el manifiesto del propio teléfono: el primer intento reproduce en lugar de pedir reintentar.',
+        en: 'When the server cannot hand out the video link, the app uses the phone\'s own manifest: the first attempt plays instead of asking for a retry.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1143-library',
+      version: '1.1.43',
+      build: 55,
+      category: WhatsNewCategory.improvements,
+      emoji: '📚',
+      order: 2,
+      title: LocalizedText(
+        es: 'La biblioteca abre en Android 11 y 12',
+        en: 'The library opens on Android 11 and 12',
+      ),
+      description: LocalizedText(
+        es: 'Se pide el permiso que corresponde a cada versión de Android, así que la lista de archivos carga de verdad en versiones anteriores a Android 13.',
+        en: 'It asks for the permission each Android version actually has, so the file list really loads on versions before Android 13.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1143-thumbs',
+      version: '1.1.43',
+      build: 55,
+      category: WhatsNewCategory.improvements,
+      emoji: '🖼️',
+      order: 3,
+      title: LocalizedText(
+        es: 'Miniaturas que no se quedan en gris',
+        en: 'Thumbnails no longer stay grey',
+      ),
+      description: LocalizedText(
+        es: 'Si la miniatura firmada no existe, se usa la pública del mismo vídeo.',
+        en: 'If the signed thumbnail does not exist, the public one of the same video is used.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.42
     WhatsNewEntry(
       id: 'wn-1142-player-styles',

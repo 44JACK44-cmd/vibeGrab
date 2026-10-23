@@ -84,7 +84,15 @@ void main() {
   group('grouping and sections', () {
     test('groupByVersion sorts newest first', () {
       final groups = WhatsNewCatalog.groupByVersion(WhatsNewCatalog.entries);
-      expect(groups.first.version, '1.1.42');
+      // Do not hardcode a release name here: the catalogue grows every
+      // version and this assertion is about the ordering, not about which
+      // release happens to be the newest one today.
+      final newest = WhatsNewCatalog.entries.reduce((a, b) =>
+          WhatsNewCatalog.compare(a.version, a.build, b.version, b.build) >= 0
+              ? a
+              : b);
+      expect(groups.first.version, newest.version);
+      expect(groups.first.build, newest.build);
       for (var i = 1; i < groups.length; i++) {
         expect(
           WhatsNewCatalog.compare(

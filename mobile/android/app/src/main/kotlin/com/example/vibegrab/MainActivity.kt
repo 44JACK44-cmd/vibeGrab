@@ -547,6 +547,19 @@ class MainActivity : AudioServiceActivity() {
         }
     }
 
+    /// Starts a settings screen, returning false when the device has no
+    /// activity for it (some OEM ROMs rename or drop screens).
+    private fun openSettingsScreen(intent: Intent): Boolean {
+        return try {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            true
+        } catch (e: Exception) {
+            android.util.Log.w("VibeGrab", "settings screen not available: ${intent.action}")
+            false
+        }
+    }
+
     private fun handleInstallApk(call: MethodCall, result: MethodChannel.Result) {
         val path = call.argument<String>("path")
         val file = if (path != null) File(path) else null
@@ -560,33 +573,37 @@ class MainActivity : AudioServiceActivity() {
             // a security error that the app never sees: the update simply
             // "does nothing". Open the permission screen instead and tell
             // the app what happened.
-            try {
-                // "Install unknown apps" per-app screen. The action string is
-                // used because the per-app constant is not available in every
-                // compileSdk; the value is stable since API 26.
-                val settings = Intent(
-                    "android.settings.MANAGE_APP_INSTALL_PACKAGE",
+            // "Install unknown apps" per-app screen. The previous string
+            // (android.settings.MANAGE_APP_INSTALL_PACKAGE) does not exist in
+            // Android: startActivity threw ActivityNotFoundException on every
+            // device, the update never started and the dialog showed that raw
+            // exception. ACTION_MANAGE_UNKNOWN_APP_SOURCES is the real action
+            // since API 26 and needs the package URI.
+            val opened = openSettingsScreen(
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                     Uri.parse("package:$packageName")
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(settings)
+                )
+            ) || openSettingsScreen(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")
+                )
+            )
+            if (opened) {
+                // The app keeps the downloaded APK and retries the install
+                // when it comes back with the permission granted.
                 result.error(
                     "INSTALL_PERMISSION_REQUIRED",
                     "Permission to install packages is required",
                     null
                 )
-            } catch (e: Exception) {
-                try {
-                    startActivity(
-                        Intent(
-                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                            Uri.parse("package:$packageName")
-                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    )
-                } catch (_: Exception) {
-                    // Nothing else to try: the app details screen is the last
-                    // resort.
-                }
-                result.error("INSTALL_ERROR", e.message, null)
+            } else {
+                result.error(
+                    "INSTALL_ERROR",
+                    "No settings screen accepts the install permission",
+                    null
+                )
             }
         } else {
             try {

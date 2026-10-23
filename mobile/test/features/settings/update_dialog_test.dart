@@ -220,4 +220,79 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'an install blocked by the permission keeps the APK and retries on resume',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      var downloads = 0;
+      var installs = 0;
+      var allowed = false;
+      UpdateService.debugDownloadOverride = (info, onProgress) async {
+        downloads++;
+        onProgress(1);
+        return 'fake.apk';
+      };
+      UpdateService.debugInstallOverride = (path) async {
+        installs++;
+        if (!allowed) {
+          throw PlatformException(
+            code: 'INSTALL_PERMISSION_REQUIRED',
+            message: 'Permission to install packages is required',
+          );
+        }
+        // The retry reached the installer with the file it already had.
+        throw PlatformException(code: 'INSTALL_ERROR', message: 'closed');
+      };
+      addTearDown(() {
+        UpdateService.debugDownloadOverride = null;
+        UpdateService.debugInstallOverride = null;
+      });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('com.example.vibegrab/app'),
+        (call) async => call.method == 'canInstallPackages' ? allowed : null,
+      );
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+                const MethodChannel('com.example.vibegrab/app'), null);
+      });
+
+      await tester.pumpWidget(_harness(_dialog()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Actualizar ahora'));
+      await tester.pumpAndSettle();
+
+      // The user sees what to do, not the raw ActivityNotFoundException.
+      expect(
+        find.text(
+            'Permite que VibeGrab instale actualizaciones y vuelve a intentarlo.'),
+        findsOneWidget,
+      );
+      expect(downloads, 1);
+      expect(installs, 1);
+
+      // Coming back without granting must not open the settings again.
+      // ignore: invalid_use_of_protected_member
+      tester.binding
+          .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(installs, 1);
+
+      // Granting it and coming back installs the APK already downloaded.
+      allowed = true;
+      // ignore: invalid_use_of_protected_member
+      tester.binding
+          .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(installs, 2);
+      expect(downloads, 1);
+    },
+  );
 }

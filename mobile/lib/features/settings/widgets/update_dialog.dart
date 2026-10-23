@@ -101,7 +101,8 @@ class UpdateAvailableDialog extends StatefulWidget {
   State<UpdateAvailableDialog> createState() => _UpdateAvailableDialogState();
 }
 
-class _UpdateAvailableDialogState extends State<UpdateAvailableDialog> {
+class _UpdateAvailableDialogState extends State<UpdateAvailableDialog>
+    with WidgetsBindingObserver {
   /// Download progress (null = not downloading).
   double? _progress;
 
@@ -111,38 +112,115 @@ class _UpdateAvailableDialogState extends State<UpdateAvailableDialog> {
   /// The APK is downloaded and the installer is being opened.
   bool _installing = false;
 
+  /// Path of the APK already downloaded. Kept across the "allow installing
+  /// apps" detour so coming back does not download ~26 MB again.
+  String? _apkPath;
+
+  /// The last failure was the install permission: retry on resume.
+  bool _permissionError = false;
+
   bool get _busy => _progress != null || _installing;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    if (!_permissionError || _apkPath == null || _busy) return;
+    _retryInstallIfAllowed();
+  }
+
+  /// The user went to the system screen and came back. Install only when the
+  /// permission is actually granted: otherwise opening the settings screen
+  /// again on every resume would trap the user in a loop.
+  Future<void> _retryInstallIfAllowed() async {
+    final allowed = await UpdateService.canInstallPackages();
+    if (!mounted || !allowed) return;
+    await _install();
+  }
+
+  Future<void> _start() async {
+    if (_apkPath != null) {
+      await _install();
+      return;
+    }
+    await _download();
+  }
 
   Future<void> _download() async {
     setState(() {
       _progress = 0.0;
       _error = null;
       _installing = false;
+      _permissionError = false;
     });
     try {
       final path = await UpdateService.download(widget.info, (p) {
         if (mounted) setState(() => _progress = p);
       });
       if (!mounted) return;
-      setState(() {
-        _progress = null;
-        _installing = true;
-      });
-      await UpdateService.install(path);
-      if (mounted) Navigator.of(context).pop();
+      _apkPath = path;
+      await _install();
     } catch (e) {
-      debugPrint('[Update] download/install failed: $e');
+      debugPrint('[Update] download failed: $e');
       if (!mounted) return;
       final loc = AppLocalizations.of(context);
-      final message = e is PlatformException
-          ? (e.code == 'INSTALL_PERMISSION_REQUIRED'
-              ? loc.updatePermissionRequired
-              : (e.message ?? loc.updateFailed))
-          : loc.updateFailed;
       setState(() {
         _progress = null;
         _installing = false;
-        _error = message;
+        _error = loc.updateFailed;
+        _permissionError = false;
+      });
+    }
+  }
+
+  Future<void> _install() async {
+    final path = _apkPath;
+    if (path == null) {
+      await _download();
+      return;
+    }
+    setState(() {
+      _error = null;
+      _progress = null;
+      _installing = true;
+      _permissionError = false;
+    });
+    try {
+      await UpdateService.install(path);
+      if (mounted) Navigator.of(context).pop();
+    } on PlatformException catch (e) {
+      debugPrint('[Update] install failed: ${e.code} ${e.message}');
+      if (!mounted) return;
+      final loc = AppLocalizations.of(context);
+      final needsPermission = e.code == 'INSTALL_PERMISSION_REQUIRED';
+      setState(() {
+        _installing = false;
+        _permissionError = needsPermission;
+        // A raw ActivityNotFoundException is not something a user can act
+        // on; the localized line tells them what to do.
+        _error = needsPermission ? loc.updatePermissionRequired : loc.updateFailed;
+        if (!needsPermission) _apkPath = null;
+      });
+    } catch (e) {
+      debugPrint('[Update] install failed: $e');
+      if (!mounted) return;
+      final loc = AppLocalizations.of(context);
+      setState(() {
+        _installing = false;
+        _permissionError = false;
+        _apkPath = null;
+        _error = loc.updateFailed;
       });
     }
   }
@@ -282,7 +360,7 @@ class _UpdateAvailableDialogState extends State<UpdateAvailableDialog> {
                     child: Text(loc.updateLater),
                   ),
                   FilledButton(
-                    onPressed: _busy ? null : _download,
+                    onPressed: _busy ? null : _start,
                     child: Text(_busy ? loc.updateWorking : loc.updateNow),
                   ),
                 ],

@@ -130,6 +130,10 @@ class UpdateService {
     UpdateInfo info,
     void Function(double progress) onProgress,
   ) async {
+    // Test seam: the widget tests need to exercise the dialog without a real
+    // network download. Production never sets it.
+    final override = debugDownloadOverride;
+    if (override != null) return override(info, onProgress);
     final dir = await getApplicationSupportDirectory();
     final updateDir = Directory('${dir.path}/update');
     if (!updateDir.existsSync()) {
@@ -207,8 +211,21 @@ class UpdateService {
     }
   }
 
-  static Future<void> install(String path) =>
-      _channel.invokeMethod('installApk', {'path': path});
+  static Future<void> install(String path) {
+    final override = debugInstallOverride;
+    if (override != null) return override(path);
+    return _channel.invokeMethod('installApk', {'path': path});
+  }
+
+  /// Test seams. The dialog tests replace the network download and the
+  /// platform channel so they can drive the permission-retry flow.
+  @visibleForTesting
+  static Future<String> Function(
+      UpdateInfo info, void Function(double progress) onProgress)?
+      debugDownloadOverride;
+
+  @visibleForTesting
+  static Future<void> Function(String path)? debugInstallOverride;
 
   /// An APK is a ZIP that starts with `PK\x03\x04` and ends with the central
   /// directory record (`PK\x05\x06`). Checking both catches a saved error page
