@@ -89,5 +89,56 @@ void main() {
       expect(script.contains('MutationObserver'), isTrue);
       expect(script.contains(BrowserBlockerService.channelName), isTrue);
     });
+
+    test('the report is JSON with a session id and a cumulative count', () {
+      final script = BrowserBlockerService.instance.buildInjectionScript();
+      expect(script.contains('JSON.stringify({ id: SESSION, count: count })'),
+          isTrue);
+    });
+
+    test('the script carries the enabled flag and a real kill switch', () async {
+      final blocker = BrowserBlockerService.instance;
+      await blocker.setEnabled(true);
+      expect(blocker.buildInjectionScript().contains('var ENABLED = true'),
+          isTrue);
+
+      await blocker.setEnabled(false);
+      final disabled = blocker.buildInjectionScript();
+      expect(disabled.contains('var ENABLED = false'), isTrue);
+      expect(disabled.contains('removeStyle'), isTrue);
+      // Leave the shared singleton enabled for the rest of the suite.
+      await blocker.setEnabled(true);
+    });
+  });
+
+  group('blocked counter', () {
+    test('cumulative reports for one page add only the delta', () {
+      final blocker = BrowserBlockerService.instance;
+      blocker.resetCount();
+
+      blocker.reportBlocked(1, session: 'page-1');
+      blocker.reportBlocked(1, session: 'page-1');
+      blocker.reportBlocked(4, session: 'page-1');
+      expect(blocker.blockedCount, 4);
+
+      // A new document restarts the counter: its first report is all new.
+      blocker.reportBlocked(2, session: 'page-2');
+      expect(blocker.blockedCount, 6);
+
+      blocker.resetCount();
+      expect(blocker.blockedCount, 0);
+    });
+
+    test('a restarted counter inside the same session is a delta from zero',
+        () {
+      final blocker = BrowserBlockerService.instance;
+      blocker.resetCount();
+
+      blocker.reportBlocked(5, session: 'page');
+      // update() resets the script's count; the next report is 2 new blocks.
+      blocker.reportBlocked(2, session: 'page');
+      expect(blocker.blockedCount, 7);
+      blocker.resetCount();
+    });
   });
 }

@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:convert';
 import '../../../data/models/library_file.dart';
 import '../../../services/local_media_service.dart';
@@ -42,6 +44,12 @@ class LibraryController extends ChangeNotifier {
   LibraryStatus get status => _status;
 
   bool get loading => _status == LibraryStatus.loading;
+
+  /// A refresh is running while the list is already on screen. The view shows
+  /// this as a small progress indicator and disables the refresh button, so a
+  /// second tap cannot start a second scan (the old one just looked dead).
+  bool _refreshing = false;
+  bool get refreshing => _refreshing;
 
   String? _errorKey;
   String? get errorKey => _errorKey;
@@ -205,141 +213,215 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> loadLibrary() async {
-    _status = LibraryStatus.loading;
+    if (_refreshing) return; // a second tap must not stack a second scan
+    _refreshing = true;
     _errorKey = null;
+    // Keep the current cards on screen while refreshing: replacing them with
+    // a full-screen spinner on every refresh was why the button looked dead.
+    if (_allFiles.isEmpty) _status = LibraryStatus.loading;
     notifyListeners();
 
     try {
       _permissionsGranted = await LocalMediaService.hasPermissions();
       if (!_permissionsGranted) {
         _status = LibraryStatus.permissionRequired;
-        notifyListeners();
         return;
       }
 
-      final deviceMedia = await LocalMediaService.getDeviceMedia();
-      final downloadedFiles = LocalMediaService.getDownloadedFiles();
+      // A finished download is not necessarily indexed yet: the downloads
+      // screen asks MediaStore to scan it, but files written before this
+      // version (or copied into the folder) never were.
+      await _scanRecentDownloads();
 
-      _allFiles = mergeUnique(deviceMedia, downloadedFiles)
+      final deviceMedia = await LocalMediaService.getDeviceMedia();
+      final downloadedFiles = await LocalMediaService.getDownloadedFiles();
+      final existing = await _dropMissing(deviceMedia);
+
+      _allFiles = mergeUnique(existing, downloadedFiles)
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-      _loadThumbnailsFromMeta();
-      _migrateExistingThumbnails();
-
+      await _loadThumbnailsFromMeta();
       _status = _allFiles.isEmpty ? LibraryStatus.empty : LibraryStatus.loaded;
+      // Remote thumbnails are cosmetic: fetching them one by one before
+      // notifying kept the refresh "loading" for the whole batch.
+      unawaited(_migrateExistingThumbnails());
     } catch (e) {
+      debugPrint('[LIBRARY] load failed: ${e.runtimeType} $e');
       _errorKey = 'errorFailedLoadLibrary';
       _status = LibraryStatus.error;
     } finally {
+      _refreshing = false;
       notifyListeners();
     }
   }
 
-  void _loadThumbnailsFromMeta() {
-    final storage = StorageService.instance;
-    for (var i = 0; i < _allFiles.length; i++) {
-      final file = _allFiles[i];
+  static const _appChannel = MethodChannel('com.example.vibegrab/app');
 
-      final baseName = file.filename.contains('.')
-          ? file.filename.substring(0, file.filename.lastIndexOf('.'))
-          : file.filename;
-
-      final foundLocalThumb = storage.getThumbFile(baseName);
-
-      if (file.thumbnail != null && file.thumbnail!.isNotEmpty && file.thumbnailPath != null) {
-        if (foundLocalThumb != null && foundLocalThumb.existsSync()) continue;
-      }
-
-      final metaPath = '$baseName.meta.json';
-      final metaFile = storage.getFile(metaPath);
-
-      String? thumbUrl;
-      String? thumbPath;
-      String? title;
-      String? source;
-
-      if (foundLocalThumb != null && foundLocalThumb.existsSync()) {
-        thumbPath = foundLocalThumb.path;
-      }
-
-      if (metaFile != null && metaFile.existsSync()) {
-        try {
-          final content = metaFile.readAsStringSync();
-          final meta = jsonDecode(content) as Map<String, dynamic>;
-          thumbUrl = meta['thumbnail'] as String?;
-          title = meta['title'] as String?;
-          source = meta['source'] as String?;
-        } catch (_) {}
-      }
-
-      if (thumbPath != null || (thumbUrl != null && thumbUrl.isNotEmpty)) {
-        _allFiles[i] = LibraryFile(
-          filename: file.filename,
-          title: title ?? file.title,
-          filePath: file.filePath,
-          fileSize: file.fileSize,
-          fileSizeFormatted: file.fileSizeFormatted,
-          fileType: file.fileType,
-          extension: file.extension,
-          createdAt: file.createdAt,
-          thumbnail: thumbPath == null ? thumbUrl : file.thumbnail,
-          thumbnailPath: thumbPath,
-          source: source ?? file.source,
-          sourceType: file.sourceType,
-          contentUri: file.contentUri,
-          album: file.album,
-          artist: file.artist,
-          durationMs: file.durationMs,
-        );
-      }
+  /// Asks MediaStore to index the newest files of the download folder.
+  ///
+  /// Bounded to the 50 most recent: a full rescan of a big folder is exactly
+  /// the kind of work that made "refresh" feel broken.
+  Future<void> _scanRecentDownloads() async {
+    try {
+      final files = await StorageService.instance.listMediaFilesAsync();
+      if (files.isEmpty) return;
+      final paths = files.take(50).map((f) => f.path).toList();
+      await _appChannel
+          .invokeMethod('scanMedia', {'paths': paths})
+          .timeout(const Duration(seconds: 10));
+    } catch (e) {
+      // Not fatal: the folder listing right below still finds the files.
+      debugPrint('[LIBRARY] scanMedia failed: ${e.runtimeType}');
     }
   }
 
-  Future<void> _migrateExistingThumbnails() async {
+  /// Drops MediaStore rows whose file no longer exists. A stale index would
+  /// keep showing cards that cannot be played or deleted.
+  Future<List<LibraryFile>> _dropMissing(List<LibraryFile> entries) async {
+    final result = <LibraryFile>[];
+    for (final file in entries) {
+      if (file.filePath.isEmpty) {
+        result.add(file);
+        continue;
+      }
+      try {
+        if (await File(file.filePath).exists()) result.add(file);
+      } catch (_) {
+        result.add(file);
+      }
+    }
+    return result;
+  }
+
+  static LibraryFile _copyWith(
+    LibraryFile f, {
+    String? title,
+    String? thumbnail,
+    String? thumbnailPath,
+    String? source,
+  }) =>
+      LibraryFile(
+        filename: f.filename,
+        title: title ?? f.title,
+        filePath: f.filePath,
+        fileSize: f.fileSize,
+        fileSizeFormatted: f.fileSizeFormatted,
+        fileType: f.fileType,
+        extension: f.extension,
+        createdAt: f.createdAt,
+        thumbnail: thumbnail ?? f.thumbnail,
+        thumbnailPath: thumbnailPath ?? f.thumbnailPath,
+        source: source ?? f.source,
+        sourceType: f.sourceType,
+        contentUri: f.contentUri,
+        album: f.album,
+        artist: f.artist,
+        durationMs: f.durationMs,
+      );
+
+  Future<void> _loadThumbnailsFromMeta() async {
     final storage = StorageService.instance;
-    for (final file in _allFiles) {
-      if (file.thumbnailPath != null && file.thumbnailPath!.isNotEmpty) continue;
-      if (file.thumbnail == null || file.thumbnail!.isEmpty) continue;
+    for (var i = 0; i < _allFiles.length; i++) {
+      final file = _allFiles[i];
+      if (file.thumbnailPath != null && file.thumbnailPath!.isNotEmpty) {
+        continue;
+      }
 
       final baseName = file.filename.contains('.')
           ? file.filename.substring(0, file.filename.lastIndexOf('.'))
           : file.filename;
-      final existingJpg = storage.getThumbFile(baseName);
-      if (existingJpg != null && existingJpg.existsSync()) continue;
 
-      final url = file.thumbnail!;
-      try {
-        final request = await HttpClient().getUrl(Uri.parse(url));
-        request.headers.set('User-Agent', 'Mozilla/5.0');
-        final response = await request.close().timeout(const Duration(seconds: 10));
-        if (response.statusCode == 200) {
-          final bytes = await response.fold<List<int>>([], (prev, chunk) => prev..addAll(chunk));
-          final jpgPath = '${storage.thumbDir.path}${Platform.pathSeparator}$baseName.jpg';
-          await File(jpgPath).writeAsBytes(bytes);
-          final idx = _allFiles.indexWhere((f) => f.filename == file.filename);
-          if (idx != -1) {
-            _allFiles[idx] = LibraryFile(
-              filename: file.filename,
-              title: file.title,
-              filePath: file.filePath,
-              fileSize: file.fileSize,
-              fileSizeFormatted: file.fileSizeFormatted,
-              fileType: file.fileType,
-              extension: file.extension,
-              createdAt: file.createdAt,
-              thumbnail: file.thumbnail,
-              thumbnailPath: jpgPath,
-              source: file.source,
-              sourceType: file.sourceType,
-              contentUri: file.contentUri,
-              album: file.album,
-              artist: file.artist,
-              durationMs: file.durationMs,
-            );
+      final foundLocalThumb = await storage.getThumbFileAsync(baseName);
+
+      String? thumbUrl = file.thumbnail;
+      String? title;
+      String? source;
+
+      final metaFile = storage.getFile('$baseName.meta.json');
+      if (metaFile != null && await metaFile.exists()) {
+        try {
+          final decoded = jsonDecode(await metaFile.readAsString());
+          if (decoded is Map<String, dynamic>) {
+            thumbUrl = decoded['thumbnail'] as String? ?? thumbUrl;
+            title = decoded['title'] as String?;
+            source = decoded['source'] as String?;
           }
+        } catch (_) {
+          // A corrupt sidecar must not hide the media file itself.
         }
-      } catch (_) {}
+      }
+
+      final hasRemoteThumb = thumbUrl != null && thumbUrl.isNotEmpty;
+      if (foundLocalThumb == null && !hasRemoteThumb &&
+          title == null && source == null) {
+        continue;
+      }
+
+      _allFiles[i] = _copyWith(
+        file,
+        title: title ?? file.title,
+        thumbnail: foundLocalThumb == null ? thumbUrl : file.thumbnail,
+        thumbnailPath: foundLocalThumb?.path,
+        source: source ?? file.source,
+      );
     }
+  }
+
+  bool _thumbMigrationRunning = false;
+
+  Future<void> _migrateExistingThumbnails() async {
+    if (_thumbMigrationRunning) return;
+    _thumbMigrationRunning = true;
+    final client = HttpClient();
+    var changed = false;
+    try {
+      for (final file in List<LibraryFile>.from(_allFiles)) {
+        if (file.thumbnailPath != null && file.thumbnailPath!.isNotEmpty) {
+          continue;
+        }
+        final url = file.thumbnail;
+        if (url == null || url.isEmpty || !url.startsWith('http')) continue;
+
+        final baseName = file.filename.contains('.')
+            ? file.filename.substring(0, file.filename.lastIndexOf('.'))
+            : file.filename;
+        final existingJpg =
+            await StorageService.instance.getThumbFileAsync(baseName);
+        if (existingJpg != null) {
+          _setThumb(file.filename, existingJpg.path);
+          changed = true;
+          continue;
+        }
+
+        try {
+          final request = await client.getUrl(Uri.parse(url));
+          request.headers.set('User-Agent', 'Mozilla/5.0');
+          final response =
+              await request.close().timeout(const Duration(seconds: 10));
+          if (response.statusCode == 200) {
+            final bytes = await response.fold<List<int>>(
+                [], (prev, chunk) => prev..addAll(chunk));
+            final jpgPath = '${StorageService.instance.thumbDir.path}'
+                '${Platform.pathSeparator}$baseName.jpg';
+            await File(jpgPath).writeAsBytes(bytes);
+            _setThumb(file.filename, jpgPath);
+            changed = true;
+          }
+        } catch (e) {
+          debugPrint('[LIBRARY] thumb fetch failed: ${e.runtimeType}');
+        }
+      }
+    } finally {
+      client.close(force: true);
+      _thumbMigrationRunning = false;
+      if (changed) notifyListeners();
+    }
+  }
+
+  void _setThumb(String filename, String path) {
+    final idx = _allFiles.indexWhere((f) => f.filename == filename);
+    if (idx == -1) return;
+    _allFiles[idx] = _copyWith(_allFiles[idx], thumbnailPath: path);
   }
 
   Future<void> deleteFile(String filename) async {
@@ -392,24 +474,73 @@ class LibraryController extends ChangeNotifier {
   Future<bool> deletePermanently(String filename) async {
     try {
       final file = findFile(filename);
-      if (file != null) {
-        final path = file.filePath.isNotEmpty
-            ? file.filePath
-            : file.contentUri ?? '';
-        if (path.isNotEmpty) {
-          StorageService.instance.deleteFile(filename);
+      if (file == null) return false;
+
+      var deleted = false;
+      // MediaStore-owned entries (Android 13+ may not expose a writable
+      // path) must be removed through the platform, not with a path delete
+      // on a file that no longer has one.
+      final uri = file.contentUri;
+      if (uri != null && uri.isNotEmpty) {
+        deleted = await StorageService.instance.deleteMedia(uri);
+        if (!deleted) {
+          _logDeleteFailure(filename, 'platform refused the content URI');
         }
       }
+      if (!deleted) {
+        deleted = StorageService.instance.deleteFile(filename);
+      }
+      if (!deleted && file.filePath.isNotEmpty) {
+        try {
+          final absolute = File(file.filePath);
+          if (await absolute.exists()) {
+            await absolute.delete();
+            deleted = true;
+          }
+        } catch (e) {
+          _logDeleteFailure(filename, e.runtimeType.toString());
+        }
+      }
+      if (!deleted) {
+        // Do NOT remove the card for a file that is still there: the next
+        // refresh would bring it back and the user thinks the delete failed
+        // silently. Report it instead.
+        _errorKey = 'errorFailedDeleteFile';
+        notifyListeners();
+        return false;
+      }
+
+      // Sidecars of a deleted file are garbage; best effort.
+      final baseName = filename.contains('.')
+          ? filename.substring(0, filename.lastIndexOf('.'))
+          : filename;
+      try {
+        final sidecar = StorageService.instance.getFile('$baseName.meta.json');
+        if (sidecar != null && await sidecar.exists()) {
+          await sidecar.delete();
+        }
+        final thumb =
+            await StorageService.instance.getThumbFileAsync(baseName);
+        if (thumb != null) await thumb.delete();
+      } catch (_) {}
+
       await _meta.removeFileData(filename);
       _allFiles.removeWhere((f) => f.filename == filename);
       if (_allFiles.isEmpty) _status = LibraryStatus.empty;
       notifyListeners();
       return true;
     } catch (e) {
+      _logDeleteFailure(filename, e.runtimeType.toString());
       _errorKey = 'errorFailedDeleteFile';
       notifyListeners();
       return false;
     }
+  }
+
+  void _logDeleteFailure(String filename, String cause) {
+    // The filename is the user's own content, not a secret, but keep the log
+    // compact: the reason is what matters.
+    debugPrint('[LIBRARY] permanent delete failed: $cause');
   }
 
   /// Removes one entry from the play history (the file is untouched).

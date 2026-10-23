@@ -93,6 +93,24 @@ class StorageService {
         getFile('$baseName.jpeg');
   }
 
+  /// Thumbnails live next to the media or in the thumb cache: check both
+  /// asynchronously so a large Library does not stall the frame.
+  Future<File?> getThumbFileAsync(String baseName) async {
+    for (final ext in const ['jpg', 'png', 'jpeg']) {
+      final f = File('${thumbDir.path}${Platform.pathSeparator}$baseName.$ext');
+      try {
+        if (await f.exists()) return f;
+      } catch (_) {}
+    }
+    for (final ext in const ['jpg', 'png', 'jpeg']) {
+      final f = File('$downloadPath${Platform.pathSeparator}$baseName.$ext');
+      try {
+        if (await f.exists()) return f;
+      } catch (_) {}
+    }
+    return null;
+  }
+
   Future<void> init() async {
     if (_initialized) return;
     _appDir = await getApplicationDocumentsDirectory();
@@ -162,17 +180,40 @@ class StorageService {
   /// Free bytes on the volume that holds [path], or -1 when the platform
   /// cannot report it. Used to fail a download before writing 300 MB into a
   /// full disk, instead of surfacing a random write error mid-download.
+  ///
+  /// Cached for a few seconds: the queue calls this before every task and the
+  /// answer cannot change meaningfully in that window, while each call is a
+  /// platform-channel round-trip on the UI isolate.
+  static const _availableTtl = Duration(seconds: 5);
+  final Map<String, ({int bytes, DateTime at})> _availableCache = {};
+
   Future<int> availableBytes(String path) async {
+    final cached = _availableCache[path];
+    final now = DateTime.now();
+    if (cached != null && now.difference(cached.at) < _availableTtl) {
+      return cached.bytes;
+    }
     try {
-      final value = await _channel.invokeMethod<int>(
-        'availableBytes',
-        {'path': path},
-      );
-      return value ?? -1;
+      final value = await _channel
+          .invokeMethod<int>('availableBytes', {'path': path})
+          .timeout(const Duration(seconds: 3), onTimeout: () => -1);
+      final bytes = value ?? -1;
+      if (bytes >= 0) {
+        _availableCache[path] = (bytes: bytes, at: now);
+      }
+      return bytes;
     } catch (_) {
       return -1;
     }
   }
+
+  /// Positive write-test results are cached per directory: recomputing them
+  /// means a real write+read+delete in front of every download, and a folder
+  /// that just accepted a file does not become read-only a second later.
+  /// Failures are never cached (the cause may be transient or fixable).
+  String? _writablePath;
+  DateTime? _writableAt;
+  static const _writableTtl = Duration(minutes: 2);
 
   /// Deletes a MediaStore item owned by another app. Returns false when the
   /// platform refused (the caller must not remove it from the library).
@@ -188,24 +229,52 @@ class StorageService {
     }
   }
 
-  Future<bool> testDirectoryWritable(String dirPath) async {
+  Future<bool> testDirectoryWritable(
+    String dirPath, {
+    bool force = false,
+  }) async {
+    if (!force &&
+        _writablePath == dirPath &&
+        _writableAt != null &&
+        DateTime.now().difference(_writableAt!) < _writableTtl) {
+      return true;
+    }
     _log('Testing directory writable: $dirPath');
     try {
       final dir = Directory(dirPath);
       if (!await dir.exists()) {
         _log('Directory does not exist: $dirPath');
+        _invalidateWritable(dirPath);
         return false;
       }
 
       final testFile = File('$dirPath/.vibegrab_write_test');
-      await testFile.writeAsString('test');
-      final content = await testFile.readAsString();
-      await testFile.delete();
-      _log('Write test PASSED: $dirPath (wrote and deleted test file)');
-      return content == 'test';
+      await testFile
+          .writeAsString('test')
+          .timeout(const Duration(seconds: 5));
+      final content =
+          await testFile.readAsString().timeout(const Duration(seconds: 5));
+      await testFile.delete().timeout(const Duration(seconds: 5));
+      final ok = content == 'test';
+      if (ok) {
+        _writablePath = dirPath;
+        _writableAt = DateTime.now();
+      } else {
+        _invalidateWritable(dirPath);
+      }
+      _log('Write test ${ok ? 'PASSED' : 'FAILED'}: $dirPath');
+      return ok;
     } catch (e) {
       _log('Write test FAILED: $dirPath — $e');
+      _invalidateWritable(dirPath);
       return false;
+    }
+  }
+
+  void _invalidateWritable(String dirPath) {
+    if (_writablePath == dirPath) {
+      _writablePath = null;
+      _writableAt = null;
     }
   }
 
@@ -370,6 +439,38 @@ class StorageService {
         .where((f) => _isMediaFile(f.path))
         .toList()
       ..sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+  }
+
+  /// Same list as [listMediaFiles], off the UI thread.
+  ///
+  /// The synchronous version lists and stats every file on the main isolate;
+  /// with a few hundred downloads that is a visible freeze in the Library.
+  Future<List<File>> listMediaFilesAsync() async {
+    final dir = _downloadDir;
+    if (dir == null) return const [];
+    try {
+      if (!await dir.exists()) return const [];
+    } catch (_) {
+      return const [];
+    }
+    final files = <File>[];
+    try {
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is File && _isMediaFile(entity.path)) files.add(entity);
+      }
+    } catch (_) {
+      return const [];
+    }
+    final modified = <File, DateTime>{};
+    for (final file in files) {
+      try {
+        modified[file] = (await file.stat()).modified;
+      } catch (_) {
+        modified[file] = DateTime.fromMillisecondsSinceEpoch(0);
+      }
+    }
+    files.sort((a, b) => modified[b]!.compareTo(modified[a]!));
+    return files;
   }
 
   bool deleteFile(String filename) {

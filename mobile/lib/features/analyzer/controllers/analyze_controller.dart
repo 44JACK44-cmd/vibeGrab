@@ -4,6 +4,7 @@ import '../../../data/models/media_info.dart';
 import '../../../data/models/format_option.dart';
 import '../../../data/models/analyze_response.dart';
 import '../../../services/local_extraction_service.dart';
+import '../../../services/analysis_failure.dart';
 import '../../../services/api_service.dart';
 import '../../../services/connectivity_service.dart';
 
@@ -44,7 +45,11 @@ class AnalyzeController extends ChangeNotifier {
 
   /// URL that produced [_result]. Re-analysing the same URL keeps the old
   /// result visible while loading, and a failed refresh must not erase it.
+  /// It is also the URL the download buttons must use: the text field can be
+  /// edited after the analysis, and downloading whatever is in it would fetch
+  /// a different video than the formats shown.
   String? _resultKey;
+  String? get analyzedUrl => _resultKey;
 
   /// Repeated taps (and the format sheet reopening) must not start another
   /// device+backend race for a URL that is already being analysed.
@@ -64,8 +69,23 @@ class AnalyzeController extends ChangeNotifier {
   bool get backendConfigured => true;
 
   Future<void> analyze(String url, {String? emptyUrlMessage}) async {
-    if (url.trim().isEmpty) {
+    final raw = url.trim();
+    if (raw.isEmpty) {
       _error = emptyUrlMessage ?? 'enterUrl';
+      notifyListeners();
+      return;
+    }
+
+    final normalized = LocalExtractionService.sanitizeUrl(raw);
+    // Validate before touching the network: a malformed link must get a
+    // precise answer ("no es un enlace válido") instead of a 40 s round-trip
+    // that ends in a server error.
+    if (!LocalExtractionService.looksLikeUrl(normalized)) {
+      _analyzeSeq++; // abandon any analysis still running for a previous URL
+      _isLoading = false;
+      _error = 'analysisInvalidUrl';
+      _result = null;
+      _resultKey = null;
       notifyListeners();
       return;
     }
@@ -76,7 +96,7 @@ class AnalyzeController extends ChangeNotifier {
       return;
     }
 
-    final key = _cacheKey(url);
+    final key = _cacheKey(normalized);
 
     // A recent analysis of the same URL is reused immediately. This is the
     // normal path when the user closes the format sheet and taps Analyze
@@ -116,11 +136,15 @@ class AnalyzeController extends ChangeNotifier {
     var shared = _inFlight[key];
     if (shared == null) {
       // Race device vs backend: whichever answers first wins. The device
-      // side is capped so a hanging phone network can't stall analysis.
-      final race = _firstSuccess<AnalyzeResponse>([
-        _extraction.extractMedia(url).timeout(const Duration(seconds: 25)),
-        _api.analyze(url),
-      ]);
+      // side is capped so a hanging phone network can't stall analysis; the
+      // backend covers the hosts the device cannot extract. Both paths report
+      // a typed AnalysisException, so a failure is never mistaken for a
+      // server outage.
+      final futures = <Future<AnalyzeResponse>>[
+        _extraction.extractMedia(normalized).timeout(const Duration(seconds: 25)),
+        _api.analyze(normalized),
+      ];
+      final race = _firstSuccess<AnalyzeResponse>(futures);
       late final Future<AnalyzeResponse> tracked;
       tracked = race.then((response) {
         _store(key, response);
@@ -140,14 +164,20 @@ class AnalyzeController extends ChangeNotifier {
       if (seq != _analyzeSeq) return;
       _result = response;
       _resultKey = key;
+    } on AnalysisException catch (e) {
+      if (seq != _analyzeSeq) return;
+      // The detail is for the log: it never contains URLs or credentials.
+      debugPrint('[Analyze] failed: $e');
+      _error = e.messageKey;
     } on NetworkException catch (e) {
       if (seq != _analyzeSeq) return;
       _error = (e.type == 'connection' || e.type == 'timeout')
           ? 'serverUnreachable'
-          : e.message;
+          : 'analysisServerError';
     } catch (e) {
       if (seq != _analyzeSeq) return;
-      _error = e.toString().replaceFirst('Exception: ', '');
+      debugPrint('[Analyze] unexpected: ${e.runtimeType}');
+      _error = 'analysisFailed';
     } finally {
       // Only the newest request owns the loading flag and the notification.
       if (seq == _analyzeSeq) {
@@ -158,6 +188,14 @@ class AnalyzeController extends ChangeNotifier {
   }
 
   static String _cacheKey(String url) => LocalExtractionService.sanitizeUrl(url);
+
+  /// Drops an error banner that no longer describes what the user is doing
+  /// (they edited the URL). The result, if any, stays on screen.
+  void clearError() {
+    if (_error == null) return;
+    _error = null;
+    notifyListeners();
+  }
 
   void _store(String key, AnalyzeResponse response) {
     if (!response.success) return;
@@ -181,23 +219,59 @@ class AnalyzeController extends ChangeNotifier {
 
   /// Completes with the first SUCCESSFUL future; slow losers are ignored.
   /// (Same race the share sheet uses: device vs backend.)
+  ///
+  /// When every path fails it reports the most informative cause, not the
+  /// first one to fail: a device timeout must not hide the backend's
+  /// "source refused the request".
   Future<T> _firstSuccess<T>(List<Future<T>> futures) {
     final completer = Completer<T>();
     var remaining = futures.length;
-    Object? firstError;
-    StackTrace? firstStack;
+    final errors = <Object>[];
+    final stacks = <StackTrace>[];
     for (final future in futures) {
       future.then((value) {
         if (!completer.isCompleted) completer.complete(value);
       }, onError: (Object e, StackTrace st) {
-        firstError ??= e;
-        firstStack ??= st;
+        errors.add(e);
+        stacks.add(st);
         remaining--;
         if (remaining == 0 && !completer.isCompleted) {
-          completer.completeError(firstError!, firstStack);
+          final index = _mostInformativeError(errors);
+          completer.completeError(errors[index], stacks[index]);
         }
       });
     }
     return completer.future;
+  }
+
+  /// Index of the failure that best explains the problem.
+  ///
+  /// A typed cause (private, no formats, source blocked, bad response) says
+  /// more than "it timed out" or "unknown", so it wins even if it arrived
+  /// last.
+  static int _mostInformativeError(List<Object> errors) {
+    int score(Object error) {
+      if (error is! AnalysisException) return 0;
+      switch (error.type) {
+        case AnalysisFailureType.unavailable:
+        case AnalysisFailureType.noFormats:
+        case AnalysisFailureType.unsupportedPlatform:
+        case AnalysisFailureType.invalidUrl:
+        case AnalysisFailureType.malformedResponse:
+        case AnalysisFailureType.httpError:
+          return 3;
+        case AnalysisFailureType.unknown:
+          return 2;
+        case AnalysisFailureType.timeout:
+        case AnalysisFailureType.network:
+          return 1;
+      }
+    }
+
+    var best = 0;
+    for (var i = 1; i < errors.length; i++) {
+      if (score(errors[i]) > score(errors[best])) best = i;
+    }
+    return best;
   }
 }

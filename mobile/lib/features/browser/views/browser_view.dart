@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -57,6 +59,7 @@ class _BrowserViewState extends State<BrowserView> {
   bool _desktopMode = true;
   String? _currentUrl;
   String? _loadError;
+  bool _blockerInjectedEarly = false;
 
   // Desktop UA: mobile YouTube pushes the native app overlay and hides the
   // normal watch page inside WebViews; the desktop site behaves like PC.
@@ -144,7 +147,24 @@ class _BrowserViewState extends State<BrowserView> {
       ..addJavaScriptChannel(
         BrowserBlockerService.channelName,
         onMessageReceived: (message) {
-          final count = int.tryParse(message.message);
+          // {id, count}: the script reports its cumulative count, possibly
+          // many times per page. A plain number is still accepted.
+          final raw = message.message.trim();
+          try {
+            final decoded = jsonDecode(raw);
+            if (decoded is Map) {
+              final count = decoded['count'];
+              final id = decoded['id']?.toString();
+              if (count is num) {
+                BrowserBlockerService.instance
+                    .reportBlocked(count.toInt(), session: id);
+              }
+              return;
+            }
+          } catch (_) {
+            // Not JSON: fall back to the old plain-number contract.
+          }
+          final count = int.tryParse(raw);
           if (count == null) return;
           BrowserBlockerService.instance.reportBlocked(count);
         },
@@ -152,8 +172,18 @@ class _BrowserViewState extends State<BrowserView> {
       ..setNavigationDelegate(NavigationDelegate(
         onProgress: (value) {
           if (mounted) setState(() => _progress = value / 100);
+          // Head start: as soon as the new document exists, install the
+          // filter. Waiting for onPageFinished meant the whole first wave of
+          // sub-resources had already been requested. This is best effort
+          // (webview_flutter has no document-start hook), so onPageFinished
+          // re-injects for the rest of the page's life.
+          if (value > 0 && value < 100 && !_blockerInjectedEarly) {
+            _blockerInjectedEarly = true;
+            _injectBlocker();
+          }
         },
         onPageStarted: (url) {
+          _blockerInjectedEarly = false;
           if (!mounted) return;
           setState(() {
             _loading = true;
@@ -175,6 +205,13 @@ class _BrowserViewState extends State<BrowserView> {
           final scheme = uri?.scheme.toLowerCase();
           if (uri == null ||
               (scheme != 'http' && scheme != 'https' && scheme != 'about')) {
+            return NavigationDecision.prevent;
+          }
+          // Google refuses OAuth/sign-in inside a WebView ("disallowed_useragent")
+          // and the page just stalls. Hand those links to the system browser,
+          // where the account flow actually works.
+          if (_isGoogleSignInHost(uri.host)) {
+            _openSignInExternally(request.url);
             return NavigationDecision.prevent;
           }
           // Top-level navigation to a known ad host never opens a page.
@@ -215,16 +252,47 @@ class _BrowserViewState extends State<BrowserView> {
   }
 
   /// The WebView cannot filter sub-resources on its own, so the filter is a
-  /// script injected after every page load. It blocks the known ad hosts,
-  /// removes their nodes and hides the usual ad containers.
-  Future<void> _injectBlocker() async {
+  /// script injected as early as the document allows and re-applied after
+  /// every page load (it removes nodes and hides the usual ad containers).
+  Future<void> _injectBlocker({bool force = false}) async {
     final blocker = BrowserBlockerService.instance;
-    if (!blocker.enabled) return;
+    if (!blocker.enabled && !force) return;
     try {
       await _web.runJavaScript(blocker.buildInjectionScript());
     } catch (e) {
       debugPrint('[Browser] blocker injection failed: $e');
     }
+  }
+
+  /// Google blocks its own sign-in inside embedded WebViews
+  /// (`disallowed_useragent`), so the flow can only complete in the system
+  /// browser. Pretending otherwise just left the user on a blank page.
+  static bool _isGoogleSignInHost(String host) {
+    final h = host.toLowerCase();
+    return h == 'accounts.google.com' ||
+        h.endsWith('.accounts.google.com') ||
+        h == 'accounts.youtube.com';
+  }
+
+  Future<void> _openSignInExternally(String url) async {
+    final loc = AppLocalizations.of(context);
+    var opened = false;
+    try {
+      opened = await launchUrl(
+        Uri.parse(url),
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (e) {
+      debugPrint('[Browser] external sign-in failed: ${e.runtimeType}');
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          opened ? loc.browserSignInExternal : loc.browserOpenFailed,
+        ),
+      ),
+    );
   }
 
   void _syncUrlBar(String url) {
@@ -569,13 +637,9 @@ class _BrowserViewState extends State<BrowserView> {
                           value: blocker.enabled,
                           onChanged: (v) async {
                             await blocker.setEnabled(v);
-                            if (!v && mounted) {
-                              _web.runJavaScript(
-                                  'window.__vibeGrabBlocker && '
-                                  'window.__vibeGrabBlocker.count();');
-                            } else if (v) {
-                              await _injectBlocker();
-                            }
+                            // Re-run the script in both directions: it updates
+                            // the live page (ENABLED flag, CSS, counter).
+                            await _injectBlocker(force: true);
                           },
                         ),
                       ],

@@ -170,6 +170,104 @@ class WhatsNewCatalog {
         en: 'For you and Trending search several sources at once instead of one after another, so results appear sooner without waiting for every search to finish.',
       ),
     ),
+    // ----------------------------------------------------------------- 1.1.42 (build 54)
+    WhatsNewEntry(
+      id: 'wn-1142b-library-permission',
+      version: '1.1.42',
+      build: 54,
+      category: WhatsNewCategory.fixes,
+      emoji: '📚',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'La biblioteca ya abre en Android 11 y 12',
+        en: 'The library opens on Android 11 and 12',
+      ),
+      description: LocalizedText(
+        es: 'La app comprobaba permisos que solo existen desde Android 13, así que en versiones anteriores la biblioteca se quedaba en «se necesita acceso» aunque ya lo tuvieras concedido. Ahora pide el permiso que corresponde a tu versión de Android.',
+        en: 'The app checked permissions that only exist from Android 13, so on older versions the library stayed at "media access required" even when access was already granted. It now asks for the permission your Android version actually has.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142b-library-refresh',
+      version: '1.1.42',
+      build: 54,
+      category: WhatsNewCategory.fixes,
+      emoji: '🔄',
+      order: 1,
+      title: LocalizedText(
+        es: 'Refrescar la biblioteca responde al instante',
+        en: 'Refreshing the library responds right away',
+      ),
+      description: LocalizedText(
+        es: 'Al pulsar refrescar, la lista sigue visible y el botón muestra un indicador mientras se buscan archivos nuevos. Una segunda pulsación no lanza otro escaneo encima.',
+        en: 'When you press refresh, the list stays visible and the button shows a progress indicator while new files are found. A second tap does not start another scan on top.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142b-download-card',
+      version: '1.1.42',
+      build: 54,
+      category: WhatsNewCategory.fixes,
+      emoji: '🧾',
+      order: 2,
+      title: LocalizedText(
+        es: 'Las tarjetas de descarga ya se leen bien',
+        en: 'Download cards are readable again',
+      ),
+      description: LocalizedText(
+        es: 'El título se ve completo y los botones de reproducir, abrir, compartir y borrar están debajo del texto, sin apretarlo contra el borde.',
+        en: 'The title is fully visible and the play, open, share and delete buttons sit below the text instead of squeezing it against the edge.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142b-google-signin',
+      version: '1.1.42',
+      build: 54,
+      category: WhatsNewCategory.fixes,
+      emoji: '🔐',
+      order: 3,
+      title: LocalizedText(
+        es: 'El inicio de sesión de Google se abre donde funciona',
+        en: 'Google sign-in opens where it works',
+      ),
+      description: LocalizedText(
+        es: 'Google no permite iniciar sesión dentro del navegador integrado. Los enlaces de acceso se abren ahora en tu navegador de siempre y la app te avisa de ello.',
+        en: 'Google does not allow signing in inside the built-in browser. Sign-in links now open in your usual browser and the app tells you so.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142b-analyze-errors',
+      version: '1.1.42',
+      build: 54,
+      category: WhatsNewCategory.fixes,
+      emoji: '🔎',
+      order: 4,
+      title: LocalizedText(
+        es: 'Los errores de análisis se explican y se pueden cerrar',
+        en: 'Analysis errors explain themselves and can be dismissed',
+      ),
+      description: LocalizedText(
+        es: 'Si el enlace no es válido o la fuente no responde, el aviso dice qué pasó y se puede cerrar. Ya no se queda pegado sobre el formulario ni se confunde con un fallo del servidor.',
+        en: 'If a link is invalid or the source does not respond, the notice says what happened and can be dismissed. It no longer sticks over the form or pretends the server failed.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1142b-blocker-count',
+      version: '1.1.42',
+      build: 54,
+      category: WhatsNewCategory.improvements,
+      emoji: '🌐',
+      order: 5,
+      title: LocalizedText(
+        es: 'El filtro de anuncios cuenta bien',
+        en: 'The ad filter counts correctly',
+      ),
+      description: LocalizedText(
+        es: 'El contador ya no suma dos veces el mismo anuncio y el interruptor detiene de verdad el filtrado al apagarlo, no solo el aviso.',
+        en: 'The counter no longer adds the same ad twice, and switching it off really stops the filtering instead of only hiding the badge.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.41
     WhatsNewEntry(
       id: 'wn-1141-mp3-real',

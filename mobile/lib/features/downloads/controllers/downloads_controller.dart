@@ -62,6 +62,10 @@ class DownloadsController extends ChangeNotifier {
   /// workers downloaded the same file and both consumed a slot.
   final Set<String> _runningTaskIds = {};
 
+  /// The in-flight worker per task, so cancel/retry can wait for the previous
+  /// one to unwind instead of racing it for the same file and slot.
+  final Map<String, Future<void>> _workers = {};
+
   String get downloadPath => StorageService.instance.downloadPath;
 
   static String _ts() {
@@ -376,12 +380,23 @@ class DownloadsController extends ChangeNotifier {
   void _enqueueDownload(DownloadTask task) {
     _log('enqueue download: id=${task.id} activeCount=$_activeCount max=$_maxConcurrent');
     if (_activeCount < _maxConcurrent) {
-      _log('worker available, starting task=${task.id}');
-      _startDownload(task);
+      _startWorker(task);
     } else {
       _log('worker busy, adding to pending queue: ${task.id} (queue length=${_pendingQueue.length + 1})');
       _pendingQueue.add(task);
     }
+  }
+
+  /// Starts one worker and remembers its future. The map is what lets
+  /// [cancelDownload]/[retryDownload] know whether the id still has code
+  /// running for it.
+  void _startWorker(DownloadTask task) {
+    _log('worker available, starting task=${task.id}');
+    final future = _startDownload(task);
+    _workers[task.id] = future;
+    future.whenComplete(() {
+      if (identical(_workers[task.id], future)) _workers.remove(task.id);
+    });
   }
 
   void _reprocessQueue() {
@@ -391,7 +406,7 @@ class DownloadsController extends ChangeNotifier {
       final idx = _tasks.indexWhere((t) => t.id == next.id);
       if (idx != -1 && _tasks[idx].status == DownloadStatus.queued) {
         _log('picked task from queue: ${next.id}');
-        _startDownload(_tasks[idx]);
+        _startWorker(_tasks[idx]);
       } else {
         _log('skipping task from queue: ${next.id} (status=${idx != -1 ? _tasks[idx].status.name : "not found"})');
       }
@@ -722,9 +737,19 @@ class DownloadsController extends ChangeNotifier {
     final task = _tasks[index];
     if (task.isActive) {
       await _downloadService.cancelDownload(taskId);
+      // The worker may still be writing the file this method is about to
+      // delete. Wait for it to unwind (the socket is already closed) instead
+      // of letting it recreate the file after the delete.
+      final worker = _workers[taskId];
+      if (worker != null) {
+        try {
+          await worker.timeout(const Duration(seconds: 15));
+        } catch (e) {
+          _log('removeTask: worker for $taskId still running: ${e.runtimeType}');
+        }
+      }
     }
     _pendingQueue.removeWhere((t) => t.id == taskId);
-    _runningTaskIds.remove(taskId);
     await _notifService.removeTask(taskId);
 
     if (task.filePath != null) {
@@ -784,8 +809,18 @@ class DownloadsController extends ChangeNotifier {
       notifyListeners();
     }
     _pendingQueue.removeWhere((t) => t.id == taskId);
-    _runningTaskIds.remove(taskId);
     await _notifService.removeTask(taskId);
+    // Do NOT drop the id from _runningTaskIds here: the worker still owns the
+    // slot and the output file for a moment, and removing it let a retry start
+    // a second worker for the same task (double slot, two writers on one file).
+    final worker = _workers[taskId];
+    if (worker != null) {
+      try {
+        await worker.timeout(const Duration(seconds: 15));
+      } catch (e) {
+        _log('cancelDownload: worker for $taskId did not unwind: ${e.runtimeType}');
+      }
+    }
     _reprocessQueue();
     _stopServiceIfIdle();
   }
@@ -794,14 +829,34 @@ class DownloadsController extends ChangeNotifier {
 
   Future<void> retryDownload(String taskId) async {
     _log('retryDownload: $taskId');
-    final index = _tasks.indexWhere((t) => t.id == taskId);
-    if (index != -1) {
-      final task = _tasks[index];
-      _tasks[index] = task.copyWith(status: 'queued', progress: 0.0, error: null, step: null);
-      _persistence.saveTask(_tasks[index]);
-      notifyListeners();
-      _enqueueDownload(_tasks[index]);
+    var index = _tasks.indexWhere((t) => t.id == taskId);
+    if (index == -1) return;
+
+    // A cancelled task may still have a worker unwinding. Wait for it before
+    // marking the task queued, or that worker would write its old result over
+    // the new status and a second download would start on the same file.
+    final worker = _workers[taskId];
+    if (worker != null) {
+      _log('retryDownload: waiting for previous worker of $taskId');
+      try {
+        await worker.timeout(const Duration(seconds: 15));
+      } catch (e) {
+        _log('retryDownload: previous worker still running: ${e.runtimeType}');
+      }
     }
+
+    index = _tasks.indexWhere((t) => t.id == taskId);
+    if (index == -1) return;
+    final task = _tasks[index];
+    _tasks[index] = task.copyWith(
+      status: 'queued',
+      progress: 0.0,
+      error: null,
+      step: null,
+    );
+    _persistence.saveTask(_tasks[index]);
+    notifyListeners();
+    _enqueueDownload(_tasks[index]);
   }
 
   Future<void> retryTask(String taskId) => retryDownload(taskId);

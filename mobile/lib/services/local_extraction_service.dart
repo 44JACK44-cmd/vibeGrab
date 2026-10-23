@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show SocketException;
 import 'package:flutter/foundation.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../core/constants/api_constants.dart';
@@ -6,6 +7,7 @@ import '../data/models/analyze_response.dart';
 import '../data/models/format_option.dart';
 import '../data/models/media_info.dart';
 import '../data/models/explore_video.dart';
+import 'analysis_failure.dart';
 
 class ExtractorException implements Exception {
   final String message;
@@ -82,7 +84,33 @@ class LocalExtractionService {
     ],
   };
 
-  static const _supportedPlatforms = ['youtube.com', 'youtu.be'];
+  /// True for every host that serves the same YouTube videos: `www.`,
+  /// `m.`, `music.` and the cookie-less embed domain are equivalent and must
+  /// be accepted, not treated as a different platform.
+  static bool _isYouTubeHost(String host) {
+    final h = host.toLowerCase();
+    return h == 'youtube.com' ||
+        h.endsWith('.youtube.com') ||
+        h == 'youtu.be' ||
+        h.endsWith('.youtu.be') ||
+        h == 'youtube-nocookie.com' ||
+        h.endsWith('.youtube-nocookie.com');
+  }
+
+  /// URL-like token inside shared text ("Mira esto https://youtu.be/ID …").
+  static final _urlToken = RegExp(
+    r'(?:https?://)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d{1,5})?(?:[/?#][^\s<>"{}|\\^`\[\]]*)?',
+    caseSensitive: false,
+  );
+
+  /// Query parameters that never identify the media. Dropping them makes
+  /// `youtu.be/ID?si=…`, `watch?v=ID&t=10`, `&feature=share` and the bare ID
+  /// share one cache entry (and one analysis) instead of four.
+  static const _trackingParams = {
+    'si', 'feature', 'pp', 'fbclid', 'gclid', 'igshid', 'igsh',
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+    'ref', 'ref_src', 'ref_url', 'spm', 'share_id', 'share_origin',
+  };
 
   /// In-memory search cache (10 min TTL): repeat visits and tab switches
   /// feel instant and don't hammer the network.
@@ -97,29 +125,57 @@ class LocalExtractionService {
   }
 
   static bool supportsPlatform(String url) {
-    try {
-      final uri = Uri.tryParse(url);
-      if (uri == null) return false;
-      final host = uri.host.replaceAll('www.', '').replaceAll('m.', '');
-      return _supportedPlatforms.any((p) => host == p || host.endsWith('.$p'));
-    } catch (_) {
-      return false;
-    }
+    final uri = _parseSanitized(url);
+    return uri != null && _isYouTubeHost(uri.host);
   }
 
   static String? detectPlatform(String url) {
-    try {
-      final uri = Uri.tryParse(url);
-      if (uri == null) return null;
-      final host = uri.host.replaceAll('www.', '').replaceAll('m.', '');
-      if (_supportedPlatforms.any((p) => host == p || host.endsWith('.$p'))) {
-        return 'youtube';
-      }
-    } catch (_) {}
+    final uri = _parseSanitized(url);
+    if (uri != null && _isYouTubeHost(uri.host)) return 'youtube';
     return null;
   }
 
+  /// Parses user input the same way [sanitizeUrl] normalizes it: accepts
+  /// scheme-less links, extracts a URL from shared text and never throws.
+  static Uri? _parseSanitized(String url) {
+    final cleaned = sanitizeUrl(url);
+    if (cleaned.isEmpty) return null;
+    final uri = Uri.tryParse(cleaned);
+    if (uri == null || uri.host.isEmpty) return null;
+    if (uri.scheme != 'http' && uri.scheme != 'https') return null;
+    return uri;
+  }
+
+  /// Cheap local validation: reject something that is not a complete URL
+  /// before spending a network round-trip on it.
+  static bool looksLikeUrl(String url) {
+    final uri = _parseSanitized(url);
+    if (uri == null) return false;
+    final host = uri.host;
+    return host.contains('.') && !host.startsWith('.') && !host.endsWith('.');
+  }
+
   static String friendlyError(Object e) {
+    if (e is AnalysisException) {
+      // Keep the keys the share sheet already renders.
+      switch (e.type) {
+        case AnalysisFailureType.invalidUrl:
+          return 'invalid_url';
+        case AnalysisFailureType.unsupportedPlatform:
+          return 'unsupported_platform';
+        case AnalysisFailureType.network:
+          return 'no_internet';
+        case AnalysisFailureType.timeout:
+          return 'timeout';
+        case AnalysisFailureType.unavailable:
+          return 'content_unavailable';
+        case AnalysisFailureType.httpError:
+        case AnalysisFailureType.malformedResponse:
+        case AnalysisFailureType.noFormats:
+        case AnalysisFailureType.unknown:
+          return 'analysis_failed';
+      }
+    }
     if (e is UnsupportedPlatformException) {
       return 'unsupported_platform';
     }
@@ -149,21 +205,35 @@ class LocalExtractionService {
     String url, {
     void Function(MediaInfo media)? onMetadata,
   }) async {
-    final platform = detectPlatform(url);
-    if (platform == null) {
-      throw UnsupportedPlatformException('unknown');
+    final sanitized = sanitizeUrl(url);
+    if (!looksLikeUrl(sanitized)) {
+      throw const AnalysisException(AnalysisFailureType.invalidUrl);
     }
-    if (!supportsPlatform(url)) {
-      throw UnsupportedPlatformException(platform);
+    if (!supportsPlatform(sanitized)) {
+      final host = Uri.tryParse(sanitized)?.host ?? '';
+      throw AnalysisException(
+        AnalysisFailureType.unsupportedPlatform,
+        code: 'host',
+        detail: host,
+      );
     }
 
-    final videoId = _parseVideoId(url);
+    final videoId = _parseVideoId(sanitized);
     if (videoId == null) {
-      throw Exception('Invalid YouTube URL');
+      // A valid YouTube URL with no video in it: a playlist, a channel or a
+      // removed "clip". It is not an "invalid URL", so say what it is.
+      final path = Uri.tryParse(sanitized)?.path ?? '';
+      throw AnalysisException(
+        AnalysisFailureType.unsupportedPlatform,
+        code: path.contains('/clip/') ? 'clip' : 'no_video_id',
+        detail: path,
+      );
     }
 
     try {
-      final video = await _ytc.videos.get(videoId);
+      final video = await _ytc.videos
+          .get(videoId)
+          .timeout(const Duration(seconds: 20));
 
       final media = MediaInfo(
         id: video.id.value,
@@ -180,19 +250,47 @@ class LocalExtractionService {
       // shows what it found instead of a bare spinner for the whole wait.
       onMetadata?.call(media);
 
-      final manifest = await _ytc.videos.streamsClient.getManifest(videoId);
+      final manifest = await _ytc.videos.streamsClient
+          .getManifest(videoId)
+          .timeout(const Duration(seconds: 20));
 
       final formats = _buildFormats(manifest);
+      if (formats.isEmpty) {
+        throw const AnalysisException(AnalysisFailureType.noFormats);
+      }
 
       return AnalyzeResponse(
         success: true,
         media: media,
         formats: formats,
       );
-    } on Exception {
-      throw ContentUnavailableException('youtube');
-    } catch (e) {
+    } on AnalysisException {
       rethrow;
+    } on TimeoutException {
+      throw const AnalysisException(AnalysisFailureType.timeout);
+    } on SocketException {
+      throw const AnalysisException(AnalysisFailureType.network);
+    } catch (e) {
+      // youtube_explode reports private/removed/region-locked uploads with
+      // its own exception types. Keep the cause instead of turning every one
+      // of them into the same "content unavailable" (which hid real network
+      // and parser failures too).
+      final text = e.toString().toLowerCase();
+      if (text.contains('unavailable') ||
+          text.contains('private') ||
+          text.contains('removed') ||
+          text.contains('not available') ||
+          text.contains('age-restricted') ||
+          text.contains('age restricted')) {
+        throw AnalysisException(
+          AnalysisFailureType.unavailable,
+          code: e.runtimeType.toString(),
+        );
+      }
+      throw AnalysisException(
+        AnalysisFailureType.unknown,
+        detail: e.runtimeType.toString(),
+      );
     }
   }
 
@@ -400,59 +498,101 @@ class LocalExtractionService {
     var cleaned = url.trim();
     cleaned = cleaned.replaceAll(RegExp(r'[\u200B\u200C\u200D\uFEFF]'), '');
     cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
-    final hashIdx = cleaned.indexOf('#');
-    if (hashIdx != -1) cleaned = cleaned.substring(0, hashIdx);
+    if (cleaned.isEmpty) return '';
 
-    // Tracking-only parameter added by the YouTube share sheet. It is not a
-    // video id and must not be mistaken for one.
-    final uri = Uri.tryParse(cleaned);
-    if (uri != null && uri.hasScheme && uri.queryParameters.containsKey('si')) {
-      final params = Map<String, dynamic>.from(uri.queryParameters)
-        ..remove('si');
-      try {
-        cleaned = uri.replace(queryParameters: params).toString();
-      } catch (_) {}
+    // A bare 11-character video id is legitimate input (the app itself
+    // stores ids in some places): keep it untouched.
+    if (RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(cleaned)) return cleaned;
+
+    // Shared text ("look at this: https://… wow") → the URL only.
+    final token = _urlToken.firstMatch(cleaned);
+    if (token != null) cleaned = token.group(0)!;
+    // Messaging apps append punctuation after the link.
+    cleaned = cleaned.replaceAll(RegExp(r'[)\]}>.,;:!?"\u00BB\u2019]+$'), '');
+    if (cleaned.isEmpty) return '';
+
+    // Scheme-less links are common when pasting (`youtu.be/ID`). Without a
+    // scheme `Uri.tryParse` reads the host as a path and every check fails.
+    // Only add it to something that can be a host: prefixing arbitrary text
+    // turned "not a url" into "https://not a url" and made the error opaque.
+    if (!RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*://').hasMatch(cleaned)) {
+      final hostLike = RegExp(
+        r'^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d{1,5})?(?:[/?#]|$)',
+        caseSensitive: false,
+      ).hasMatch(cleaned);
+      if (!hostLike) return cleaned;
+      cleaned = 'https://$cleaned';
     }
-    return cleaned;
+
+    var uri = Uri.tryParse(cleaned);
+    if (uri == null || uri.host.isEmpty) return cleaned;
+
+    // Fragments never reach the server; tracking parameters only make two
+    // spellings of the same video look like different media.
+    final params = Map<String, String>.from(uri.queryParameters);
+    final hadTracking =
+        params.keys.any((k) => _trackingParams.contains(k.toLowerCase()));
+    if (hadTracking) {
+      params.removeWhere(
+          (k, _) => _trackingParams.contains(k.toLowerCase()));
+    }
+    if (hadTracking || uri.hasFragment) {
+      // `Uri.replace(fragment: null)` KEEPS the current fragment (null means
+      // "unchanged" there), so drop it explicitly.
+      if (uri.hasFragment) uri = uri.removeFragment();
+      if (hadTracking) {
+        uri = uri.replace(
+          queryParameters: params.isEmpty ? const {} : params,
+        );
+      }
+    }
+
+    final videoId = _videoIdFromUri(uri);
+    if (videoId != null) {
+      // One canonical spelling for every equivalent YouTube link: the cache
+      // and the download pipeline see the same value for all of them.
+      return 'https://www.youtube.com/watch?v=$videoId';
+    }
+    return uri.toString();
   }
 
-  String? _parseVideoId(String url) {
-    final sanitized = sanitizeUrl(url);
-    final uri = Uri.tryParse(sanitized);
-    if (uri == null) {
-      return sanitized.length == 11 &&
-              RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(sanitized)
-          ? sanitized
-          : null;
-    }
+  /// Video id from an already normalized [uri], or null when the URL is not a
+  /// single watchable video (channel, playlist, clip…).
+  static String? _videoIdFromUri(Uri uri) {
     final host = uri.host.toLowerCase();
-    final isYouTubeHost = host == 'youtube.com' ||
-        host.endsWith('.youtube.com') ||
-        host == 'youtube-nocookie.com' ||
-        host.endsWith('.youtube-nocookie.com') ||
-        host == 'youtu.be' ||
-        host.endsWith('.youtu.be');
-    if (!isYouTubeHost) return null;
+    if (!_isYouTubeHost(host)) return null;
 
     bool valid(String? id) =>
         id != null && RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(id);
 
     if (host == 'youtu.be' || host.endsWith('.youtu.be')) {
-      if (uri.pathSegments.isNotEmpty && valid(uri.pathSegments.first)) {
-        return uri.pathSegments.first;
-      }
-      return null;
+      final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+      return segments.isNotEmpty && valid(segments.first) ? segments.first : null;
     }
-    final vParam = uri.queryParameters['v'];
-    if (valid(vParam)) return vParam;
 
-    final segments = uri.pathSegments;
-    const kinds = {'shorts', 'embed', 'v', 'vi', 'live'};
+    if (valid(uri.queryParameters['v'])) return uri.queryParameters['v'];
+
+    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+    const kinds = {'shorts', 'embed', 'v', 'vi', 'live', 'e'};
     if (segments.length >= 2 && kinds.contains(segments[segments.length - 2])) {
       final id = segments.last;
       if (valid(id)) return id;
     }
+    // Legacy `youtube.com/VIDEOID` form.
+    if (segments.length == 1 && valid(segments.first)) return segments.first;
     return null;
+  }
+
+  String? _parseVideoId(String url) {
+    final sanitized = sanitizeUrl(url);
+    final uri = Uri.tryParse(sanitized);
+    if (uri == null || uri.host.isEmpty) {
+      return sanitized.length == 11 &&
+              RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(sanitized)
+          ? sanitized
+          : null;
+    }
+    return _videoIdFromUri(uri);
   }
 
   Future<List<ExploreVideo>> getTrending({int limit = 12}) async {

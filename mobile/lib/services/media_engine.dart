@@ -1391,6 +1391,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (videos.isEmpty) return;
     final items = videos.map(_exploreVideoToMediaItem).toList();
     final index = startIndex.clamp(0, items.length - 1);
+    // Synchronous intent: the widget that opened the detail right after
+    // calling this must see that a play is already on its way, instead of
+    // launching a second one during the await below.
+    _pendingMediaId = items[index].id;
     final resume = startAt ?? await _resumePositionFor(items[index].id,
         duration: items[index].duration);
 
@@ -1420,6 +1424,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     final saved = _state.position;
     playbackError = null;
     videoFallbackNotice = null;
+    // A retry is a new chain too: give it the same stall protection as a
+    // normal play, otherwise a wedged retry spins with no way out.
+    _pendingMediaId = mediaId;
+    _armWatchdog(mediaId);
     notifyListeners();
     if (_currentIndex >= 0 && _currentIndex < _queue.length) {
       final item = _queue[_currentIndex];
@@ -1455,6 +1463,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
           });
 
     await _stopCurrent();
+    // The teardown is async: another tap may have started a newer play while
+    // it ran. Writing the state here would paint the abandoned item over the
+    // live one and (worse) start a second chain on top of it.
+    if (stale()) return;
     _completionHandled = false;
     playbackError = null;
     videoFallbackNotice = null;
@@ -1473,14 +1485,17 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     _syncToAudioHandler(item);
     _syncQueueToHandler();
     notifyListeners();
+    // From here on the engine state already names the new item, so the UI
+    // adopts it through currentMediaId (see pendingMediaId).
+    _pendingMediaId = null;
 
-    // Stall watchdog: fails the play if nothing moves for 45s. It re-arms
-    // itself on every resolution stage (see _setStage), so a progressing
-    // chain is never killed.
+    // Stall watchdog: fails the play if nothing moves for 45s. Every real
+    // step of the chain re-arms it (see _rearmWatchdog), not only the stage
+    // labels, so a slow-but-progressing play is never killed.
     _armWatchdog(item.id);
 
     await _playYouTubeVideo(item.id, item,
-        startAt: startAt, prefetched: prefetched);
+        startAt: startAt, prefetched: prefetched, playToken: token);
   }
 
   /// Saved resume position for a remote URL. Mirrors MediaMetadata.hasResume:
@@ -1539,15 +1554,19 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   String? _watchdogMedia;
 
   void _setStage(String? key) {
-    if (loadingStageKey == key) return;
-    loadingStageKey = key;
-    // Forward motion re-arms the stall watchdog (see _armWatchdog).
+    if (loadingStageKey != key) {
+      loadingStageKey = key;
+      notifyListeners();
+    }
+    // Forward motion re-arms the stall watchdog (see _armWatchdog). Doing it
+    // even when the label did not change matters: two consecutive steps of
+    // the chain (two video candidates, a retry) can share the same stage, and
+    // the old timer would still kill a chain that is clearly progressing.
     if (key != null &&
         _watchdogMedia != null &&
         _state.mediaId == _watchdogMedia) {
       _armWatchdog(_watchdogMedia!);
     }
-    notifyListeners();
   }
 
   void _clearStage() {
@@ -1571,6 +1590,12 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
               s.status == MediaStatus.buffering) &&
           loadingStageKey == stage) {
         debugPrint('[MediaEngine] Play watchdog fired for $mediaId');
+        // The watchdog only fires when nothing moved for a full window: the
+        // chain is wedged. Invalidate it BEFORE surfacing the error so a late
+        // response cannot resurrect that abandoned play (which showed the
+        // error while the audio started a moment later).
+        _playToken++;
+        _pendingMediaId = null;
         playbackError ??= 'timeout';
         _clearStage();
         _state = s.copyWith(status: MediaStatus.idle);
@@ -1602,9 +1627,17 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   /// resolution chain instead of letting it hijack the new playback.
   int _playToken = 0;
 
+  /// Item the user just asked to play, set synchronously before the async
+  /// queue bookkeeping starts. The UI uses it to adopt that play instead of
+  /// starting a second chain while the previous player is still tearing down
+  /// (which is what made Explorer open the detail and play the video twice).
+  String? _pendingMediaId;
+  String? get pendingMediaId => _pendingMediaId;
+
   Future<void> _playYouTubeVideo(String youtubeUrl, MediaItem mediaItem,
       {Duration startAt = Duration.zero,
-      Future<MediaResolution>? prefetched}) async {
+      Future<MediaResolution>? prefetched,
+      int? playToken}) async {
     final videoId = _parseVideoIdFromUrl(youtubeUrl);
     if (videoId == null) {
       final uri = Uri.tryParse(youtubeUrl);
@@ -1620,7 +1653,10 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _failPlayback('URL inválida');
       return;
     }
-    final token = _playToken;
+    // The generation belongs to the call that started this play: re-reading
+    // the live counter here let a late caller (a retry/resume after a newer
+    // tap) adopt the NEW generation and run on top of the live play.
+    final token = playToken ?? _playToken;
     bool stale() => token != _playToken;
 
     final errs = <String>[];
@@ -1650,7 +1686,29 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       errs.add('servidor: ${_lastStreamError ?? "sin url"}');
     }
 
-    for (final c in res.video) {
+    // The server cannot always hand out a URL: YouTube answers the backend's
+    // datacenter IP with "Sign in to confirm you're not a bot" (the 502 the
+    // app reports as `servidor: http 502`). The relay depends on that same
+    // backend, while the device manifest is the path downloads already use
+    // from the phone's own IP. When the payload failed, the device goes first
+    // instead of burning the relay's 25s timeout on a source known to be down.
+    final candidates = List<MediaSource>.of(res.video);
+    if (res.fetchError != null) {
+      final cached =
+          candidates.indexWhere((c) => c.kind == MediaSourceKind.deviceMuxed);
+      if (cached > 0) candidates.insert(0, candidates.removeAt(cached));
+      if (cached < 0) {
+        _setStage('playStageDirect');
+        _rearmWatchdog();
+        final device = await _deviceMuxedCandidate(res, errs);
+        if (stale()) return;
+        if (device != null) candidates.insert(0, device);
+      }
+    }
+    final deviceTried =
+        candidates.any((c) => c.kind == MediaSourceKind.deviceMuxed);
+
+    for (final c in candidates) {
       if (stale()) return;
       // Each candidate gets a fresh 45s budget: the whole chain (resolve +
       // direct + proxy + relay) can legitimately take longer than a single
@@ -1675,11 +1733,42 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       errs.add('${c.errTag}: ${_lastVideoError ?? "init falló"}');
     }
 
+    // Every server candidate failed (a down backend, a blocked relay): the
+    // device manifest is the only source left, and by now the user is already
+    // looking at a failure. Waiting a bounded time for it turns "no se pudo
+    // reproducir" into a normal play instead of asking for a retry.
+    if (!deviceTried) {
+      _setStage('playStageDirect');
+      _rearmWatchdog();
+      final device = await _deviceMuxedCandidate(res, errs);
+      if (stale()) return;
+      if (device != null) {
+        _rearmWatchdog();
+        final started = await _tryStartNetworkVideo(
+            device.uri, youtubeUrl, mediaItem,
+            initTimeout: device.initTimeout,
+            playToken: token,
+            startAt: startAt,
+            kind: device.kind);
+        if (stale()) return;
+        if (started) {
+          _clearStage();
+          return;
+        }
+        errs.add('${device.errTag}: ${_lastVideoError ?? "init falló"}');
+      }
+    }
+
     if (res.audioUri != null) {
       _setStage('playStageAudio');
       if (stale()) return;
+      _rearmWatchdog();
       final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
-          streamUri: res.audioUri);
+          streamUri: res.audioUri, playToken: token);
+      // The audio attempt may have outlived this chain: never let it claim a
+      // newer play (that is how a fast swipe left the OLD short's audio
+      // playing over the new one).
+      if (stale()) return;
       if (ok) {
         _clearStage();
         // Every video candidate failed: the audio takes over, but the user
@@ -1698,8 +1787,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     if (stale()) return;
     if (manifest != null) {
       _setStage('playStageAudio');
-      final ok =
-          await _playYouTubeAudio(youtubeUrl, mediaItem, manifest: manifest);
+      if (stale()) return;
+      _rearmWatchdog();
+      final ok = await _playYouTubeAudio(youtubeUrl, mediaItem,
+          manifest: manifest, playToken: token);
+      if (stale()) return;
       if (ok) {
         _clearStage();
         videoFallbackNotice = 'audioOnly';
@@ -1908,6 +2000,8 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   }
 
   void _failPlayback(String reason) {
+    _pendingMediaId = null;
+    _clearStage();
     playbackError = reason;
     _state = _state.copyWith(status: MediaStatus.idle);
     _syncPlaybackStateToHandler();
@@ -1972,6 +2066,32 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       }
     }
     return null;
+  }
+
+  /// Waits (bounded) for the background device manifest and returns its best
+  /// muxed stream as a playable candidate.
+  ///
+  /// Returns null when the resolver already had the manifest (its candidate is
+  /// already in the list) or when it yields no muxed stream. A timeout is
+  /// recorded in [errs] so the final message stays truthful.
+  Future<MediaSource?> _deviceMuxedCandidate(
+      MediaResolution res, List<String> errs) async {
+    if (res.manifest != null || res.manifestAsync == null) return null;
+    StreamManifest? manifest;
+    try {
+      manifest = await res.manifestAsync!.timeout(const Duration(seconds: 10));
+    } on TimeoutException {
+      errs.add('directo: sin respuesta');
+      return null;
+    }
+    final best = manifest == null ? null : _bestMuxedStream(manifest);
+    if (best == null) return null;
+    return MediaSource(
+      kind: MediaSourceKind.deviceMuxed,
+      uri: best.url,
+      initTimeout: const Duration(seconds: 12),
+      errTag: 'directo',
+    );
   }
 
   MuxedStreamInfo? _bestMuxedStream(StreamManifest manifest) {
@@ -2166,7 +2286,11 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   // --- YouTube Audio Playback ---
 
   Future<bool> _playYouTubeAudio(String youtubeUrl, MediaItem mediaItem,
-      {StreamManifest? manifest, Uri? streamUri}) async {
+      {StreamManifest? manifest, Uri? streamUri, int? playToken}) async {
+    // Generation captured by the caller: an abandoned chain must never write
+    // state or start the shared player, not even after its network wait.
+    bool stale() => playToken != null && playToken != _playToken;
+    if (stale()) return false;
     try {
       Uri streamUrl;
       if (streamUri != null) {
@@ -2183,6 +2307,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
                 .timeout(const Duration(seconds: 10), onTimeout: () {
               throw TimeoutException('Stream manifest timed out');
             });
+        if (stale()) return false;
 
         final audioStreams = resolved.audioOnly.toList()
           ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
@@ -2195,6 +2320,7 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       }
 
       await _stopCurrentSilent();
+      if (stale()) return false;
       _state = _state.copyWith(
         mediaId: youtubeUrl,
         title: mediaItem.title,
@@ -2206,13 +2332,29 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
       _syncToAudioHandler(mediaItem);
       notifyListeners();
 
-      await _player
-          .setAudioSource(AudioSource.uri(
-            streamUrl,
-            tag: mediaItem,
-            headers: ApiConfig.streamHeaders,
-          ))
-          .timeout(const Duration(seconds: 20));
+      try {
+        await _player
+            .setAudioSource(AudioSource.uri(
+              streamUrl,
+              tag: mediaItem,
+              headers: ApiConfig.streamHeaders,
+            ))
+            .timeout(const Duration(seconds: 30));
+      } on TimeoutException {
+        // The source was still preparing when the budget expired. Abort it
+        // instead of returning with a half-attached stream that the next
+        // chain has to tear down (and which used to make the first Play look
+        // like a failure while the audio was still warming up).
+        _lastAudioError = 'timeout';
+        await _player.stop().catchError((_) {});
+        return false;
+      }
+      if (stale()) {
+        // A newer play owns the engine now: release this source, never write
+        // its state or call play() on it.
+        await _player.stop().catchError((_) {});
+        return false;
+      }
       _wireAudioSubscriptions(youtubeUrl);
 
       playbackError = null;
@@ -3233,14 +3375,26 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
     // _playQueueItemVideo had already stopped the previous item: that
     // re-stopped the player and re-wrote the resume position once per
     // candidate for nothing. Only tear down when something is actually live.
+    // The subscriptions MUST be nulled after cancelling: keeping the dead
+    // objects made this check true forever, so every candidate paid a full
+    // teardown (and the player was stopped while a new source was preparing).
     final live = _videoController != null ||
         _posSub != null ||
         _durSub != null ||
+        _stateSub != null ||
+        _errSub != null ||
         _isAudioBackgroundActive;
     if (!live) return;
     _posSub?.cancel();
+    _posSub = null;
     _durSub?.cancel();
+    _durSub = null;
     _stateSub?.cancel();
+    _stateSub = null;
+    // A playback error from the item being replaced must not leak into the
+    // next one (it kept failing the new play with the old stream's error).
+    _errSub?.cancel();
+    _errSub = null;
     _expectedDuration = null;
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
@@ -3264,9 +3418,17 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   Future<void> _stopCurrent() async {
     _completionDebounce?.cancel();
     _posSub?.cancel();
+    _posSub = null;
     _durSub?.cancel();
+    _durSub = null;
     _stateSub?.cancel();
+    _stateSub = null;
+    _errSub?.cancel();
+    _errSub = null;
     _expectedDuration = null;
+    // Drop the "resolviendo/mezclando" label and its watchdog with the item
+    // that owned them, so the next screen does not inherit a stale spinner.
+    _clearStage();
 
     if (_state.mediaId != null && _state.position.inMilliseconds > 0) {
       // force: this is the last write for this item, throttling must not
@@ -3291,9 +3453,15 @@ class MediaEngine extends ChangeNotifier implements MediaEngineDelegate {
   @override
   Future<void> stop() async {
     _playToken++;
+    _pendingMediaId = null;
     await _stopCurrent();
     _warmAudioSource = null;
     _warmAudioMediaId = null;
+    // A stopped player owns no error and no loading label: keeping them made
+    // the banner reappear on the next screen (or right after closing it).
+    _clearStage();
+    playbackError = null;
+    videoFallbackNotice = null;
     _state = MediaState();
     _syncPlaybackStateToHandler();
     _queue.clear();

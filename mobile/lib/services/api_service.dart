@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../core/constants/api_constants.dart';
+import 'analysis_failure.dart';
 import '../data/models/analyze_response.dart';
 import '../data/models/download_task.dart';
 import '../data/models/library_file.dart';
@@ -93,26 +94,78 @@ class ApiService {
   }
 
   Future<AnalyzeResponse> analyze(String url) async {
+    final http.Response response;
     try {
-      final response = await _client
+      response = await _client
           .post(
             Uri.parse(ApiConfig.analyzeUrl),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'url': url}),
           )
           .timeout(_longTimeout);
-
-      final body = jsonDecode(response.body);
-      if (response.statusCode == 200) {
-        return AnalyzeResponse.fromJson(body);
-      }
-      throw NetworkException(
-        body['detail'] ?? 'Analysis failed',
-        type: 'http',
-        statusCode: response.statusCode,
-      );
+    } on TimeoutException {
+      throw const AnalysisException(AnalysisFailureType.timeout);
+    } on http.ClientException catch (e) {
+      throw AnalysisException(AnalysisFailureType.network, detail: e.message);
     } catch (e) {
-      throw NetworkException.fromError(e);
+      throw AnalysisException(
+        AnalysisFailureType.network,
+        detail: e.runtimeType.toString(),
+      );
+    }
+
+    // Decode only what the documented contract says. A proxy/captive portal
+    // answering 200 with HTML used to be handed to jsonDecode, and the
+    // FormatException surfaced to the user as "respuesta inesperada del
+    // servidor" without saying whether the link or the server was wrong.
+    Map<String, dynamic>? body;
+    try {
+      final decoded =
+          jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
+      if (decoded is Map<String, dynamic>) body = decoded;
+    } catch (_) {
+      body = null;
+    }
+
+    if (response.statusCode != 200) {
+      throw AnalysisException.fromBackend(response.statusCode, body);
+    }
+    if (body == null) {
+      final contentType =
+          (response.headers['content-type'] ?? 'sin content-type').trim();
+      throw AnalysisException(
+        AnalysisFailureType.malformedResponse,
+        statusCode: 200,
+        detail: 'content-type=$contentType',
+      );
+    }
+    if (body['success'] == false) {
+      throw AnalysisException.fromBackend(response.statusCode, body);
+    }
+
+    try {
+      final parsed = AnalyzeResponse.fromJson(body);
+      if (!parsed.success) {
+        throw const AnalysisException(
+          AnalysisFailureType.unavailable,
+          statusCode: 200,
+        );
+      }
+      if (parsed.formats.isEmpty) {
+        throw const AnalysisException(
+          AnalysisFailureType.noFormats,
+          statusCode: 200,
+        );
+      }
+      return parsed;
+    } on AnalysisException {
+      rethrow;
+    } catch (e) {
+      throw AnalysisException(
+        AnalysisFailureType.malformedResponse,
+        statusCode: 200,
+        detail: e.runtimeType.toString(),
+      );
     }
   }
 

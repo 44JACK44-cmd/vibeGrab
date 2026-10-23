@@ -8,6 +8,7 @@
   "navBrowser": "Navegador",
   "browserUrlHint": "Busca o pega una URL",
   "browserOpenExternal": "Abrir en el navegador del sistema",
+  "browserSignInExternal": "Google bloquea el inicio de sesión dentro de la app. Continúa en tu navegador.",
   "browserPopularSites": "Sitios populares",
   "browserTagline": "Busca en la web o abre cualquier sitio",
   "browserDesktopSite": "Sitio de escritorio",
@@ -25,6 +26,15 @@
   "clear": "Limpiar",
   "pleaseEnterUrl": "Introduce una URL",
   "analysisFailed": "Error al analizar",
+  "analysisInvalidUrl": "El enlace no es válido. Pega una URL completa (por ejemplo, https://youtu.be/…).",
+  "analysisUnsupportedPlatform": "Ese enlace no apunta a un video compatible.",
+  "analysisNetworkError": "No se pudo conectar. Revisa tu conexión e inténtalo de nuevo.",
+  "analysisTimeout": "La operación tardó demasiado. Inténtalo de nuevo.",
+  "analysisServerError": "El servidor respondió con un error. Inténtalo de nuevo en unos minutos.",
+  "analysisBadResponse": "El servidor devolvió una respuesta que no se pudo interpretar.",
+  "analysisUnavailable": "El video es privado, fue eliminado o no está disponible.",
+  "analysisSourceBlocked": "La fuente rechazó la solicitud. Puede estar bloqueando el acceso; inténtalo más tarde.",
+  "analysisNoFormats": "No se encontraron formatos descargables para este video.",
   "downloadAdded": "Descarga añadida: {title}",
   "@downloadAdded": {
     "placeholders": {

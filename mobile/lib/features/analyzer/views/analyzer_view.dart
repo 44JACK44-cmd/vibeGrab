@@ -92,7 +92,12 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
 
   void _download(FormatOption format, String title, String? thumbnail, String? source) async {
     final downloadsController = context.read<DownloadsController>();
-    final url = LocalExtractionService.sanitizeUrl(_urlController.text);
+    final analyzeController = context.read<AnalyzeController>();
+    // Use the URL that produced the formats on screen, never whatever the
+    // text field contains now: editing it after analysing would download a
+    // different video with a format id from another one.
+    final url = analyzeController.analyzedUrl ??
+        LocalExtractionService.sanitizeUrl(_urlController.text);
     final loc = AppLocalizations.of(context);
 
     final mediaType = format.type == 'audio' ? DownloadMediaType.audio : DownloadMediaType.video;
@@ -293,7 +298,13 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
           ),
         ),
         onSubmitted: (_) => _analyze(),
-        onChanged: (_) => setState(() {}),
+        onChanged: (_) {
+          // The banner described the previous URL; once it changes it is no
+          // longer true. Clearing it here also dismisses a real error.
+          final controller = context.read<AnalyzeController>();
+          if (controller.error != null) controller.clearError();
+          setState(() {});
+        },
       ),
     );
   }
@@ -420,6 +431,12 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
               style: const TextStyle(color: AppColors.error, fontSize: 13),
             ),
           ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 18, color: AppColors.error),
+            tooltip: loc.clear,
+            visualDensity: VisualDensity.compact,
+            onPressed: controller.clearError,
+          ),
         ],
       ),
     );
@@ -431,10 +448,31 @@ class _AnalyzerViewState extends State<AnalyzerView> with TickerProviderStateMix
         return loc.noInternetConnection;
       case 'serverUnreachable':
         return loc.serverUnreachableHint;
+      case 'analysisServerError':
+        return loc.analysisServerError;
+      case 'analysisInvalidUrl':
+        return loc.analysisInvalidUrl;
+      case 'analysisUnsupportedPlatform':
+        return loc.analysisUnsupportedPlatform;
+      case 'analysisNetworkError':
+        return loc.analysisNetworkError;
+      case 'analysisTimeout':
+        return loc.analysisTimeout;
+      case 'analysisBadResponse':
+        return loc.analysisBadResponse;
+      case 'analysisUnavailable':
+        return loc.analysisUnavailable;
+      case 'analysisSourceBlocked':
+        return loc.analysisSourceBlocked;
+      case 'analysisNoFormats':
+        return loc.analysisNoFormats;
+      case 'analysisFailed':
+        return loc.analysisFailed;
       case 'enterUrl':
         return loc.pleaseEnterUrl;
       default:
-        return code;
+        // Never render an internal key/exception raw in the banner.
+        return loc.analysisFailed;
     }
   }
 

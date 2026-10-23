@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../../../core/localization/app_localizations.dart';
 import '../../../data/models/explore_video.dart';
+import '../../../data/models/media_state.dart';
 import '../../../services/media_engine.dart';
 import '../controllers/explore_controller.dart';
 import 'video_detail_view.dart';
@@ -117,6 +118,23 @@ class _ShortsViewState extends State<ShortsView> {
   void _playAt(int i, List<ExploreVideo> shorts) {
     if (i < 0 || i >= shorts.length) return;
     _index = i;
+    final video = shorts[i];
+    // The engine is the single source of truth. If this exact short is
+    // already starting or playing (initial page settle, a rebuild, coming
+    // back from the detail view), adopt it: launching a second chain would
+    // invalidate the one in flight and restart the resolution from scratch,
+    // which is what made the first short take so long and flash an error.
+    final alreadyLive = _engine.pendingMediaId == video.url ||
+        (_engine.currentMediaId == video.url &&
+            _engine.playbackError == null &&
+            (_engine.state.status == MediaStatus.loading ||
+                _engine.state.status == MediaStatus.buffering ||
+                _engine.state.status == MediaStatus.playing ||
+                _engine.state.status == MediaStatus.paused));
+    if (alreadyLive) {
+      if (i + 1 < shorts.length) _engine.prefetchExplore(shorts[i + 1]);
+      return;
+    }
     // The whole feed is the queue: auto-next, the notification controls and
     // previous/next all walk it through the shared MediaEngine.
     _engine.playExploreQueue(shorts, startIndex: i);

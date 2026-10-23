@@ -65,6 +65,7 @@ class AppLocalizations {
   String get navBrowser => _get('navBrowser');
   String get browserUrlHint => _get('browserUrlHint');
   String get browserOpenExternal => _get('browserOpenExternal');
+  String get browserSignInExternal => _get('browserSignInExternal');
   String get browserPopularSites => _get('browserPopularSites');
   String get browserTagline => _get('browserTagline');
   String get browserDesktopSite => _get('browserDesktopSite');
@@ -83,6 +84,15 @@ class AppLocalizations {
   String get clear => _get('clear');
   String get pleaseEnterUrl => _get('pleaseEnterUrl');
   String get analysisFailed => _get('analysisFailed');
+  String get analysisInvalidUrl => _get('analysisInvalidUrl');
+  String get analysisUnsupportedPlatform => _get('analysisUnsupportedPlatform');
+  String get analysisNetworkError => _get('analysisNetworkError');
+  String get analysisTimeout => _get('analysisTimeout');
+  String get analysisServerError => _get('analysisServerError');
+  String get analysisBadResponse => _get('analysisBadResponse');
+  String get analysisUnavailable => _get('analysisUnavailable');
+  String get analysisSourceBlocked => _get('analysisSourceBlocked');
+  String get analysisNoFormats => _get('analysisNoFormats');
   String downloadAdded(String title) => _get('downloadAdded', {'title': title});
   String downloadError(String error) => _get('downloadError', {'error': error});
 

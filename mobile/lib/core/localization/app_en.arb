@@ -8,6 +8,7 @@
   "navBrowser": "Browser",
   "browserUrlHint": "Search or paste a URL",
   "browserOpenExternal": "Open in system browser",
+  "browserSignInExternal": "Google blocks sign-in inside the app. Continue in your browser.",
   "browserPopularSites": "Popular sites",
   "browserTagline": "Search the web or open any site",
   "browserDesktopSite": "Desktop site",
@@ -25,6 +26,15 @@
   "clear": "Clear",
   "pleaseEnterUrl": "Please enter a URL",
   "analysisFailed": "Analysis failed",
+  "analysisInvalidUrl": "That link is not valid. Paste a complete URL (for example, https://youtu.be/…).",
+  "analysisUnsupportedPlatform": "That link does not point to a supported video.",
+  "analysisNetworkError": "Could not connect. Check your connection and try again.",
+  "analysisTimeout": "The operation took too long. Try again.",
+  "analysisServerError": "The server returned an error. Try again in a few minutes.",
+  "analysisBadResponse": "The server returned a response that could not be understood.",
+  "analysisUnavailable": "The video is private, was removed or is not available.",
+  "analysisSourceBlocked": "The source refused the request. It may be blocking access; try again later.",
+  "analysisNoFormats": "No downloadable formats were found for this video.",
   "downloadAdded": "Download added: {title}",
   "@downloadAdded": {
     "placeholders": {

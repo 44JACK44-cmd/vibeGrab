@@ -145,6 +145,12 @@ class BrowserBlockerService extends ChangeNotifier {
   int _blockedCount = 0;
   int get blockedCount => _blockedCount;
 
+  /// The script reports a CUMULATIVE count for one document, several times per
+  /// page. Adding every report double-counted; this keeps the last raw value
+  /// per document so only the delta reaches [_blockedCount].
+  String? _reportSession;
+  int _reportRaw = 0;
+
   bool _loaded = false;
 
   Future<void> init() async {
@@ -221,15 +227,25 @@ class BrowserBlockerService extends ChangeNotifier {
     return false;
   }
 
-  void reportBlocked(int count) {
-    if (count <= 0) return;
-    _blockedCount += count;
+  void reportBlocked(int count, {String? session}) {
+    if (count < 0) return;
+    if (session != null && session != _reportSession) {
+      _reportSession = session;
+      _reportRaw = 0;
+    }
+    // A restarted counter (the script's update() resets it) is a delta from 0.
+    final delta = count >= _reportRaw ? count - _reportRaw : count;
+    _reportRaw = count;
+    if (delta <= 0) return;
+    _blockedCount += delta;
     notifyListeners();
   }
 
   void resetCount() {
-    if (_blockedCount == 0) return;
+    if (_blockedCount == 0 && _reportRaw == 0) return;
     _blockedCount = 0;
+    _reportRaw = 0;
+    _reportSession = null;
     notifyListeners();
   }
 
@@ -239,12 +255,18 @@ class BrowserBlockerService extends ChangeNotifier {
     final rules = jsonEncode(defaultBlockedHosts.toList());
     final allow = jsonEncode(_allowedHosts.toList());
     final selectors = jsonEncode(defaultHiddenSelectors.toList());
+    final enabled = _enabled ? 'true' : 'false';
     return '''
 (function () {
-  if (window.__vibeGrabBlocker) { window.__vibeGrabBlocker.update($rules, $allow); return; }
   var RULES = $rules;
   var ALLOW = $allow;
   var SELECTORS = $selectors;
+  var ENABLED = $enabled;
+  var SESSION = '' + Date.now() + Math.random();
+  if (window.__vibeGrabBlocker) {
+    window.__vibeGrabBlocker.update(RULES, ALLOW, ENABLED);
+    return;
+  }
   var count = 0;
 
   function hostOf(u) {
@@ -259,13 +281,17 @@ class BrowserBlockerService extends ChangeNotifier {
     return false;
   }
   function blocked(url) {
+    if (!ENABLED) return false;
     var h = hostOf(url);
     if (!h) return false;
     if (matches(h, ALLOW)) return false;
     return matches(h, RULES);
   }
   function report() {
-    try { window.VibeGrabBlocker.postMessage(String(count)); } catch (e) {}
+    try {
+      window.VibeGrabBlocker.postMessage(
+        JSON.stringify({ id: SESSION, count: count }));
+    } catch (e) {}
   }
   function note() { count++; report(); }
 
@@ -303,6 +329,7 @@ class BrowserBlockerService extends ChangeNotifier {
   }
 
   function scrub() {
+    if (!ENABLED) return;
     var nodes = document.querySelectorAll('script[src],iframe[src],img[src],source[src],video[src],link[href]');
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
@@ -312,11 +339,17 @@ class BrowserBlockerService extends ChangeNotifier {
   }
 
   function injectStyle() {
+    if (!ENABLED) return;
     if (document.getElementById('vibegrab-blocker-style')) return;
     var style = document.createElement('style');
     style.id = 'vibegrab-blocker-style';
     style.textContent = SELECTORS.join(',') + '{display:none !important;}';
     (document.head || document.documentElement).appendChild(style);
+  }
+
+  function removeStyle() {
+    var style = document.getElementById('vibegrab-blocker-style');
+    if (style) style.remove();
   }
 
   try {
@@ -330,8 +363,16 @@ class BrowserBlockerService extends ChangeNotifier {
 
   window.__vibeGrabBlocker = {
     count: function () { return count; },
-    update: function (newRules, newAllow) {
-      RULES = newRules; ALLOW = newAllow; count = 0; report();
+    update: function (newRules, newAllow, newEnabled) {
+      RULES = newRules;
+      ALLOW = newAllow;
+      ENABLED = !!newEnabled;
+      count = 0;
+      report();
+      // The kill switch has to stop future work, not just hide the badge:
+      // unpatched calls pass through because blocked() now returns false, and
+      // the hidden-ad CSS is removed. Nodes already removed cannot come back.
+      if (!ENABLED) { removeStyle(); } else { injectStyle(); scrub(); }
     }
   };
   report();

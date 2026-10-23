@@ -498,9 +498,7 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
           fit: StackFit.expand,
           children: [
             if (video.thumbnail != null && video.thumbnail!.isNotEmpty)
-              Image.network(video.thumbnail!, fit: BoxFit.cover,
-                gaplessPlayback: true,
-                errorBuilder: (_, __, ___) => Container(color: cs.surfaceContainerHighest)),
+              _thumbWithFallback(video, cs, emptyIconSize: 40),
             Container(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -576,12 +574,8 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                 children: [
                   Expanded(
                     child: video.thumbnail != null && video.thumbnail!.isNotEmpty
-                        ? Image.network(video.thumbnail!, width: 160, fit: BoxFit.cover,
-                            gaplessPlayback: true,
-                            errorBuilder: (_, __, ___) => Container(
-                              color: cs.surfaceContainerHighest,
-                              child: Icon(Icons.music_note, color: cs.onSurfaceVariant),
-                            ))
+                        ? _thumbWithFallback(video, cs,
+                            width: 160, emptyIcon: Icons.music_note)
                         : Container(
                             color: cs.surfaceContainerHighest,
                             child: Icon(Icons.music_note, color: cs.onSurfaceVariant),
@@ -627,6 +621,55 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
     );
   }
 
+  /// Real thumbnail with a real fallback.
+  ///
+  /// The server signs thumbnail URLs for a specific size: when that size does
+  /// not exist for a video the CDN answers 404 and the card showed only its
+  /// placeholder icon. [ExploreVideo.thumbnailFallback] is the public,
+  /// unsigned thumbnail for the same video, so a 404 no longer costs the
+  /// image.
+  Widget _thumbWithFallback(
+    ExploreVideo video,
+    ColorScheme cs, {
+    BoxFit fit = BoxFit.cover,
+    double? width,
+    double? height,
+    IconData emptyIcon = Icons.play_circle_outline,
+    double emptyIconSize = 28,
+  }) {
+    Widget empty() => Container(
+          width: width,
+          height: height,
+          color: cs.surfaceContainerHighest,
+          child: Center(
+            child: Icon(emptyIcon, color: cs.onSurfaceVariant, size: emptyIconSize),
+          ),
+        );
+    final primary = (video.thumbnail ?? '').isEmpty ? null : video.thumbnail;
+    final alt = video.thumbnailFallback;
+    Widget fallback() {
+      if (alt == null || alt == primary) return empty();
+      return Image.network(
+        alt,
+        fit: fit,
+        width: width,
+        height: height,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => empty(),
+      );
+    }
+
+    if (primary == null) return fallback();
+    return Image.network(
+      primary,
+      fit: fit,
+      width: width,
+      height: height,
+      gaplessPlayback: true,
+      errorBuilder: (_, __, ___) => fallback(),
+    );
+  }
+
   /// Horizontal shelf of vertical (9:16) Shorts cards; tapping one opens
   /// the full-screen Shorts player (same destination as the Explore tab).
   Widget _buildShortsShelf(ExploreController controller, ColorScheme cs) {
@@ -656,15 +699,8 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                 fit: StackFit.expand,
                 children: [
                   if (video.thumbnail != null && video.thumbnail!.isNotEmpty)
-                    Image.network(
-                      video.thumbnail!,
-                      fit: BoxFit.cover,
-                      gaplessPlayback: true,
-                      errorBuilder: (_, __, ___) => Center(
-                        child: Icon(Icons.slow_motion_video,
-                            color: cs.onSurfaceVariant, size: 32),
-                      ),
-                    )
+                    _thumbWithFallback(video, cs,
+                        emptyIcon: Icons.slow_motion_video, emptyIconSize: 32)
                   else
                     Center(
                       child: Icon(Icons.slow_motion_video,
@@ -1274,17 +1310,8 @@ return _buildTabs(controller, cs, AppLocalizations.of(context));
                       if (result.video!.thumbnail != null)
                         ClipRRect(
                           borderRadius: BorderRadius.circular(8),
-                          child: Image.network(
-                            result.video!.thumbnail!,
-                            width: 110,
-                            height: 62,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Container(
-                              width: 110,
-                              height: 62,
-                              color: cs.surfaceContainerHighest,
-                            ),
-                          ),
+                          child: _thumbWithFallback(result.video!, cs,
+                              width: 110, height: 62),
                         ),
                       const SizedBox(width: 12),
                       Expanded(

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:rxdart/rxdart.dart';
+import 'local_extraction_service.dart';
 
 class ShareIntentHandler {
   static const _channel = MethodChannel('com.example.vibegrab/share');
@@ -74,19 +75,12 @@ class ShareIntentHandler {
     if (!_urlController.isClosed) _urlController.add('');
   }
 
-  static String sanitizeUrl(String url) {
-    var cleaned = url.trim();
-    cleaned = cleaned.replaceAll(RegExp(r'[\u200B\u200C\u200D\uFEFF]'), '');
-    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
-    final hashIdx = cleaned.indexOf('#');
-    if (hashIdx != -1) cleaned = cleaned.substring(0, hashIdx);
-    return cleaned;
-  }
-
-  static final _urlRegex = RegExp(
-    r'https?://[^\s<>\"{}|\\^`\[\]]+',
-    caseSensitive: false,
-  );
+  /// One normalization for the whole app: a link shared from YouTube
+  /// (`youtu.be/ID?si=…`), pasted or opened from the browser must produce the
+  /// same canonical URL, or the caches and the download queue see three
+  /// different videos.
+  static String sanitizeUrl(String url) =>
+      LocalExtractionService.sanitizeUrl(url);
 
   static final _platformHosts = {
     'youtube.com', 'youtu.be', 'm.youtube.com', 'music.youtube.com',
@@ -126,12 +120,11 @@ class ShareIntentHandler {
 
   static String? _extractUrl(String text) {
     final sanitized = sanitizeUrl(text);
+    if (sanitized.isEmpty) return null;
     if (sanitized.startsWith('http://') || sanitized.startsWith('https://')) {
-      return sanitized;
-    }
-    final match = _urlRegex.firstMatch(sanitized);
-    if (match != null) {
-      return match.group(0);
+      // sanitizeUrl prefixes a scheme to anything; only a real host counts.
+      final uri = Uri.tryParse(sanitized);
+      if (uri != null && uri.host.contains('.')) return sanitized;
     }
     return null;
   }

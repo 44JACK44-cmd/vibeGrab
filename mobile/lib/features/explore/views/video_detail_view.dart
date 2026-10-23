@@ -106,12 +106,18 @@ _play();
     // The engine may already be playing this exact video (the page was
     // reopened from the mini player or a notification): adopt that running
     // session instead of restarting it from 00:00.
-    if (engine.currentMediaId == _current.url &&
-        engine.playbackError == null &&
-        (engine.state.status == MediaStatus.loading ||
-            engine.state.status == MediaStatus.buffering ||
-            engine.state.status == MediaStatus.playing ||
-            engine.state.status == MediaStatus.paused)) {
+    // pendingMediaId covers the asynchronous gap between the caller asking
+    // for this play (queue bookkeeping, teardown of the previous item) and
+    // currentMediaId being written: without it the detail views started a
+    // SECOND chain for the same video, which is what made Explorer/Shorts
+    // look slow and flash a premature error.
+    if ((engine.currentMediaId == _current.url &&
+            engine.playbackError == null &&
+            (engine.state.status == MediaStatus.loading ||
+                engine.state.status == MediaStatus.buffering ||
+                engine.state.status == MediaStatus.playing ||
+                engine.state.status == MediaStatus.paused)) ||
+        engine.pendingMediaId == _current.url) {
       return;
     }
     final q = _queue;

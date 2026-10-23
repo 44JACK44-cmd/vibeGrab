@@ -33,6 +33,26 @@ class ExploreVideo {
 
   bool get isYouTube => provider == 'youtube';
 
+  /// Public thumbnail for the same video, used when the signed one the server
+  /// sent answers 404.
+  ///
+  /// The server signs thumbnail URLs for a specific size; when that size does
+  /// not exist for a video (or the signature expired) the CDN answers 404 and
+  /// the card fell straight to its placeholder icon. `hqdefault` is unsigned
+  /// and exists for every video, so it is a real fallback, not a made-up one.
+  String? get thumbnailFallback {
+    final source = thumbnail;
+    if (source == null || source.isEmpty) return null;
+    if (!isYouTube) return null;
+    final match = RegExp(r'i\.ytimg\.com/vi(?:_webp)?/([\w-]{6,})/')
+        .firstMatch(source);
+    final id = match?.group(1) ?? (this.id.isNotEmpty ? this.id : null);
+    if (id == null || id.isEmpty) return null;
+    final webp = source.contains('/vi_webp/');
+    return 'https://i.ytimg.com/vi${webp ? '_webp' : ''}/$id/hqdefault'
+        '${webp ? '.webp' : '.jpg'}';
+  }
+
   /// Saved playback position of a previously watched video (continue list).
   bool get hasResume => resumeMs != null && resumeMs! > 10000;
 

@@ -143,6 +143,10 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
         break;
     }
 
+    // Actions that are not "cancel" sit below the text: four 48dp tap targets
+    // in the same row as the title left it ~40dp wide on a 392dp screen.
+    final actionsOnTop = isActive;
+
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
@@ -156,15 +160,26 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    task.title,
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: cs.onSurface,
-                      fontSize: 14,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          task.title,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: cs.onSurface,
+                            fontSize: 14,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (actionsOnTop) ...[
+                        const SizedBox(width: 4),
+                        _buildAction(loc, cs),
+                      ],
+                    ],
                   ),
                   const SizedBox(height: 6),
                   Row(
@@ -175,6 +190,8 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
                         child: Text(
                           statusText,
                           style: TextStyle(color: statusColor, fontSize: 12),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ],
@@ -187,11 +204,16 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
                     const SizedBox(height: 8),
                     _buildCompletedBar(cs),
                   ],
+                  if (!actionsOnTop) ...[
+                    const SizedBox(height: 2),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: _buildAction(loc, cs),
+                    ),
+                  ],
                 ],
               ),
             ),
-            const SizedBox(width: 8),
-            _buildAction(loc, cs),
           ],
         ),
       ),
@@ -234,7 +256,7 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
             ),
             const SizedBox(height: 4),
             Text(
-              '${widget.task.sizeFormatted.isNotEmpty ? '${widget.task.sizeFormatted} \u2022 ' : ''}${widget.task.progress}%',
+              '${widget.task.sizeFormatted.isNotEmpty ? '${widget.task.sizeFormatted} \u2022 ' : ''}${widget.task.progressFormatted}',
               style: TextStyle(color: cs.onSurfaceVariant, fontSize: 11),
             ),
           ],
@@ -263,6 +285,28 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
     );
   }
 
+  /// Compact, deterministic action button: the default padded tap target is
+  /// 48dp, and four of them pushed the title into a sliver of the card.
+  Widget _actionButton({
+    required IconData icon,
+    required VoidCallback? onPressed,
+    required Color color,
+    double size = 20,
+    String? tooltip,
+  }) {
+    return IconButton(
+      icon: Icon(icon, size: size),
+      onPressed: onPressed,
+      color: color,
+      tooltip: tooltip,
+      style: IconButton.styleFrom(
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        fixedSize: const Size(36, 36),
+        padding: EdgeInsets.zero,
+      ),
+    );
+  }
+
   Widget _buildAction(AppLocalizations loc, ColorScheme cs) {
     if (widget.task.status == DownloadStatus.downloading ||
         widget.task.status == DownloadStatus.preparing ||
@@ -271,12 +315,11 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
         widget.task.status == DownloadStatus.saving ||
         widget.task.status == DownloadStatus.processing ||
         widget.task.status == DownloadStatus.queued) {
-      return IconButton(
-        icon: const Icon(Icons.close, size: 20),
+      return _actionButton(
+        icon: Icons.close,
         onPressed: widget.onCancel,
         color: cs.onSurfaceVariant,
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(),
+        size: 20,
       );
     }
 
@@ -284,74 +327,61 @@ class _DownloadCardState extends State<DownloadCard> with SingleTickerProviderSt
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            icon: const Icon(Icons.refresh, size: 20),
+          _actionButton(
+            icon: Icons.refresh,
             onPressed: widget.onRetry,
             color: cs.primary,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
+            size: 20,
           ),
-          const SizedBox(width: 8),
-          IconButton(
-            icon: const Icon(Icons.delete_outline, size: 20),
+          _actionButton(
+            icon: Icons.delete_outline,
             onPressed: widget.onDelete,
             color: AppColors.error,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
+            size: 20,
           ),
         ],
       );
     }
 
-if (widget.task.status == DownloadStatus.completed ||
-    widget.task.status == DownloadStatus.cancelled) {
-  final completed = widget.task.status == DownloadStatus.completed;
-  final playable = completed &&
-      (widget.task.hasVideo || widget.task.hasAudio) &&
-      widget.onPlay != null;
-  return Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      if (playable)
-        IconButton(
-          icon: const Icon(Icons.play_arrow, size: 22),
-          onPressed: widget.onPlay,
-          color: cs.primary,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(),
-        ),
-      if (playable) const SizedBox(width: 8),
-      if (completed && widget.onOpen != null)
-        IconButton(
-          icon: const Icon(Icons.open_in_new, size: 20),
-          onPressed: widget.onOpen,
-          color: cs.primary,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(),
-        ),
-      if (completed && widget.onOpen != null) const SizedBox(width: 8),
-      if (completed && widget.onShare != null)
-        IconButton(
-          icon: const Icon(Icons.share_outlined, size: 20),
-          onPressed: widget.onShare,
-          color: cs.onSurfaceVariant,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(),
-        ),
-      if (completed && widget.onShare != null) const SizedBox(width: 8),
-      IconButton(
-        icon: Icon(
-          completed ? Icons.delete_outline : Icons.cancel_outlined,
-          size: 20,
-        ),
-        onPressed: widget.onDelete,
-        color: completed ? AppColors.error : cs.onSurfaceVariant,
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(),
-      ),
-    ],
-  );
-}
+    if (widget.task.status == DownloadStatus.completed ||
+        widget.task.status == DownloadStatus.cancelled) {
+      final completed = widget.task.status == DownloadStatus.completed;
+      final playable = completed &&
+          (widget.task.hasVideo || widget.task.hasAudio) &&
+          widget.onPlay != null;
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (playable)
+            _actionButton(
+              icon: Icons.play_arrow,
+              onPressed: widget.onPlay,
+              color: cs.primary,
+              size: 22,
+            ),
+          if (completed && widget.onOpen != null)
+            _actionButton(
+              icon: Icons.open_in_new,
+              onPressed: widget.onOpen,
+              color: cs.primary,
+              size: 20,
+            ),
+          if (completed && widget.onShare != null)
+            _actionButton(
+              icon: Icons.share_outlined,
+              onPressed: widget.onShare,
+              color: cs.onSurfaceVariant,
+              size: 20,
+            ),
+          _actionButton(
+            icon: completed ? Icons.delete_outline : Icons.cancel_outlined,
+            onPressed: widget.onDelete,
+            color: completed ? AppColors.error : cs.onSurfaceVariant,
+            size: 20,
+          ),
+        ],
+      );
+    }
 
     return const SizedBox.shrink();
   }

@@ -59,10 +59,29 @@ class _LibraryViewState extends State<LibraryView> {
               );
             },
           ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: loc.refresh,
-            onPressed: () => context.read<LibraryController>().loadLibrary(),
+          Consumer<LibraryController>(
+            builder: (context, ctrl, _) {
+              // While a scan runs, show it in the button itself and disable
+              // it: the previous version accepted taps that silently did
+              // nothing (the controller returned early on a second load).
+              if (ctrl.refreshing) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16),
+                  child: Center(
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                );
+              }
+              return IconButton(
+                icon: const Icon(Icons.refresh),
+                tooltip: loc.refresh,
+                onPressed: () => ctrl.loadLibrary(),
+              );
+            },
           ),
         ],
       ),

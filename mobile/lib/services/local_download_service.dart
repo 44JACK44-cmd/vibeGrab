@@ -49,8 +49,22 @@ class LocalDownloadService {
   final YoutubeExplode _ytc = YoutubeExplode();
   final Map<String, bool> _activeDownloads = {};
 
+  /// Live sockets per task: cancelling has to close them, not just set a flag
+  /// the read loop may not check again for up to a whole chunk/timeout.
+  final Map<String, HttpClient> _activeClients = {};
+
+  /// Final paths handed out to each running task, so two downloads with the
+  /// same title never write (and rename a .part over) the same file.
+  final Map<String, Set<String>> _reservedPaths = {};
+
   void dispose() {
     _activeDownloads.clear();
+    for (final client in _activeClients.values) {
+      try {
+        client.close(force: true);
+      } catch (_) {}
+    }
+    _activeClients.clear();
     _ytc.close();
   }
 
@@ -76,8 +90,35 @@ class LocalDownloadService {
         ...ApiConfig.authHeaders,
       };
 
-  /// Headers for a media request. The API key only travels to our own backend:
-  /// a CDN (googlevideo, tiktokcdn, …) must never receive it.
+  /// A final path that no other running task (and no existing file) owns.
+  ///
+  /// The title comes from the video, so two downloads of "Song" used to
+  /// resolve to the same `Song.mp3`; the second one deleted and replaced the
+  /// first, and the Library then pointed at a file that no longer matched.
+  Future<String> _reserveFilePath(
+    DownloadTask task,
+    String dir,
+    String title,
+    String ext,
+  ) async {
+    final safe = _sanitizeFilename(title);
+    var candidate = '$dir/$safe.$ext';
+    var n = 2;
+    final reserved = _reservedPaths.putIfAbsent(task.id, () => <String>{});
+    while (reserved.contains(candidate) || await File(candidate).exists()) {
+      candidate = '$dir/$safe ($n).$ext';
+      n++;
+    }
+    reserved.add(candidate);
+    return candidate;
+  }
+
+  void _releaseReservedPaths(String taskId) {
+    _reservedPaths.remove(taskId);
+  }
+
+  /// Headers for a media request. The API key only travels to our own
+  /// backend: a CDN (googlevideo, tiktokcdn, …) must never receive it.
   static Map<String, String> _headersFor(Uri uri) {
     final backend = Uri.tryParse(ApiConfig.baseUrl);
     if (backend != null && backend.host == uri.host) {
@@ -139,8 +180,7 @@ class LocalDownloadService {
     String? extOverride,
   }) async {
     final ext = extOverride ?? _directExtension(task);
-    final safeTitle = _sanitizeFilename(task.title);
-    final filePath = '$dir/$safeTitle.$ext';
+    final filePath = await _reserveFilePath(task, dir, task.title, ext);
     final formatId = (formatIdOverride ?? task.formatId).trim();
 
     // Plain file (e.g. a video cover image): direct HTTP GET without the
@@ -339,8 +379,7 @@ class LocalDownloadService {
     required Function(DownloadStep step) onStep,
     required Stopwatch sw,
   }) async {
-    final safeTitle = _sanitizeFilename(task.title);
-    final filePath = '$dir/$safeTitle.mp3';
+    final filePath = await _reserveFilePath(task, dir, task.title, 'mp3');
     final videoId = _parseVideoId(LocalExtractionService.sanitizeUrl(task.url));
     final tempFiles = <String>[];
     DownloadErrorType? lastError;
@@ -578,8 +617,7 @@ class LocalDownloadService {
     required Function(DownloadStep step) onStep,
     required Stopwatch sw,
   }) async {
-    final safeTitle = _sanitizeFilename(task.title);
-    final filePath = '$dir/$safeTitle.mp3';
+    final filePath = await _reserveFilePath(task, dir, task.title, 'mp3');
 
     final params = <String, String>{
       // yt-dlp resolves the track from the provider URL (fresh, correctly
@@ -893,11 +931,10 @@ class LocalDownloadService {
           continue;
         }
 
-        final safeTitle = _sanitizeFilename(task.title);
         final ext = task.mediaType == DownloadMediaType.audio
             ? _getExtension(candidate.stream)
             : _getVideoExtension(candidate.stream);
-        final filePath = '$dir/$safeTitle.$ext';
+        final filePath = await _reserveFilePath(task, dir, task.title, ext);
         final totalBytes = candidate.stream.size.totalBytes;
         _log('STEP 5: filePath=$filePath ext=$ext contentType=${candidate.stream.codec.mimeType} size=$totalBytes');
 
@@ -991,6 +1028,9 @@ class LocalDownloadService {
       return task.copyWith(status: 'failed', error: 'Download failed', errorCode: 'generic');
     } finally {
       _activeDownloads.remove(task.id);
+      // The file exists now (or was cleaned up): the name is free again for
+      // the next task, and the reservation map does not grow forever.
+      _releaseReservedPaths(task.id);
     }
   }
 
@@ -1115,7 +1155,9 @@ class LocalDownloadService {
     }
 
     final dir = StorageService.instance.downloadPath;
-    final safeTitle = _sanitizeFilename(task.title);
+    // The merged container is decided by the server (mp4, or mkv when the
+    // tracks need it); reserve the base name once for this task.
+    final outputPath = await _reserveFilePath(task, dir, task.title, 'mp4');
     final videoExt = videoOnlyStream.container.name;
     final audioStream = audioStreams.first;
     final audioExt = _getExtension(audioStream);
@@ -1166,7 +1208,7 @@ class LocalDownloadService {
           _UploadPart('audio', audioTempPath, 'audio.$audioExt'),
         ],
         // The extension is decided by the server (mp4, or mkv when needed).
-        outputPath: '$dir/$safeTitle.mp4',
+        outputPath: outputPath,
         task: task,
         onProgress: _scaledProgressInRange(onProgress, 0.9, 0.1),
         responseTimeout: const Duration(minutes: 10),
@@ -1264,23 +1306,57 @@ class LocalDownloadService {
         );
       }
 
-      final file = File(outputPath);
-      producedPath = outputPath;
-      final sink = file.openWrite();
+      // Write to a .part and rename only after the whole body arrived: a
+      // truncated response used to be saved under the final name, showed up
+      // in the Library, and looked like a successful download of a broken
+      // file. The rename is also what makes the file visible atomically.
+      final partPath = '$outputPath.part';
+      await _deleteIfExists(partPath);
+      producedPath = partPath;
+      final partFile = File(partPath);
+      final sink = partFile.openWrite();
       var received = 0;
+      var cancelled = false;
       try {
         await for (final chunk
             in streamed.stream.timeout(const Duration(seconds: 120))) {
           if (!_activeDownloads.containsKey(task.id)) {
-            await sink.close();
-            await _deleteIfExists(outputPath);
-            return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
+            cancelled = true;
+            break;
           }
           sink.add(chunk);
           received += chunk.length;
         }
+        if (!cancelled) await sink.flush();
       } finally {
         await sink.close();
+      }
+      if (cancelled) {
+        await _deleteIfExists(partPath);
+        return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
+      }
+
+      // The server declares the size of what it is streaming (FileResponse).
+      // Compare with the bytes that reached the disk: a connection cut in the
+      // middle is a failure, not a completed download.
+      final expected = streamed.contentLength;
+      if (expected != null && expected > 0 && received != expected) {
+        await _deleteIfExists(partPath);
+        _log('UPLOAD $operation: truncated ($received/$expected bytes)');
+        return task.copyWith(
+          status: 'failed',
+          error: 'Incomplete transfer: $received of $expected bytes',
+          errorCode: DownloadErrorType.unexpectedResponse.name,
+        );
+      }
+
+      if (received == 0) {
+        await _deleteIfExists(partPath);
+        return task.copyWith(
+          status: 'failed',
+          error: 'The server returned an empty file',
+          errorCode: DownloadErrorType.fileEmpty.name,
+        );
       }
 
       // The mux may fall back to Matroska when the codecs do not fit MP4;
@@ -1290,25 +1366,12 @@ class LocalDownloadService {
       if (announced != null && announced.isNotEmpty) {
         final wanted =
             outputPath.replaceFirst(RegExp(r'\.[^./\\]+$'), '.$announced');
-        if (wanted != outputPath) {
-          try {
-            await file.rename(wanted);
-            finalPath = wanted;
-            producedPath = wanted;
-          } catch (e) {
-            _log('UPLOAD: could not rename to .$announced: $e');
-          }
-        }
+        if (wanted != outputPath) finalPath = wanted;
       }
 
-      if (received == 0 || !await File(finalPath).exists()) {
-        await _deleteIfExists(finalPath);
-        return task.copyWith(
-          status: 'failed',
-          error: 'The server returned an empty file',
-          errorCode: DownloadErrorType.fileEmpty.name,
-        );
-      }
+      await _deleteIfExists(finalPath);
+      await partFile.rename(finalPath);
+      producedPath = finalPath;
 
       // Size alone is not proof: a proxy error page or a mismatched container
       // would also be "non-empty". Check the real signature of what was
@@ -1347,6 +1410,20 @@ class LocalDownloadService {
         status: 'failed',
         error: 'Server timed out during $operation',
         errorCode: DownloadErrorType.serverTimeout.name,
+      );
+    } on FileSystemException catch (e) {
+      // ENOSPC is errno 28 on Android/Linux. It is the user's storage, not a
+      // network failure, and it must say so instead of "upload failed".
+      final noSpace = e.osError?.errorCode == 28 ||
+          e.message.toLowerCase().contains('no space');
+      _log('UPLOAD FS ERROR $operation: ${e.osError?.errorCode} (noSpace=$noSpace)');
+      await _deleteIfExists(producedPath);
+      return task.copyWith(
+        status: 'failed',
+        error: noSpace ? 'Not enough storage space' : 'Could not write the file',
+        errorCode: noSpace
+            ? DownloadErrorType.insufficientSpace.name
+            : DownloadErrorType.unexpectedResponse.name,
       );
     } catch (e) {
       _log('UPLOAD ERROR $operation: ${e.runtimeType} after ${sw.elapsedMilliseconds}ms');
@@ -1414,6 +1491,10 @@ class LocalDownloadService {
       final httpClient = HttpClient();
       httpClient.connectionTimeout = const Duration(seconds: 30);
       httpClient.idleTimeout = const Duration(seconds: 30);
+      // Cancelling has to unblock this task NOW: a read can sit on a slow
+      // socket for up to the response timeout, so a flag alone made "cancel"
+      // look like it did nothing until the chunk finally arrived.
+      _activeClients[task.id] = httpClient;
       IOSink? sink;
 
       try {
@@ -1566,12 +1647,11 @@ class LocalDownloadService {
         if (responseBytes > 0 && size < resumed + responseBytes) {
           throw _IncompleteTransferException(size, resumed + responseBytes);
         }
-        if (responseBytes <= 0 &&
-            totalBytes > 0 &&
-            size < (totalBytes * 0.90).floor()) {
-          throw _IncompleteTransferException(
-              size, (totalBytes * 0.90).floor());
-        }
+        // No Content-Length (merged/relayed stream, chunked CDN): the only
+        // evidence of truncation is a clean stream end, which the loop above
+        // already required. Comparing against `stream.size` here guessed and
+        // rejected valid files whose real size differed from the manifest
+        // estimate ("Incomplete download" on a complete file).
 
         // Signature check: a CDN error page saved under .mp4 is not a download.
         final outExt = filePath.contains('.')
@@ -1604,12 +1684,31 @@ class LocalDownloadService {
         } catch (_) {}
 
         if (e is _DownloadCancelledException ||
+            !_activeDownloads.containsKey(task.id) ||
             e.toString().contains('cancelled') ||
             e.toString().contains('Cancelled')) {
           // Cancelling means "I don't want these bytes": dropping the .part
           // also prevents them from resuming into a later task.
           await _deleteIfExists(partPath);
           return task.copyWith(status: 'cancelled', errorCode: 'cancelled');
+        }
+
+        if (e is FileSystemException) {
+          // ENOSPC (errno 28 on Android/Linux) is a storage problem, and the
+          // user needs to read that, not "connection failed".
+          final noSpace = e.osError?.errorCode == 28 ||
+              e.message.toLowerCase().contains('no space');
+          _log('HTTP FS ERROR: errno=${e.osError?.errorCode} noSpace=$noSpace');
+          await _deleteIfExists(partPath);
+          await _deleteIfExists(filePath);
+          return task.copyWith(
+            status: 'failed',
+            error:
+                noSpace ? 'Not enough storage space' : 'Could not write the file',
+            errorCode: noSpace
+                ? DownloadErrorType.insufficientSpace.name
+                : DownloadErrorType.unexpectedResponse.name,
+          );
         }
 
         if (attempt + 1 < maxAttempts && _isRecoverableTransferError(e)) {
@@ -1641,6 +1740,9 @@ class LocalDownloadService {
             error: 'Connection failed',
             errorCode: 'connectionFailed');
       } finally {
+        if (identical(_activeClients[task.id], httpClient)) {
+          _activeClients.remove(task.id);
+        }
         httpClient.close(force: true);
       }
     }
@@ -1687,6 +1789,14 @@ class LocalDownloadService {
   Future<void> cancelDownload(String taskId) async {
     _log('cancelDownload: $taskId');
     _activeDownloads.remove(taskId);
+    // Closing the socket wakes the pending read immediately; the task then
+    // reports "cancelled" instead of waiting for a chunk that may never come.
+    final client = _activeClients.remove(taskId);
+    if (client != null) {
+      try {
+        client.close(force: true);
+      } catch (_) {}
+    }
   }
 
   Future<void> _cleanupTempFiles(List<String> paths) async {

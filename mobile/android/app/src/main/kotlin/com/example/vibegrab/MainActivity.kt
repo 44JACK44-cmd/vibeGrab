@@ -262,6 +262,14 @@ class MainActivity : AudioServiceActivity() {
         localMediaChannel = MethodChannel(messenger, LOCAL_MEDIA_CHANNEL)
         localMediaChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
+                // Library/MediaStore code asks this on the local-media channel:
+                // without it the Dart side fell back to "SDK 33+" and checked
+                // READ_MEDIA_VIDEO/AUDIO on Android 11/12, where those
+                // permissions do not exist, so the Library stayed locked behind
+                // "Media access required" forever.
+                "getAndroidSdkVersion" -> {
+                    result.success(mapOf("sdkVersion" to Build.VERSION.SDK_INT))
+                }
                 "getDeviceMedia" -> {
                     Thread {
                         try {
