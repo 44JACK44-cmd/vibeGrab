@@ -3,37 +3,33 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Selective third-party ad/tracker blocker for the built-in browser.
+/// Ad/tracker blocker for the built-in browser.
 ///
-/// HOW IT WORKS (and what it cannot do)
+/// HOW IT WORKS
 ///
-/// The browser uses `webview_flutter` (Android WebView). That WebView does
-/// NOT expose a request-interception hook for sub-resources, so a real
-/// network-level filter (like a VPN/hosts-file block) is not possible here.
-/// What this service does instead, and does honestly:
+/// The browser uses `flutter_inappwebview` (Android WebView). Its
+/// `shouldInterceptRequest` hook sees every sub-resource before Chromium
+/// requests it, so the block is real and network-level:
 ///
-///  * Top-level navigations to a blocked host are stopped in Dart
-///    (`NavigationRequest`), so ad redirects never open a page.
-///  * After every page load a small script is injected that aborts
-///    `fetch` / `XMLHttpRequest` / `WebSocket` / `sendBeacon` calls whose URL
-///    matches a blocked host, removes `<script>`/`<iframe>`/`<img>` nodes
-///    pointing at those hosts and hides well-known ad containers with CSS.
-///  * The user can turn the blocker off and can allow a site explicitly
-///    (exceptions always win over the rules).
+///  * A request whose host is on [defaultBlockedHosts] (and is not covered by
+///    a per-site exception) is answered with an empty response. The page never
+///    contacts the ad server.
+///  * Top-level navigations to a blocked host are cancelled in
+///    `shouldOverrideUrlLoading`, so ad redirects never open a page.
+///  * A document-start script removes `<script>`/`<iframe>`/`<img>` nodes that
+///    point at blocked hosts and hides the usual ad containers with CSS. This
+///    is cosmetic: it keeps empty ad slots from breaking the layout.
 ///
-/// LIMITATIONS: resources that the FIRST HTML response already contains are
-/// requested before the script can run, and ads served from the same origin as
-/// the content are not detected. This is a filter, not a guarantee.
+/// LIMITATIONS: same-origin ads (served from the site's own domain) are not
+/// detected, and a site that hard-codes an ad URL into its first HTML response
+/// is still covered because interception happens before the request, not after
+/// the response. The filter is a blocklist, not a guarantee.
 class BrowserBlockerService extends ChangeNotifier {
   static final BrowserBlockerService instance = BrowserBlockerService._();
   BrowserBlockerService._();
 
   static const _enabledKey = 'vibegrab_blocker_enabled';
   static const _allowKey = 'vibegrab_blocker_allowed_hosts';
-
-  /// Name of the JavaScript channel the injected script uses to report the
-  /// requests it blocked.
-  static const channelName = 'VibeGrabBlocker';
 
   /// Host names of well-known advertising networks. Sub-domains are covered
   /// automatically (`ads.example.doubleclick.net` matches `doubleclick.net`).
@@ -145,12 +141,6 @@ class BrowserBlockerService extends ChangeNotifier {
   int _blockedCount = 0;
   int get blockedCount => _blockedCount;
 
-  /// The script reports a CUMULATIVE count for one document, several times per
-  /// page. Adding every report double-counted; this keeps the last raw value
-  /// per document so only the delta reaches [_blockedCount].
-  String? _reportSession;
-  int _reportRaw = 0;
-
   bool _loaded = false;
 
   Future<void> init() async {
@@ -162,7 +152,9 @@ class BrowserBlockerService extends ChangeNotifier {
       final allowed = prefs.getStringList(_allowKey) ?? const <String>[];
       _allowedHosts
         ..clear()
-        ..addAll(allowed.map((h) => h.trim().toLowerCase()).where((h) => h.isNotEmpty));
+        ..addAll(allowed
+            .map((h) => h.trim().toLowerCase())
+            .where((h) => h.isNotEmpty));
     } catch (_) {
       _enabled = true;
     }
@@ -227,30 +219,24 @@ class BrowserBlockerService extends ChangeNotifier {
     return false;
   }
 
-  void reportBlocked(int count, {String? session}) {
-    if (count < 0) return;
-    if (session != null && session != _reportSession) {
-      _reportSession = session;
-      _reportRaw = 0;
-    }
-    // A restarted counter (the script's update() resets it) is a delta from 0.
-    final delta = count >= _reportRaw ? count - _reportRaw : count;
-    _reportRaw = count;
-    if (delta <= 0) return;
-    _blockedCount += delta;
+  /// Called by the WebView's request interceptor. One call per blocked
+  /// sub-resource, so the badge shows real network blocks.
+  void reportBlocked([int count = 1]) {
+    if (count <= 0) return;
+    _blockedCount += count;
     notifyListeners();
   }
 
   void resetCount() {
-    if (_blockedCount == 0 && _reportRaw == 0) return;
+    if (_blockedCount == 0) return;
     _blockedCount = 0;
-    _reportRaw = 0;
-    _reportSession = null;
     notifyListeners();
   }
 
-  /// The script injected after every page load. It is self-contained: the
-  /// rules travel with it so the page never has to ask Dart.
+  /// Cosmetic half of the blocker. It is injected at document start and
+  /// re-applied after every page load (and when the user toggles the switch).
+  /// Network blocking happens in `shouldInterceptRequest`; this script only
+  /// removes the leftover nodes and hides empty ad containers.
   String buildInjectionScript() {
     final rules = jsonEncode(defaultBlockedHosts.toList());
     final allow = jsonEncode(_allowedHosts.toList());
@@ -262,13 +248,10 @@ class BrowserBlockerService extends ChangeNotifier {
   var ALLOW = $allow;
   var SELECTORS = $selectors;
   var ENABLED = $enabled;
-  var SESSION = '' + Date.now() + Math.random();
   if (window.__vibeGrabBlocker) {
     window.__vibeGrabBlocker.update(RULES, ALLOW, ENABLED);
     return;
   }
-  var count = 0;
-
   function hostOf(u) {
     try { return new URL(u, location.href).hostname.toLowerCase(); } catch (e) { return ''; }
   }
@@ -287,95 +270,55 @@ class BrowserBlockerService extends ChangeNotifier {
     if (matches(h, ALLOW)) return false;
     return matches(h, RULES);
   }
-  function report() {
-    try {
-      window.VibeGrabBlocker.postMessage(
-        JSON.stringify({ id: SESSION, count: count }));
-    } catch (e) {}
+  function injectStyle() {
+    if (!ENABLED) return;
+    if (document.getElementById('vibegrab-blocker-style')) return;
+    var root = document.head || document.documentElement;
+    if (!root) return;
+    var style = document.createElement('style');
+    style.id = 'vibegrab-blocker-style';
+    style.textContent = SELECTORS.join(',') + '{display:none !important;}';
+    root.appendChild(style);
   }
-  function note() { count++; report(); }
-
-  var origFetch = window.fetch;
-  if (origFetch) {
-    window.fetch = function (input, init) {
-      var url = (typeof input === 'string') ? input : (input && input.url);
-      if (url && blocked(url)) { note(); return Promise.reject(new TypeError('blocked by VibeGrab')); }
-      return origFetch.apply(this, arguments);
-    };
+  function removeStyle() {
+    var style = document.getElementById('vibegrab-blocker-style');
+    if (style) style.remove();
   }
-
-  var origOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (method, url) {
-    if (url && blocked(url)) { note(); throw new DOMException('blocked by VibeGrab', 'NetworkError'); }
-    return origOpen.apply(this, arguments);
-  };
-
-  var OrigWS = window.WebSocket;
-  if (OrigWS) {
-    var WSProxy = function (url, protocols) {
-      if (url && blocked(url)) { note(); throw new Error('blocked by VibeGrab'); }
-      return new OrigWS(url, protocols);
-    };
-    WSProxy.prototype = OrigWS.prototype;
-    window.WebSocket = WSProxy;
-  }
-
-  if (navigator.sendBeacon) {
-    var origBeacon = navigator.sendBeacon.bind(navigator);
-    navigator.sendBeacon = function (url, data) {
-      if (url && blocked(url)) { note(); return false; }
-      return origBeacon(url, data);
-    };
-  }
-
   function scrub() {
     if (!ENABLED) return;
     var nodes = document.querySelectorAll('script[src],iframe[src],img[src],source[src],video[src],link[href]');
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
       var u = el.getAttribute('src') || el.getAttribute('href');
-      if (u && blocked(u)) { note(); el.remove(); }
+      if (u && blocked(u)) { el.remove(); }
     }
   }
-
-  function injectStyle() {
-    if (!ENABLED) return;
-    if (document.getElementById('vibegrab-blocker-style')) return;
-    var style = document.createElement('style');
-    style.id = 'vibegrab-blocker-style';
-    style.textContent = SELECTORS.join(',') + '{display:none !important;}';
-    (document.head || document.documentElement).appendChild(style);
-  }
-
-  function removeStyle() {
-    var style = document.getElementById('vibegrab-blocker-style');
-    if (style) style.remove();
-  }
-
   try {
     var mo = new MutationObserver(function () { scrub(); });
-    mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'href'] });
+    mo.observe(document, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src', 'href']
+    });
   } catch (e) {}
-
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { injectStyle(); scrub(); });
-  } else { injectStyle(); scrub(); }
-
+    document.addEventListener('DOMContentLoaded', function () {
+      injectStyle();
+      scrub();
+    });
+  } else {
+    injectStyle();
+    scrub();
+  }
   window.__vibeGrabBlocker = {
-    count: function () { return count; },
     update: function (newRules, newAllow, newEnabled) {
       RULES = newRules;
       ALLOW = newAllow;
       ENABLED = !!newEnabled;
-      count = 0;
-      report();
-      // The kill switch has to stop future work, not just hide the badge:
-      // unpatched calls pass through because blocked() now returns false, and
-      // the hidden-ad CSS is removed. Nodes already removed cannot come back.
       if (!ENABLED) { removeStyle(); } else { injectStyle(); scrub(); }
     }
   };
-  report();
 })();
 true;
 ''';

@@ -18,6 +18,9 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    # Vendored third-party plugin (flutter_inappwebview_android) with a
+    # patched Gradle file; its own lints are not this project's code.
+    - packages/**
 
 linter:
   # The lint rules applied to this project can be customized in the

@@ -5,8 +5,15 @@ import 'package:vibegrab/services/browser_blocker_service.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  setUp(() {
+  setUp(() async {
     SharedPreferences.setMockInitialValues({});
+    final blocker = BrowserBlockerService.instance;
+    await blocker.init();
+    blocker.resetCount();
+    await blocker.setEnabled(true);
+    for (final host in blocker.allowedHosts.toList()) {
+      await blocker.disallowHost(host);
+    }
   });
 
   group('host matching', () {
@@ -36,16 +43,21 @@ void main() {
     test('a known ad host is blocked', () {
       final blocker = BrowserBlockerService.instance;
       expect(
-        blocker.isBlockedUrl('https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js'),
+        blocker.isBlockedUrl(
+            'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js'),
         isTrue,
       );
       expect(
         blocker.isBlockedUrl('https://ib.adnxs.com/get?cid=1'),
         isTrue,
       );
+      expect(
+        blocker.isBlockedUrl('https://stats.g.doubleclick.net/collect'),
+        isTrue,
+      );
     });
 
-    test('a normal site is not blocked', () async {
+    test('a normal site is not blocked', () {
       final blocker = BrowserBlockerService.instance;
       expect(blocker.isBlockedUrl('https://www.youtube.com/watch?v=abc'), isFalse);
       expect(blocker.isBlockedUrl('https://example.com/video.mp4'), isFalse);
@@ -80,20 +92,23 @@ void main() {
   });
 
   group('injection script', () {
-    test('carries the rules, the exceptions and the hooks', () {
+    test('carries the rules and the cosmetic scrubber', () {
       final blocker = BrowserBlockerService.instance;
       final script = blocker.buildInjectionScript();
       expect(script.contains('googlesyndication.com'), isTrue);
-      expect(script.contains('window.fetch'), isTrue);
-      expect(script.contains('XMLHttpRequest.prototype.open'), isTrue);
       expect(script.contains('MutationObserver'), isTrue);
-      expect(script.contains(BrowserBlockerService.channelName), isTrue);
+      expect(script.contains('vibegrab-blocker-style'), isTrue);
+      expect(script.contains('ins.adsbygoogle'), isTrue);
     });
 
-    test('the report is JSON with a session id and a cumulative count', () {
-      final script = BrowserBlockerService.instance.buildInjectionScript();
-      expect(script.contains('JSON.stringify({ id: SESSION, count: count })'),
-          isTrue);
+    test('does not pretend to be a network filter from JavaScript', () {
+      final blocker = BrowserBlockerService.instance;
+      final script = blocker.buildInjectionScript();
+      // The real block happens in shouldInterceptRequest. Hooking fetch/XHR
+      // from the page would only hide requests that already left the app.
+      expect(script.contains('window.fetch'), isFalse);
+      expect(script.contains('XMLHttpRequest.prototype.open'), isFalse);
+      expect(script.contains('callHandler'), isFalse);
     });
 
     test('the script carries the enabled flag and a real kill switch', () async {
@@ -112,33 +127,28 @@ void main() {
   });
 
   group('blocked counter', () {
-    test('cumulative reports for one page add only the delta', () {
+    test('one report per intercepted request adds up', () {
       final blocker = BrowserBlockerService.instance;
       blocker.resetCount();
 
-      blocker.reportBlocked(1, session: 'page-1');
-      blocker.reportBlocked(1, session: 'page-1');
-      blocker.reportBlocked(4, session: 'page-1');
-      expect(blocker.blockedCount, 4);
+      blocker.reportBlocked();
+      blocker.reportBlocked();
+      blocker.reportBlocked();
+      expect(blocker.blockedCount, 3);
 
-      // A new document restarts the counter: its first report is all new.
-      blocker.reportBlocked(2, session: 'page-2');
-      expect(blocker.blockedCount, 6);
+      blocker.reportBlocked(4);
+      expect(blocker.blockedCount, 7);
 
       blocker.resetCount();
       expect(blocker.blockedCount, 0);
     });
 
-    test('a restarted counter inside the same session is a delta from zero',
-        () {
+    test('a non-positive report changes nothing', () {
       final blocker = BrowserBlockerService.instance;
       blocker.resetCount();
-
-      blocker.reportBlocked(5, session: 'page');
-      // update() resets the script's count; the next report is 2 new blocks.
-      blocker.reportBlocked(2, session: 'page');
-      expect(blocker.blockedCount, 7);
-      blocker.resetCount();
+      blocker.reportBlocked(0);
+      blocker.reportBlocked(-2);
+      expect(blocker.blockedCount, 0);
     });
   });
 }

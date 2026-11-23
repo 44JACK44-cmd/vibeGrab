@@ -1,7 +1,7 @@
 name: vibegrab
 description: Mobile media downloader
 publish_to: 'none'
-version: 1.1.43+55
+version: 1.1.44+56
 
 environment:
   sdk: '>=3.10.0 <4.0.0'
@@ -32,15 +32,22 @@ dependencies:
   connectivity_plus: ^6.0.3
   youtube_explode_dart: ^2.3.5
   crypto: ^3.0.3
-  webview_flutter: ^4.14.1
 
   rxdart: ^0.28.0
   google_mobile_ads: ^9.1.0
+  flutter_inappwebview: 6.1.5
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
   flutter_launcher_icons: ^0.14.4
+
+dependency_overrides:
+  # flutter_inappwebview_android 1.1.3 uses the old proguard-android.txt
+  # default file, which AGP 9 rejects. The vendored copy is identical except
+  # for the build file (proguard-android-optimize.txt, compileSdk 36).
+  flutter_inappwebview_android:
+    path: packages/flutter_inappwebview_android
 
 flutter:
   uses-material-design: true

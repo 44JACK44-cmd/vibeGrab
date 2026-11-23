@@ -42,6 +42,7 @@ class MainActivity : AudioServiceActivity() {
     private val PIP_CHANNEL = "com.example.vibegrab/pip"
     private val STATUS_CHANNEL = "com.example.vibegrab/status"
     private val APP_CHANNEL = "com.example.vibegrab/app"
+    private val BROWSER_PLAYBACK_CHANNEL = "com.example.vibegrab/browser_playback"
     private var shareChannel: MethodChannel? = null
     private var downloadChannel: MethodChannel? = null
     private var localMediaChannel: MethodChannel? = null
@@ -49,6 +50,7 @@ class MainActivity : AudioServiceActivity() {
     private var pipChannel: MethodChannel? = null
     private var statusChannel: MethodChannel? = null
     private var appChannel: MethodChannel? = null
+    private var browserPlaybackChannel: MethodChannel? = null
     private var pipEventSink: EventChannel.EventSink? = null
     private var initialSharedUrl: String? = null
     private var initialShareOverlay = false
@@ -106,6 +108,7 @@ class MainActivity : AudioServiceActivity() {
         setupAppChannel(messenger)
         setupEqChannel(messenger)
         setupMediaDiagChannel(messenger)
+        setupBrowserPlaybackChannel(messenger)
 
         handleIntent(intent)
     }
@@ -790,6 +793,37 @@ class MainActivity : AudioServiceActivity() {
                         } catch (e2: Exception) {
                             result.success(false)
                         }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun setupBrowserPlaybackChannel(messenger: BinaryMessenger) {
+        // Foreground service that keeps the process alive while the built-in
+        // browser is playing audio/video with the screen off. It has no
+        // MediaSession: audio_service already owns the app's media session.
+        browserPlaybackChannel = MethodChannel(messenger, BROWSER_PLAYBACK_CHANNEL)
+        browserPlaybackChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "start" -> {
+                    try {
+                        BrowserPlaybackService.start(this)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        // Android 12+ can refuse a foreground service started
+                        // from the background. Report it instead of pretending
+                        // playback is protected.
+                        result.error("PLAYBACK_START_FAILED", e.message, null)
+                    }
+                }
+                "stop" -> {
+                    try {
+                        BrowserPlaybackService.stop(this)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("PLAYBACK_STOP_FAILED", e.message, null)
                     }
                 }
                 else -> result.notImplemented()

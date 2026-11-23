@@ -1,13 +1,16 @@
-import 'dart:convert';
+import 'dart:async';
+import 'dart:collection';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../../core/localization/app_localizations.dart';
 import '../../../core/theme/app_animations.dart';
 import '../../../services/browser_blocker_service.dart';
+import '../../../services/browser_playback_service.dart';
 import '../../downloads/controllers/downloads_controller.dart';
 import '../../share/controllers/shared_download_controller.dart';
 import '../../share/widgets/shared_download_sheet.dart';
@@ -44,8 +47,10 @@ class _BrowserSite {
   });
 }
 
-class _BrowserViewState extends State<BrowserView> {
-  late final WebViewController _web;
+class _BrowserViewState extends State<BrowserView>
+    with WidgetsBindingObserver {
+  InAppWebViewController? _web;
+  String? _pendingUrl;
   final TextEditingController _urlBar = TextEditingController();
   final TextEditingController _homeSearch = TextEditingController();
   final FocusNode _urlFocus = FocusNode();
@@ -59,7 +64,6 @@ class _BrowserViewState extends State<BrowserView> {
   bool _desktopMode = true;
   String? _currentUrl;
   String? _loadError;
-  bool _blockerInjectedEarly = false;
 
   // Desktop UA: mobile YouTube pushes the native app overlay and hides the
   // normal watch page inside WebViews; the desktop site behaves like PC.
@@ -140,125 +144,271 @@ class _BrowserViewState extends State<BrowserView> {
   void initState() {
     super.initState();
     _urlBar.addListener(_onUrlBarChanged);
-    _web = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(_desktopUa)
-      ..setBackgroundColor(Theme.of(context).colorScheme.surface)
-      ..addJavaScriptChannel(
-        BrowserBlockerService.channelName,
-        onMessageReceived: (message) {
-          // {id, count}: the script reports its cumulative count, possibly
-          // many times per page. A plain number is still accepted.
-          final raw = message.message.trim();
-          try {
-            final decoded = jsonDecode(raw);
-            if (decoded is Map) {
-              final count = decoded['count'];
-              final id = decoded['id']?.toString();
-              if (count is num) {
-                BrowserBlockerService.instance
-                    .reportBlocked(count.toInt(), session: id);
-              }
-              return;
-            }
-          } catch (_) {
-            // Not JSON: fall back to the old plain-number contract.
-          }
-          final count = int.tryParse(raw);
-          if (count == null) return;
-          BrowserBlockerService.instance.reportBlocked(count);
-        },
-      )
-      ..setNavigationDelegate(NavigationDelegate(
-        onProgress: (value) {
-          if (mounted) setState(() => _progress = value / 100);
-          // Head start: as soon as the new document exists, install the
-          // filter. Waiting for onPageFinished meant the whole first wave of
-          // sub-resources had already been requested. This is best effort
-          // (webview_flutter has no document-start hook), so onPageFinished
-          // re-injects for the rest of the page's life.
-          if (value > 0 && value < 100 && !_blockerInjectedEarly) {
-            _blockerInjectedEarly = true;
-            _injectBlocker();
-          }
-        },
-        onPageStarted: (url) {
-          _blockerInjectedEarly = false;
-          if (!mounted) return;
-          setState(() {
-            _loading = true;
-            _loadError = null;
-            _currentUrl = url;
-            _syncUrlBar(url);
-          });
-        },
-        onPageFinished: _onPageFinished,
-        onNavigationRequest: (request) {
-          if (_isDirectFileUrl(request.url)) {
-            _downloadFile(request.url);
-            return NavigationDecision.prevent;
-          }
-          // Only web pages load inside the WebView. A page cannot use an
-          // intent://, file:// or content:// link to reach app-private data
-          // or launch arbitrary components.
-          final uri = Uri.tryParse(request.url);
-          final scheme = uri?.scheme.toLowerCase();
-          if (uri == null ||
-              (scheme != 'http' && scheme != 'https' && scheme != 'about')) {
-            return NavigationDecision.prevent;
-          }
-          // Google refuses OAuth/sign-in inside a WebView ("disallowed_useragent")
-          // and the page just stalls. Hand those links to the system browser,
-          // where the account flow actually works.
-          if (_isGoogleSignInHost(uri.host)) {
-            _openSignInExternally(request.url);
-            return NavigationDecision.prevent;
-          }
-          // Top-level navigation to a known ad host never opens a page.
-          if (BrowserBlockerService.instance.isBlockedUrl(request.url)) {
-            BrowserBlockerService.instance.reportBlocked(1);
-            return NavigationDecision.prevent;
-          }
-          return NavigationDecision.navigate;
-        },
-        onWebResourceError: (error) {
-          // Sub-resource errors (ads, trackers) are not a broken page.
-          if (error.isForMainFrame == false) return;
-          if (!mounted) return;
-          setState(() {
-            _loading = false;
-            _progress = 0;
-            _loadError = error.description;
-          });
-        },
-      ));
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// The app going away (screen off, app switch, notification shade) and the
+  /// screen turning back on. Only a page that is actually playing holds the
+  /// WebView visible; an idle page keeps the normal pause behaviour.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final playback = BrowserPlaybackService.instance;
+    switch (state) {
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+        unawaited(playback.onAppInactive());
+        break;
+      case AppLifecycleState.resumed:
+        unawaited(playback.onAppResumed());
+        break;
+      case AppLifecycleState.detached:
+        unawaited(playback.release());
+        break;
+    }
+  }
+
+  InAppWebViewSettings _settings() {
+    return InAppWebViewSettings(
+      javaScriptEnabled: true,
+      // Real network filter: shouldInterceptRequest sees every sub-resource
+      // before Chromium requests it.
+      useShouldInterceptRequest: true,
+      useShouldOverrideUrlLoading: true,
+      useOnDownloadStart: true,
+      // Keeps the WebView's window "visible" when VibeGrab is in the
+      // background, so Chromium does not suspend the media pipeline.
+      allowBackgroundAudioPlaying: true,
+      mediaPlaybackRequiresUserGesture: false,
+      supportMultipleWindows: false,
+      userAgent: _desktopMode ? _desktopUa : null,
+      domStorageEnabled: true,
+      databaseEnabled: true,
+      thirdPartyCookiesEnabled: true,
+      cacheEnabled: true,
+      transparentBackground: false,
+      // A web page must not reach app-private files through file:// links.
+      allowFileAccess: false,
+      allowContentAccess: false,
+      allowFileAccessFromFileURLs: false,
+      allowUniversalAccessFromFileURLs: false,
+      geolocationEnabled: false,
+      safeBrowsingEnabled: true,
+      useHybridComposition: true,
+    );
+  }
+
+  List<UserScript> _userScripts() {
+    const time = UserScriptInjectionTime.AT_DOCUMENT_START;
+    return [
+      UserScript(
+        source: BrowserBlockerService.instance.buildInjectionScript(),
+        injectionTime: time,
+        forMainFrameOnly: false,
+      ),
+      UserScript(
+        source: BrowserPlaybackService.installScript,
+        injectionTime: time,
+        forMainFrameOnly: false,
+      ),
+    ];
+  }
+
+  void _onWebViewCreated(InAppWebViewController controller) {
+    _web = controller;
+    controller.addJavaScriptHandler(
+      handlerName: BrowserPlaybackService.handlerName,
+      callback: (args) {
+        final data = args.isNotEmpty ? args.first : null;
+        if (data is Map) {
+          unawaited(BrowserPlaybackService.instance.onMediaState(
+            playing: data['playing'] == true,
+            ended: data['ended'] == true,
+          ));
+        }
+        return null;
+      },
+    );
+    BrowserPlaybackService.instance.attach(
+      (source) async {
+        await controller.evaluateJavascript(source: source);
+      },
+    );
+    final pending = _pendingUrl;
+    if (pending != null) {
+      _pendingUrl = null;
+      controller.loadUrl(urlRequest: URLRequest(url: WebUri(pending)));
+    }
+  }
+
+  /// Network half of the blocker. A blocked host never receives the request:
+  /// Chromium gets an empty 204 response instead.
+  Future<WebResourceResponse?> _interceptRequest(
+    InAppWebViewController controller,
+    WebResourceRequest request,
+  ) async {
+    final blocker = BrowserBlockerService.instance;
+    final url = request.url.toString();
+    if (!blocker.isBlockedUrl(url)) return null;
+    blocker.reportBlocked();
+    return WebResourceResponse(
+      contentType: 'text/plain',
+      contentEncoding: 'utf-8',
+      data: Uint8List(0),
+      statusCode: 204,
+      reasonPhrase: 'Blocked by VibeGrab',
+    );
+  }
+
+  Future<NavigationActionPolicy?> _shouldOverrideUrlLoading(
+    InAppWebViewController controller,
+    NavigationAction action,
+  ) async {
+    final url = action.request.url?.toString() ?? '';
+    if (url.isEmpty) return NavigationActionPolicy.CANCEL;
+    if (_isDirectFileUrl(url)) {
+      _downloadFile(url);
+      return NavigationActionPolicy.CANCEL;
+    }
+    // Only web pages load inside the WebView. A page cannot use an
+    // intent://, file:// or content:// link to reach app-private data
+    // or launch arbitrary components.
+    final uri = Uri.tryParse(url);
+    final scheme = uri?.scheme.toLowerCase();
+    if (uri == null ||
+        (scheme != 'http' && scheme != 'https' && scheme != 'about')) {
+      return NavigationActionPolicy.CANCEL;
+    }
+    // Google refuses OAuth/sign-in inside a WebView
+    // ("disallowed_useragent") and the page just stalls. Hand those links to
+    // the system browser, where the account flow actually works.
+    if (_isGoogleSignInHost(uri.host)) {
+      _openSignInExternally(url);
+      return NavigationActionPolicy.CANCEL;
+    }
+    // Top-level navigation to a known ad host never opens a page.
+    if (BrowserBlockerService.instance.isBlockedUrl(url)) {
+      BrowserBlockerService.instance.reportBlocked();
+      return NavigationActionPolicy.CANCEL;
+    }
+    return NavigationActionPolicy.ALLOW;
+  }
+
+  void _onLoadStart(InAppWebViewController controller, WebUri? url) {
+    final value = url?.toString() ?? '';
+    if (value.isEmpty || value == 'about:blank') return;
+    if (!mounted) return;
+    setState(() {
+      _loading = true;
+      _loadError = null;
+      _currentUrl = value;
+      _syncUrlBar(value);
+    });
+  }
+
+  Future<void> _onLoadStop(
+      InAppWebViewController controller, WebUri? url) async {
+    final canBack = await controller.canGoBack();
+    final canForward = await controller.canGoForward();
+    if (!mounted) return;
+    final value = url?.toString();
+    setState(() {
+      _loading = false;
+      if (value != null && value.isNotEmpty && value != 'about:blank') {
+        _currentUrl = value;
+        _syncUrlBar(value);
+      }
+      _canGoBack = canBack;
+      _canGoForward = canForward;
+    });
+    // The document-start script already ran; this updates the live page
+    // (rules changed while it was loading) and covers late DOM insertions.
+    await _injectBlocker();
+  }
+
+  void _onProgressChanged(InAppWebViewController controller, int progress) {
+    if (mounted) setState(() => _progress = progress / 100);
+  }
+
+  void _onReceivedError(
+    InAppWebViewController controller,
+    WebResourceRequest request,
+    WebResourceError error,
+  ) {
+    // Sub-resource errors (ads, trackers) are not a broken page.
+    if (request.isForMainFrame == false) return;
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _progress = 0;
+      _loadError = error.description;
+    });
+  }
+
+  void _onDownloadStartRequest(
+    InAppWebViewController controller,
+    DownloadStartRequest request,
+  ) {
+    final url = request.url.toString();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return;
+    _downloadFile(url);
+  }
+
+  void _onUpdateVisitedHistory(
+    InAppWebViewController controller,
+    WebUri? url,
+    bool? isReload,
+  ) {
+    final value = url?.toString() ?? '';
+    if (value.isEmpty || value == 'about:blank') return;
+    if (!mounted) return;
+    setState(() {
+      _currentUrl = value;
+      _syncUrlBar(value);
+    });
+    unawaited(_refreshHistoryState());
+  }
+
+  Future<void> _refreshHistoryState() async {
+    final controller = _web;
+    if (controller == null) return;
+    final canBack = await controller.canGoBack();
+    final canForward = await controller.canGoForward();
+    if (!mounted) return;
+    setState(() {
+      _canGoBack = canBack;
+      _canGoForward = canForward;
+    });
+  }
+
+  /// Replaces the document-start scripts so the next page load uses the
+  /// current blocker settings. The live page is updated by [_injectBlocker].
+  Future<void> _refreshUserScripts() async {
+    final controller = _web;
+    if (controller == null) return;
+    try {
+      await controller.removeAllUserScripts();
+      await controller.addUserScripts(userScripts: _userScripts());
+    } catch (e) {
+      debugPrint('[Browser] user script refresh failed: $e');
+    }
   }
 
   void _onUrlBarChanged() {
     if (mounted) setState(() {});
   }
 
-  Future<void> _onPageFinished(String url) async {
-    final canBack = await _web.canGoBack();
-    final canForward = await _web.canGoForward();
-    if (!mounted) return;
-    setState(() {
-      _loading = false;
-      _currentUrl = url;
-      _canGoBack = canBack;
-      _canGoForward = canForward;
-    });
-    await _injectBlocker();
-  }
-
-  /// The WebView cannot filter sub-resources on its own, so the filter is a
-  /// script injected as early as the document allows and re-applied after
-  /// every page load (it removes nodes and hides the usual ad containers).
+  /// The network block happens in [_interceptRequest]. This script is the
+  /// cosmetic half: it removes leftover ad nodes and hides the usual ad
+  /// containers. It is injected at document start and re-applied after every
+  /// page load (and whenever the user changes the settings).
   Future<void> _injectBlocker({bool force = false}) async {
     final blocker = BrowserBlockerService.instance;
     if (!blocker.enabled && !force) return;
+    final controller = _web;
+    if (controller == null) return;
     try {
-      await _web.runJavaScript(blocker.buildInjectionScript());
+      await controller.evaluateJavascript(source: blocker.buildInjectionScript());
     } catch (e) {
       debugPrint('[Browser] blocker injection failed: $e');
     }
@@ -328,7 +478,12 @@ class _BrowserViewState extends State<BrowserView> {
     if (uri == null) return;
     _homeSearch.clear();
     setState(() => _showHome = false);
-    _web.loadRequest(uri);
+    final controller = _web;
+    if (controller == null) {
+      _pendingUrl = uri.toString();
+      return;
+    }
+    controller.loadUrl(urlRequest: URLRequest(url: WebUri(uri.toString())));
   }
 
   void _goHome() {
@@ -339,7 +494,7 @@ class _BrowserViewState extends State<BrowserView> {
 
   void _goBack() {
     if (_showHome) return;
-    _web.goBack();
+    _web?.goBack();
   }
 
   /// Non-null when the current page is a downloadable media page.
@@ -371,6 +526,7 @@ class _BrowserViewState extends State<BrowserView> {
   /// The request is handled by the normal download manager: real progress,
   /// foreground notification and a file in the user's Downloads folder.
   void _downloadFile(String url) {
+    if (!mounted) return;
     final uri = Uri.tryParse(url);
     if (uri == null) return;
     final loc = AppLocalizations.of(context);
@@ -390,10 +546,7 @@ class _BrowserViewState extends State<BrowserView> {
   }
 
   void _stopLoading() {
-    // webview_flutter has no stopLoading() API. window.stop() is the web
-    // standard way to abort the current document load and is supported by
-    // the Android WebView.
-    _web.runJavaScript('window.stop();');
+    _web?.stopLoading();
     if (mounted) {
       setState(() {
         _loading = false;
@@ -405,8 +558,18 @@ class _BrowserViewState extends State<BrowserView> {
   Future<void> _toggleDesktopMode() async {
     final next = !_desktopMode;
     setState(() => _desktopMode = next);
-    await _web.setUserAgent(next ? _desktopUa : null);
-    if (!_showHome) await _web.reload();
+    final controller = _web;
+    if (controller == null) return;
+    try {
+      final userAgent = next
+          ? _desktopUa
+          : await InAppWebViewController.getDefaultUserAgent();
+      await controller
+          .setSettings(settings: InAppWebViewSettings(userAgent: userAgent));
+      if (!_showHome) await controller.reload();
+    } catch (e) {
+      debugPrint('[Browser] user agent change failed: $e');
+    }
   }
 
   Future<void> _clearBrowsingData() async {
@@ -430,18 +593,27 @@ class _BrowserViewState extends State<BrowserView> {
     );
     if (confirmed != true) return;
     try {
-      await _web.clearCache();
-      await _web.clearLocalStorage();
-      await WebViewCookieManager().clearCookies();
-    } catch (_) {}
+      await InAppWebViewController.clearAllCache();
+      await CookieManager.instance().deleteAllCookies();
+      await WebStorageManager.instance().deleteAllData();
+    } catch (e) {
+      debugPrint('[Browser] clear data failed: $e');
+    }
     if (!mounted) return;
     _urlBar.clear();
-    _web.loadRequest(Uri.parse('about:blank'));
+    _web?.loadUrl(urlRequest: URLRequest(url: WebUri('about:blank')));
     _goHome();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    final playback = BrowserPlaybackService.instance;
+    // Drop the JS bridge first: the platform view is going away, so there is
+    // nothing left to evaluate. The service and the hold flag are cleared
+    // regardless.
+    playback.detach();
+    unawaited(playback.release());
     _urlBar.removeListener(_onUrlBarChanged);
     _urlBar.dispose();
     _homeSearch.dispose();
@@ -461,7 +633,7 @@ class _BrowserViewState extends State<BrowserView> {
       canPop: !interceptBack,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && widget.isActive && !_showHome && _canGoBack) {
-          _web.goBack();
+          _web?.goBack();
         }
       },
       child: Stack(
@@ -484,7 +656,7 @@ class _BrowserViewState extends State<BrowserView> {
                 children: [
                   // Keep the WebView mounted behind the start page so the open
                   // tab is preserved when returning from a shortcut.
-                  Positioned.fill(child: WebViewWidget(controller: _web)),
+                  Positioned.fill(child: _buildWebView()),
                   if (_showHome) _buildHome(context, loc, cs),
                 ],
               ),
@@ -515,6 +687,23 @@ class _BrowserViewState extends State<BrowserView> {
     );
   }
 
+  Widget _buildWebView() {
+    return InAppWebView(
+      initialUrlRequest: URLRequest(url: WebUri('about:blank')),
+      initialSettings: _settings(),
+      initialUserScripts: UnmodifiableListView(_userScripts()),
+      onWebViewCreated: _onWebViewCreated,
+      shouldInterceptRequest: _interceptRequest,
+      shouldOverrideUrlLoading: _shouldOverrideUrlLoading,
+      onLoadStart: _onLoadStart,
+      onLoadStop: _onLoadStop,
+      onProgressChanged: _onProgressChanged,
+      onReceivedError: _onReceivedError,
+      onDownloadStartRequest: _onDownloadStartRequest,
+      onUpdateVisitedHistory: _onUpdateVisitedHistory,
+    );
+  }
+
   Widget _buildErrorBanner(ColorScheme cs, AppLocalizations loc) {
     return Material(
       color: cs.errorContainer,
@@ -538,7 +727,7 @@ class _BrowserViewState extends State<BrowserView> {
                 final url = _currentUrl;
                 if (url == null) return;
                 setState(() => _loadError = null);
-                _web.loadRequest(Uri.parse(url));
+                _web?.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
               },
               child: Text(loc.retry),
             ),
@@ -637,8 +826,9 @@ class _BrowserViewState extends State<BrowserView> {
                           value: blocker.enabled,
                           onChanged: (v) async {
                             await blocker.setEnabled(v);
-                            // Re-run the script in both directions: it updates
-                            // the live page (ENABLED flag, CSS, counter).
+                            // Update the live page (ENABLED flag, CSS) and the
+                            // document-start script used by the next load.
+                            await _refreshUserScripts();
                             await _injectBlocker(force: true);
                           },
                         ),
@@ -661,6 +851,8 @@ class _BrowserViewState extends State<BrowserView> {
                       OutlinedButton.icon(
                         onPressed: () async {
                           await blocker.allowHost(host);
+                          await _refreshUserScripts();
+                          await _injectBlocker(force: true);
                           if (ctx.mounted) Navigator.pop(ctx);
                         },
                         icon: const Icon(Icons.add_link, size: 18),
@@ -720,7 +912,7 @@ class _BrowserViewState extends State<BrowserView> {
             ),
             _iconBtn(
               Icons.arrow_forward_rounded,
-              onPressed: _canGoForward ? () => _web.goForward() : null,
+              onPressed: _canGoForward ? () => _web?.goForward() : null,
             ),
             _iconBtn(
               Icons.home_rounded,
@@ -773,7 +965,7 @@ class _BrowserViewState extends State<BrowserView> {
               tooltip: _loading ? loc.browserStop : loc.retry,
               onPressed: _showHome
                   ? null
-                  : (_loading ? _stopLoading : () => _web.reload()),
+                  : (_loading ? _stopLoading : () => _web?.reload()),
             ),
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert_rounded, size: 20),

@@ -52,6 +52,12 @@
             android:name=".DownloadNotificationService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+        <!-- Keeps the built-in browser's audio/video alive with the screen
+             off. No MediaSession: audio_service owns the app media session. -->
+        <service
+            android:name=".BrowserPlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback"/>
         <service
             android:name="com.ryanheise.audioservice.AudioService"
             android:foregroundServiceType="mediaPlayback"

@@ -23,6 +23,73 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.44
+    WhatsNewEntry(
+      id: 'wn-1144-adblock',
+      version: '1.1.44',
+      build: 56,
+      category: WhatsNewCategory.features,
+      emoji: '🛡️',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'El navegador bloquea anuncios de verdad',
+        en: 'The browser really blocks ads',
+      ),
+      description: LocalizedText(
+        es: 'Las peticiones a servidores de publicidad y rastreadores se cortan antes de salir del teléfono, en lugar de limitarse a ocultar los huecos. El escudo de la barra cuenta las peticiones bloqueadas.',
+        en: 'Requests to ad and tracker servers are stopped before they leave the phone, instead of only hiding the empty slots. The shield in the toolbar counts the requests actually blocked.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1144-background',
+      version: '1.1.44',
+      build: 56,
+      category: WhatsNewCategory.features,
+      emoji: '🎵',
+      order: 1,
+      featured: true,
+      title: LocalizedText(
+        es: 'Música y vídeos con la pantalla apagada',
+        en: 'Music and videos with the screen off',
+      ),
+      description: LocalizedText(
+        es: 'Al reproducir audio o vídeo en el navegador, la reproducción continúa aunque apagues la pantalla o cambies de app. Verás una notificación discreta mientras siga sonando.',
+        en: 'When you play audio or video in the browser, playback continues even if you turn the screen off or switch apps. A discreet notification stays while it is playing.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1144-blocker-settings',
+      version: '1.1.44',
+      build: 56,
+      category: WhatsNewCategory.improvements,
+      emoji: '⚙️',
+      order: 2,
+      title: LocalizedText(
+        es: 'Los ajustes del bloqueador se aplican al instante',
+        en: 'Blocker settings take effect right away',
+      ),
+      description: LocalizedText(
+        es: 'Activar o desactivar el escudo, o permitir un sitio, actualiza la página abierta y las siguientes cargas sin necesidad de recargar a mano.',
+        en: 'Turning the shield on or off, or allowing a site, updates the open page and future loads without a manual reload.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1144-pause',
+      version: '1.1.44',
+      build: 56,
+      category: WhatsNewCategory.fixes,
+      emoji: '⏸️',
+      order: 3,
+      title: LocalizedText(
+        es: 'Pausar sigue funcionando al instante',
+        en: 'Pausing still works right away',
+      ),
+      description: LocalizedText(
+        es: 'La protección contra pausas solo actúa cuando la app está en segundo plano: con la pantalla encendida puedes pausar desde la página como siempre.',
+        en: 'Pause protection only applies while the app is in the background: with the screen on you can pause from the page as always.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.43
     WhatsNewEntry(
       id: 'wn-1143-install',
