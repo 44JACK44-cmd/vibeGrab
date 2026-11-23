@@ -37,7 +37,13 @@ Notas de Render Free:
 - RAM 512 MB — suficiente para yt-dlp (usa una instancia, no concurrentes).
 - Si ves lentitud la primera vez (~40 s), es el arranque en frío: UptimeRobot
   lo evita.
-- El límite es 750 h/mes por servicio; un ping cada 5 min lo mantiene dentro.
+- El límite es **750 h/mes por workspace**, no por servicio. Un único servicio
+  encendido 24/7 consume unas 744 h en un mes de 31 días, así que basta con un
+  segundo servicio free en el mismo workspace (o un keep-alive que cuente como
+  tal) para agotar las horas antes de fin de mes. Cuando eso pasa, Render
+  suspende **todos** los free web services hasta el día 1 del mes siguiente;
+  las horas se reinician y no se arrastran. Revisa Dashboard → Billing →
+  Included usage para ver el consumo real.
 
 ## Opción alternativa: Oracle Cloud Always Free (tarjeta sin cargo)
 
@@ -65,7 +71,11 @@ curl -X POST https://TU_URL/api/analyze -H "Content-Type: application/json" \
 
 ## Notas importantes
 
-- **YouTube funciona 100% en el celular** (no usa backend).
+- **YouTube en Explorar/analizar sí usa el backend**: yt-dlp recibe el control
+  anti-bot de YouTube (`Sign in to confirm you're not a bot`) y la extracción
+  termina en `source_unavailable`. Cambiar de servidor no lo resuelve: harían
+  falta cookies de una cuenta autenticada, y ese dato no se guarda ni se debe
+  registrar en este proyecto. Verificado en Render el 23-nov-2026.
 - **TikTok/Instagram/etc. usan el backend**: yt-dlp resuelve los retos
   anti-bot y la descarga pasa por `/api/fetch` (los CDN bloquean peticiones
   sin cookies de sesión — comprobado en pruebas).
