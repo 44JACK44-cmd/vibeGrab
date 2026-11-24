@@ -467,6 +467,12 @@ class AppLocalizations {
   String get shareDownloadingText => _get('shareDownloadingText');
   String get shareSavingFailed => _get('shareSavingFailed');
   String get shareClose => _get('shareClose');
+  String get shareQueueTitle => _get('shareQueueTitle');
+  String get shareQueueSelectAll => _get('shareQueueSelectAll');
+  String get shareQueueClear => _get('shareQueueClear');
+  String get shareQueueDownloadAll => _get('shareQueueDownloadAll');
+  String get shareQueueAnalyzing => _get('shareQueueAnalyzing');
+  String get shareQueueSomeFailed => _get('shareQueueSomeFailed');
 
   String get errorNoInternet => _get('errorNoInternet');
   String get errorNoInternetHint => _get('errorNoInternetHint');

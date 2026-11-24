@@ -1,11 +1,21 @@
 import 'dart:async';
+import 'dart:collection';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:rxdart/rxdart.dart';
 import 'local_extraction_service.dart';
 
+/// Receives links shared from other apps and keeps them in one bounded,
+/// de-duplicated queue.
+///
+/// Android may deliver a single `onSharedUrl` or a batch `onSharedUrls`
+/// (ACTION_SEND_MULTIPLE). Both go through the same path here, so a link is
+/// never analysed twice and a second share never replaces a download already
+/// queued from the first one.
 class ShareIntentHandler {
   static const _channel = MethodChannel('com.example.vibegrab/share');
+  static const _maxQueue = 20;
 
   static final ShareIntentHandler _instance = ShareIntentHandler._();
   factory ShareIntentHandler() => _instance;
@@ -14,71 +24,141 @@ class ShareIntentHandler {
   String? _lastProcessedUrl;
   final _overlayController = ValueNotifier<bool>(false);
   final _urlController = BehaviorSubject<String>.seeded('');
+  final _urlsController =
+      BehaviorSubject<List<String>>.seeded(const <String>[]);
+  final Queue<String> _queue = Queue<String>();
+  final ValueNotifier<int> queueCount = ValueNotifier<int>(0);
 
+  /// Legacy single-url stream. Kept for widgets that still handle one link.
   Stream<String> get onUrlReceived => _urlController.stream;
+
+  /// All links delivered by one share event (one for ACTION_SEND).
+  Stream<List<String>> get onUrlsReceived => _urlsController.stream;
+
   ValueListenable<bool> get overlayMode => _overlayController;
-  String? get pendingUrl => _lastProcessedUrl;
+  ValueListenable<int> get queuedCount => queueCount;
+
+  /// The next link waiting to be shown. Does not remove it: callers that
+  /// actually handle it use [consumePendingUrl].
+  String? get pendingUrl => _queue.isEmpty ? null : _queue.first;
+
+  List<String> get queuedUrls => List<String>.unmodifiable(_queue);
+
   String? get lastProcessedUrl => _lastProcessedUrl;
 
   Future<void> init() async {
     _channel.setMethodCallHandler((call) async {
-      if (call.method == 'onSharedUrl') {
-        final args = call.arguments;
-        String? raw;
-        bool overlay = false;
-        if (args is Map) {
-          raw = args['url'] as String?;
-          overlay = args['overlay'] == true;
-        } else {
-          raw = args as String?;
-        }
-        final url = raw != null ? _extractUrl(raw) : null;
-        if (url != null) {
-          _processUrl(url, overlay: overlay);
-        }
-      } else if (call.method == 'getInitialSharedUrl') {
-        return _lastProcessedUrl ?? '';
+      switch (call.method) {
+        case 'onSharedUrls':
+          final args = call.arguments;
+          if (args is Map) {
+            final raw = args['urls'];
+            if (raw is List) {
+              _enqueue(raw, overlay: args['overlay'] == true);
+            } else if (args['url'] != null) {
+              _enqueue(<dynamic>[args['url']], overlay: args['overlay'] == true);
+            }
+          }
+          break;
+        case 'onSharedUrl':
+          final args = call.arguments;
+          final raw = args is Map ? args['url'] : args;
+          if (raw != null) {
+            _enqueue(<dynamic>[raw], overlay: args is Map && args['overlay'] == true);
+          }
+          break;
+        case 'getInitialSharedUrl':
+          return _lastProcessedUrl ?? '';
       }
+      return null;
     });
     try {
-      final info =
-          await _channel.invokeMapMethod<String, dynamic>('getInitialShareInfo');
-      final raw = (info?['url'] as String?) ?? '';
-      if (raw.isNotEmpty) {
-        final url = _extractUrl(raw) ??
-            (raw.startsWith('http') ? sanitizeUrl(raw) : null);
-        if (url != null) {
-          _processUrl(url, overlay: info?['overlay'] == true);
+      final info = await _channel.invokeMapMethod<String, dynamic>(
+          'getInitialShareInfo');
+      final raw = info?['urls'];
+      final overlay = info?['overlay'] == true;
+      if (raw is List && raw.isNotEmpty) {
+        _enqueue(raw, overlay: overlay);
+      } else {
+        final single = info?['url'] as String?;
+        if (single != null && single.isNotEmpty) {
+          _enqueue(<dynamic>[single], overlay: overlay);
         }
       }
     } catch (_) {}
   }
 
-  void _processUrl(String url, {bool overlay = false}) {
-    final sanitized = ShareIntentHandler.sanitizeUrl(url);
-    if (sanitized == _lastProcessedUrl) return;
-    _lastProcessedUrl = sanitized;
+  /// Public entry point used by the platform handler and by tests. Keeps the
+  /// de-duplication rules in one place for every Android intent path.
+  @visibleForTesting
+  void enqueueSharedUrls(Iterable<String> urls, {required bool overlay}) =>
+      _enqueue(urls, overlay: overlay);
+
+  /// Sanitises, de-duplicates and queues a batch of shared texts.
+  void _enqueue(Iterable<dynamic> texts, {required bool overlay}) {
+    final added = <String>[];
+    for (final text in texts) {
+      final raw = text?.toString() ?? '';
+      final url = _extractUrl(raw);
+      if (url == null) continue;
+      // The same link can arrive twice in one ACTION_SEND_MULTIPLE. Only the
+      // current queue is de-duplicated: a deliberate re-share later must be
+      // allowed through (the download sheet already detects saved copies).
+      if (_queue.contains(url)) continue;
+      if (_queue.length >= _maxQueue) {
+        _queue.removeFirst();
+      }
+      _queue.addLast(url);
+      added.add(url);
+    }
+    if (added.isEmpty) return;
     _overlayController.value = overlay;
-    _urlController.add(sanitized);
+    _lastProcessedUrl = added.last;
+    queueCount.value = _queue.length;
+    _urlsController.add(List<String>.unmodifiable(added));
+    for (final url in added) {
+      _urlController.add(url);
+    }
   }
 
-  void consumePendingUrl() {
+  /// Removes and returns the next link. Returns null when the queue is empty.
+  String? consumePendingUrl() {
+    if (_queue.isEmpty) {
+      _lastProcessedUrl = null;
+      return null;
+    }
+    final url = _queue.removeFirst();
+    _lastProcessedUrl = url;
+    queueCount.value = _queue.length;
+    return url;
+  }
+
+  void removeUrl(String url) {
+    if (!_queue.remove(url)) return;
+    queueCount.value = _queue.length;
+    if (_lastProcessedUrl == url) {
+      _lastProcessedUrl = _queue.isEmpty ? null : _queue.first;
+    }
+  }
+
+  void clearQueue() {
+    _queue.clear();
     _lastProcessedUrl = null;
+    queueCount.value = 0;
   }
 
   void exitOverlay() {
-    _lastProcessedUrl = null;
+    clearQueue();
     _overlayController.value = false;
     // Clear the BehaviorSubject's current value too. Keeping the old URL as
     // the latest event is what replayed the previous share when the overlay
     // was opened again.
     if (!_urlController.isClosed) _urlController.add('');
+    if (!_urlsController.isClosed) {
+      _urlsController.add(const <String>[]);
+    }
   }
 
-  /// One normalization for the whole app: a link shared from YouTube
-  /// (`youtu.be/ID?si=…`), pasted or opened from the browser must produce the
-  /// same canonical URL, or the caches and the download queue see three
-  /// different videos.
   static String sanitizeUrl(String url) =>
       LocalExtractionService.sanitizeUrl(url);
 
@@ -97,7 +177,7 @@ class ShareIntentHandler {
     'linkedin.com', 'www.linkedin.com',
     'pinterest.com', 'www.pinterest.com',
     'twitch.tv', 'www.twitch.tv',
-    'kwai.com', 'www.kwai.com', 'v.kwai.com', 'vm.kwai.com', 'k.kwai.com',
+    'kwai.com', 'www.kwai.com',
     'kuaishou.com', 'www.kuaishou.com',
     'dailymotion.com', 'www.dailymotion.com', 'dai.ly',
     'v.redd.it',
@@ -131,6 +211,8 @@ class ShareIntentHandler {
 
   void dispose() {
     _urlController.close();
+    _urlsController.close();
+    queueCount.dispose();
     _overlayController.dispose();
   }
 }

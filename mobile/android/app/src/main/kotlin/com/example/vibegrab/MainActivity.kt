@@ -52,12 +52,16 @@ class MainActivity : AudioServiceActivity() {
     private var appChannel: MethodChannel? = null
     private var browserPlaybackChannel: MethodChannel? = null
     private var pipEventSink: EventChannel.EventSink? = null
-    private var initialSharedUrl: String? = null
+    private var initialSharedUrls = mutableListOf<String>()
     private var initialShareOverlay = false
     private var pendingNotificationAction: Map<String, String?>? = null
     private var pendingPickResult: MethodChannel.Result? = null
     private val PICK_DIR_REQUEST = 1001
     private var isInPipMode = false
+    // True only when this activity was created from a share intent. With
+    // singleTask there is one activity only: finishing it after a warm share
+    // would also destroy the main app the user had open.
+    private var startedForShare = false
 
     // VibeGrab: static R references for the drawables that audio_service
     // resolves BY NAME at runtime (Resources.getIdentifier). If nothing
@@ -75,13 +79,20 @@ class MainActivity : AudioServiceActivity() {
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val fromShare = intent?.action == Intent.ACTION_SEND
+        val fromShare = isShareIntent(intent)
+        startedForShare = fromShare
         setTheme(if (fromShare) R.style.ShareTranslucentTheme else R.style.NormalTheme)
         super.onCreate(savedInstanceState)
         if (fromShare) {
             applyShareWindowOverlay()
         }
     }
+
+    /// Both single and multiple shares must be treated as a contextual
+    /// overlay. Checking only ACTION_SEND left SEND_MULTIPLE with the opaque
+    /// theme and made the panel appear as a full app screen.
+    private fun isShareIntent(i: Intent?): Boolean =
+        i?.action == Intent.ACTION_SEND || i?.action == Intent.ACTION_SEND_MULTIPLE
 
     private fun applyShareWindowOverlay() {
         try {
@@ -118,10 +129,11 @@ class MainActivity : AudioServiceActivity() {
         shareChannel?.setMethodCallHandler { call, result ->
             if (call.method == "getInitialShareInfo") {
                 result.success(mapOf(
-                    "url" to (initialSharedUrl ?: ""),
+                    "url" to (initialSharedUrls.firstOrNull() ?: ""),
+                    "urls" to initialSharedUrls.toList(),
                     "overlay" to initialShareOverlay
                 ))
-                initialSharedUrl = null
+                initialSharedUrls.clear()
                 initialShareOverlay = false
             } else {
                 result.notImplemented()
@@ -456,6 +468,19 @@ class MainActivity : AudioServiceActivity() {
                     result.success(allowed)
                 }
                 "closeActivity" -> handleCloseActivity(result)
+                "closeShareOverlay" -> {
+                    // Cold share: finishing returns to the app that shared the
+                    // link. Warm share: Dart already switched back to the main
+                    // shell, so keep this single activity alive.
+                    if (startedForShare) {
+                        runOnUiThread {
+                            finish()
+                            result.success(true)
+                        }
+                    } else {
+                        result.success(false)
+                    }
+                }
                 // Opens a downloaded file with the system viewer.
                 "openFile" -> handleOpenFile(call, result)
                 "backgroundOverlay" -> handleBackgroundOverlay(result)
@@ -834,7 +859,11 @@ class MainActivity : AudioServiceActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.action == Intent.ACTION_SEND) {
+        // A share delivered to an already-running singleTask activity keeps
+        // the theme it was created with. Make the window translucent only when
+        // this activity was created for the share: a warm share happens over
+        // VibeGrab's own UI, not over the source app.
+        if (isShareIntent(intent) && startedForShare) {
             applyShareWindowOverlay()
         }
         handleIntent(intent)
@@ -898,21 +927,42 @@ class MainActivity : AudioServiceActivity() {
     }
 
     private fun handleSharedUrlIntent(intent: Intent?) {
-        if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
-            val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
-            if (sharedText != null) {
-                val overlay = lifecycle.currentState != Lifecycle.State.RESUMED
-                if (shareChannel != null) {
-                    shareChannel?.invokeMethod(
-                        "onSharedUrl",
-                        mapOf("url" to sharedText, "overlay" to overlay)
-                    )
-                } else {
-                    initialSharedUrl = sharedText
-                    initialShareOverlay = overlay
-                }
+        val action = intent?.action
+        if (!isShareIntent(intent)) return
+        val urls = LinkedHashSet<String>()
+        val texts = intent?.getStringArrayListExtra(Intent.EXTRA_TEXT)
+            ?: intent?.getStringArrayExtra(Intent.EXTRA_TEXT)?.toList()
+        if (action == Intent.ACTION_SEND_MULTIPLE) {
+            texts?.forEach {
+                addSharedText(urls, it)
             }
+            // EXTRA_STREAM carries content:// URIs whose contents belong to
+            // the sending app. VibeGrab does not read or copy them: only text
+            // links are supported, and that limit is documented in the UI.
+        } else {
+            intent?.getStringExtra(Intent.EXTRA_TEXT)?.let { addSharedText(urls, it) }
         }
+        if (urls.isEmpty()) return
+        android.util.Log.d("VibeGrab", "share received: $action, links=${urls.size}")
+        val list = urls.toList()
+        val overlay = startedForShare &&
+            lifecycle.currentState != Lifecycle.State.RESUMED
+        if (shareChannel != null) {
+            shareChannel?.invokeMethod(
+                "onSharedUrls",
+                mapOf("urls" to list, "overlay" to overlay)
+            )
+        } else {
+            initialSharedUrls.addAll(list)
+            initialShareOverlay = overlay
+        }
+    }
+
+    /// Keeps the received text verbatim; URL sanitisation and de-duplication
+    /// happen once, in Dart, so every entry point follows the same rules.
+    private fun addSharedText(urls: MutableSet<String>, text: String?) {
+        val value = text?.trim().orEmpty()
+        if (value.isNotEmpty()) urls.add(value)
     }
 
     private fun handleNotificationActionIntent(intent: Intent?) {

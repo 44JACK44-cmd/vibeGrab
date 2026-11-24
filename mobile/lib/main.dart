@@ -43,6 +43,7 @@ import 'features/whats_new/whats_new_service.dart';
 import 'features/share/controllers/shared_download_controller.dart';
 import 'features/share/widgets/share_overlay_page.dart';
 import 'features/share/widgets/shared_download_sheet.dart';
+import 'features/share/widgets/shared_queue_sheet.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -201,7 +202,7 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   int _currentIndex = 0;
-  StreamSubscription<String>? _shareSubscription;
+  StreamSubscription<List<String>>? _shareSubscription;
   StreamSubscription<NotificationAction>? _notifActionSubscription;
   Timer? _backendWarmupTimer;
   bool _appResumed = true;
@@ -233,12 +234,27 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    _shareSubscription = ShareIntentHandler().onUrlReceived.listen((url) {
-      if (!mounted) return;
-      if (url.isEmpty) return;
-      if (ShareIntentHandler().overlayMode.value) return;
+    final shareHandler = ShareIntentHandler();
+    _shareSubscription = shareHandler.onUrlsReceived.listen((urls) async {
+      if (!mounted || urls.isEmpty) return;
+      if (shareHandler.overlayMode.value) return;
+      if (urls.length > 1) {
+        await showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (_) => SharedQueueSheet(urls: List<String>.from(urls)),
+        );
+        if (!mounted) return;
+        // Only drop the links this panel handled: another share may have
+        // arrived while it was open and must stay in the queue.
+        for (final url in urls) {
+          shareHandler.removeUrl(url);
+        }
+        return;
+      }
       final sharedController = context.read<SharedDownloadController>();
-      ShareIntentHandler().consumePendingUrl();
+      final url = shareHandler.consumePendingUrl() ?? urls.first;
       sharedController.analyzeUrl(url);
       SharedDownloadSheet.show(context, sharedController);
     });

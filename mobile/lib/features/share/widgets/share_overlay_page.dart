@@ -5,7 +5,12 @@ import '../../../services/share_intent_handler.dart';
 import '../../downloads/controllers/downloads_controller.dart';
 import '../controllers/shared_download_controller.dart';
 import 'shared_download_sheet.dart';
+import 'shared_queue_sheet.dart';
 
+/// Translucent page used while VibeGrab was opened by a share intent.
+///
+/// It never navigates into the main shell: the source app stays visible
+/// behind it and closing the panel only finishes this activity.
 class ShareOverlayPage extends StatefulWidget {
   const ShareOverlayPage({super.key});
 
@@ -28,52 +33,73 @@ class _ShareOverlayPageState extends State<ShareOverlayPage> {
     _started = true;
 
     final handler = ShareIntentHandler();
-    final url = handler.pendingUrl;
-    if (url == null || url.isEmpty) {
-      handler.exitOverlay();
-      _close();
-      return;
+    while (mounted) {
+      final queued = handler.queuedUrls;
+      if (queued.isEmpty) {
+        handler.exitOverlay();
+        _close();
+        return;
+      }
+
+      if (queued.length > 1) {
+        if (!mounted) return;
+        await showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (_) => SharedQueueSheet(
+            urls: List<String>.from(queued),
+            overlay: true,
+          ),
+        );
+        if (!mounted) return;
+        for (final url in queued) {
+          handler.removeUrl(url);
+        }
+        // A new share may have arrived while the panel was open.
+        continue;
+      }
+
+      final url = handler.consumePendingUrl();
+      if (url == null) break;
+      if (!mounted) {
+        _close();
+        return;
+      }
+
+      final controller = context.read<SharedDownloadController>();
+      await context.read<DownloadsController>().init();
+      controller.analyzeUrl(url);
+
+      if (!mounted) {
+        _close();
+        return;
+      }
+
+      final dynamic sheetResult =
+          await SharedDownloadSheet.show(context, controller, overlay: true);
+      controller.reset();
+
+      if (sheetResult == 'background') {
+        handler.exitOverlay();
+        const MethodChannel('com.example.vibegrab/app')
+            .invokeMethod('backgroundOverlay')
+            .catchError((_) {});
+        return;
+      }
     }
-    handler.consumePendingUrl();
-
-    if (!mounted) {
-      _close();
-      return;
-    }
-
-    final controller = context.read<SharedDownloadController>();
-    await context.read<DownloadsController>().init();
-    controller.analyzeUrl(url);
-
-    if (!mounted) {
-      _close();
-      return;
-    }
-
-    final dynamic sheetResult =
-        await SharedDownloadSheet.show(context, controller, overlay: true);
-
-    controller.reset();
-
-    if (sheetResult == 'background') {
-      handler.exitOverlay();
-      const MethodChannel('com.example.vibegrab/app')
-          .invokeMethod('backgroundOverlay')
-          .catchError((_) {});
-      return;
-    }
-
     _close();
   }
 
   void _close() {
     if (_closed) return;
     _closed = true;
-    // Every close path must drop overlay mode. Leaving it true made the next
-    // normal launch open the translucent overlay and replay the old link.
+    // Every close path must drop overlay mode and the queue. Leaving either
+    // set made the next normal launch open the translucent page and replay
+    // an old link.
     ShareIntentHandler().exitOverlay();
     const MethodChannel('com.example.vibegrab/app')
-        .invokeMethod('closeActivity')
+        .invokeMethod('closeShareOverlay')
         .catchError((_) {});
   }
 

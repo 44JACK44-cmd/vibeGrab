@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vibegrab/services/share_intent_handler.dart';
 import 'package:vibegrab/services/local_extraction_service.dart';
@@ -65,6 +66,90 @@ void main() {
 
     test('returns null for unsupported', () {
       expect(ShareIntentHandler.detectPlatform('https://example.com/page'), isNull);
+    });
+  });
+
+  group('ShareIntentHandler - queue', () {
+    const channel = MethodChannel('com.example.vibegrab/share');
+
+    setUp(() async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'getInitialShareInfo') {
+          return {
+            'urls': [
+              'https://www.tiktok.com/@a/video/1',
+              'https://www.tiktok.com/@a/video/1',
+              'https://www.instagram.com/p/xyz',
+              'not a link',
+            ],
+            'overlay': true,
+          };
+        }
+        return null;
+      });
+      ShareIntentHandler().exitOverlay();
+      await ShareIntentHandler().init();
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      ShareIntentHandler().exitOverlay();
+    });
+
+    test('drops duplicates and invalid texts, keeps insertion order', () {
+      expect(ShareIntentHandler().queuedUrls, [
+        'https://www.tiktok.com/@a/video/1',
+        'https://www.instagram.com/p/xyz',
+      ]);
+      expect(ShareIntentHandler().queuedCount.value, 2);
+      expect(ShareIntentHandler().overlayMode.value, isTrue);
+    });
+
+    test('consumes one link without overwriting the rest of the queue', () {
+      final first = ShareIntentHandler().consumePendingUrl();
+      expect(first, 'https://www.tiktok.com/@a/video/1');
+      expect(ShareIntentHandler().queuedUrls, [
+        'https://www.instagram.com/p/xyz',
+      ]);
+      expect(ShareIntentHandler().queuedCount.value, 1);
+    });
+
+    test('removing a queued link leaves the others intact', () {
+      ShareIntentHandler()
+          .removeUrl('https://www.tiktok.com/@a/video/1');
+      expect(ShareIntentHandler().queuedUrls, [
+        'https://www.instagram.com/p/xyz',
+      ]);
+    });
+
+    test('exiting the overlay clears the queue so no link is replayed', () {
+      ShareIntentHandler().exitOverlay();
+      expect(ShareIntentHandler().queuedUrls, isEmpty);
+      expect(ShareIntentHandler().queuedCount.value, 0);
+      expect(ShareIntentHandler().overlayMode.value, isFalse);
+      expect(ShareIntentHandler().pendingUrl, isNull);
+    });
+
+    test('a second share event never replaces an in-flight download', () async {
+      ShareIntentHandler().enqueueSharedUrls(
+        [
+          'https://www.youtube.com/watch?v=abc12345',
+          'https://www.youtube.com/watch?v=abc12345',
+          'https://vimeo.com/123',
+        ],
+        overlay: false,
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(ShareIntentHandler().queuedUrls, [
+        'https://www.tiktok.com/@a/video/1',
+        'https://www.instagram.com/p/xyz',
+        'https://www.youtube.com/watch?v=abc12345',
+        'https://vimeo.com/123',
+      ]);
+      expect(ShareIntentHandler().queuedCount.value, 4);
     });
   });
 
