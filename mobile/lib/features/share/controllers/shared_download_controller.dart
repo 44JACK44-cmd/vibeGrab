@@ -85,9 +85,17 @@ class SharedDownloadController extends ChangeNotifier {
   /// never overwrite the one the user is looking at now.
   int _analyzeSeq = 0;
 
+  /// Real time of the last [analyzeUrl]: how long the user waits before the
+  /// sheet gets its format list (device path + backend path combined).
+  final Stopwatch _stopwatch = Stopwatch();
+  int? _analysisDurationMs;
+  int? get analysisDurationMs => _analysisDurationMs;
+
   List<FormatOption> get allFormats => [..._audioFormats, ..._videoFormats];
 
   Future<void> analyzeUrl(String url) async {
+    _stopwatch.reset();
+    _stopwatch.start();
     final sanitized = LocalExtractionService.sanitizeUrl(url);
     if (sanitized.trim().isEmpty) {
       _error = 'invalid_url';
@@ -121,6 +129,7 @@ class SharedDownloadController extends ChangeNotifier {
     _result = null;
     _earlyMedia = null;
     _selectedFormat = null;
+    _analysisDurationMs = null;
     notifyListeners();
 
     try {
@@ -143,6 +152,8 @@ class SharedDownloadController extends ChangeNotifier {
       _error = LocalExtractionService.friendlyError(e);
       _status = SharedSheetStatus.error;
     } finally {
+      _analysisDurationMs = _stopwatch.elapsedMilliseconds;
+      _stopwatch.stop();
       notifyListeners();
     }
   }
