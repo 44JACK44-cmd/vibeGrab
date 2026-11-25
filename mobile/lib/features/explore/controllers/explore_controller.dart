@@ -9,6 +9,7 @@ import '../../../data/models/explore_video.dart';
 import '../../../services/api_service.dart';
 import '../../../services/local_extraction_service.dart';
 import '../../../services/connectivity_service.dart';
+import '../../../services/debug_timing.dart';
 import '../../../services/media_metadata_service.dart';
 import '../../../services/media_provider_resolver.dart';
 
@@ -321,6 +322,7 @@ class ExploreController extends ChangeNotifier {
     _exploreError = ExploreError.none;
     notifyListeners();
 
+    final stopwatch = DebugTiming();
     try {
       if (!ConnectivityService.instance.hasInternet) {
         _trendingLoading = false;
@@ -332,6 +334,7 @@ class ExploreController extends ChangeNotifier {
       // 1) One server round trip gives a live, most-viewed feed.
       try {
         final live = await _api.fetchTrending(limit: 20);
+        stopwatch.log('Explore trending (api)');
         if (live.isNotEmpty) {
           final excluded = _homeIds(continueWatching: true);
           _trending = _dedupe(_preferUnseen(live)
@@ -408,6 +411,7 @@ class ExploreController extends ChangeNotifier {
             limit: 12));
       } catch (_) {}
     } finally {
+      stopwatch.log('Explore trending (total)');
       _trendingLoading = false;
       notifyListeners();
       _saveFeedCache();
