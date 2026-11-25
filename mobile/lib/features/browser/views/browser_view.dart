@@ -180,7 +180,7 @@ class _BrowserViewState extends State<BrowserView>
       // background, so Chromium does not suspend the media pipeline.
       allowBackgroundAudioPlaying: true,
       mediaPlaybackRequiresUserGesture: false,
-      supportMultipleWindows: false,
+      supportMultipleWindows: true,
       userAgent: _desktopMode ? _desktopUa : null,
       domStorageEnabled: true,
       databaseEnabled: true,
@@ -281,13 +281,9 @@ class _BrowserViewState extends State<BrowserView>
         (scheme != 'http' && scheme != 'https' && scheme != 'about')) {
       return NavigationActionPolicy.CANCEL;
     }
-    // Google refuses OAuth/sign-in inside a WebView
-    // ("disallowed_useragent") and the page just stalls. Hand those links to
-    // the system browser, where the account flow actually works.
-    if (_isGoogleSignInHost(uri.host)) {
-      _openSignInExternally(url);
-      return NavigationActionPolicy.CANCEL;
-    }
+    // Sign-in flows are allowed inside the WebView: a popup or redirect
+    // to accounts.google.com etc. opens in the same browser tab rather
+    // than exiting the app.
     // Top-level navigation to a known ad host never opens a page.
     if (BrowserBlockerService.instance.isBlockedUrl(url)) {
       BrowserBlockerService.instance.reportBlocked();
@@ -416,35 +412,26 @@ class _BrowserViewState extends State<BrowserView>
     }
   }
 
-  /// Google blocks its own sign-in inside embedded WebViews
-  /// (`disallowed_useragent`), so the flow can only complete in the system
-  /// browser. Pretending otherwise just left the user on a blank page.
-  static bool _isGoogleSignInHost(String host) {
-    final h = host.toLowerCase();
-    return h == 'accounts.google.com' ||
-        h.endsWith('.accounts.google.com') ||
-        h == 'accounts.youtube.com';
-  }
-
-  Future<void> _openSignInExternally(String url) async {
-    final loc = AppLocalizations.of(context);
-    var opened = false;
-    try {
-      opened = await launchUrl(
-        Uri.parse(url),
-        mode: LaunchMode.externalApplication,
-      );
-    } catch (e) {
-      debugPrint('[Browser] external sign-in failed: ${e.runtimeType}');
+  /// InAppWebView: let any web platform open login popups inside the browser.
+  /// A popup (sign-in, authorization) is navigated in the main view instead
+  /// of creating new windows, so VibeGrab doesn't open the app repeatedly.
+  Future<bool?> _onCreateWindow(
+    InAppWebViewController controller,
+    CreateWindowAction action,
+  ) async {
+    final url = action.request.url;
+    if (url == null || url.toString().isEmpty) return false;
+    final uri = Uri.tryParse(url.toString());
+    if (uri == null) return false;
+    if (uri.scheme.toLowerCase() != 'http' &&
+        uri.scheme.toLowerCase() != 'https' &&
+        uri.scheme.toLowerCase() != 'about') {
+      return false;
     }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          opened ? loc.browserSignInExternal : loc.browserOpenFailed,
-        ),
-      ),
-    );
+    try {
+      _web?.loadUrl(urlRequest: URLRequest(url: url));
+    } catch (_) {}
+    return true;
   }
 
   void _syncUrlBar(String url) {
@@ -703,6 +690,7 @@ class _BrowserViewState extends State<BrowserView>
       onReceivedError: _onReceivedError,
       onDownloadStartRequest: _onDownloadStartRequest,
       onUpdateVisitedHistory: _onUpdateVisitedHistory,
+      onCreateWindow: _onCreateWindow,
     );
   }
 
