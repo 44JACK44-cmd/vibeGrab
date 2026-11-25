@@ -23,6 +23,41 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.46
+    WhatsNewEntry(
+      id: 'wn-1146-browser-adblock',
+      version: '1.1.46',
+      build: 58,
+      category: WhatsNewCategory.fixes,
+      emoji: '🛡️',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Bloqueo de anuncios real del navegador',
+        en: 'Real ad blocking in the browser',
+      ),
+      description: LocalizedText(
+        es: 'El navegador intercepta y corta las peticiones de publicidad antes de salir del teléfono (red del TCP/IP).',
+        en: 'The browser intercepts and cuts ad requests before they leave the phone (network level).',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1146-browser-login',
+      version: '1.1.46',
+      build: 58,
+      category: WhatsNewCategory.features,
+      emoji: '🔐',
+      order: 1,
+      featured: true,
+      title: LocalizedText(
+        es: 'Inicio de sesión dentro del navegador',
+        en: 'Sign-in inside the browser',
+      ),
+      description: LocalizedText(
+        es: 'Login de TikTok/Facebook/Instagram/X se navega en la misma pestaña, sin salir de la app.',
+        en: 'TikTok/Facebook/Instagram/X sign-in opens in the same tab, without leaving the app.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.45
     WhatsNewEntry(
       id: 'wn-1145-shares',
