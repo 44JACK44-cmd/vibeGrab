@@ -72,4 +72,10 @@ void main() {
     // otherwise the user could not pause from the page.
     expect(script.contains('__vibeGrabAway && !allowedPause()'), isTrue);
   });
+
+  test('the install script auto-advances when the page ends', () {
+    expect(BrowserPlaybackService.installScript.contains('autoAdvance'), isTrue);
+    expect(
+        BrowserPlaybackService.installScript.contains("name === 'ended'"), isTrue);
+  });
 }

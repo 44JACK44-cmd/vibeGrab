@@ -144,8 +144,24 @@ class BrowserPlaybackService extends ChangeNotifier {
       if (!el || !el.tagName || !/^(AUDIO|VIDEO)$/.test(el.tagName)) return;
       track(el);
       report();
+      if (name === 'ended') autoAdvance();
     }, true);
   });
+
+  // 5. When the element the page is playing ends, pass to the next one.
+  // Many sites (Youtube, Tiktok) already do this natively; this covers the
+  // ones that stop at the end: the user does not have to press Play again.
+  function autoAdvance() {
+    for (var i = 0; i < known.length; i++) {
+      var el = known[i];
+      if (!el || el.ended || !el.paused) continue;
+      try {
+        var p = el.play();
+        if (p && p.catch) p.catch(function () {});
+      } catch (e) {}
+      break;
+    }
+  }
 
   // 4. Called by Dart when the app goes away: remember what was playing and
   //    resume anything the page paused just before the flag was installed.
