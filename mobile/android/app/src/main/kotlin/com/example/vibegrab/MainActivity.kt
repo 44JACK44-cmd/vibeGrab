@@ -837,9 +837,6 @@ class MainActivity : AudioServiceActivity() {
                         BrowserPlaybackService.start(this)
                         result.success(true)
                     } catch (e: Exception) {
-                        // Android 12+ can refuse a foreground service started
-                        // from the background. Report it instead of pretending
-                        // playback is protected.
                         result.error("PLAYBACK_START_FAILED", e.message, null)
                     }
                 }

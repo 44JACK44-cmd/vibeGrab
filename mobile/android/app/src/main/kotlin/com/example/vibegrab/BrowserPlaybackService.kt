@@ -1,4 +1,4 @@
-package com.example.vibegrab
+﻿package com.example.vibegrab
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -117,7 +117,7 @@ class BrowserPlaybackService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_music_note)
             .setContentTitle("VibeGrab")
-            .setContentText("Reproducción en segundo plano")
+            .setContentText("Reproducci├│n en segundo plano")
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -132,11 +132,11 @@ class BrowserPlaybackService : Service() {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
-                "Reproducción en segundo plano",
+                "Reproducci├│n en segundo plano",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description =
-                    "Mantiene el audio y el vídeo del navegador mientras la pantalla está apagada"
+                    "Mantiene el audio y el v├¡deo del navegador mientras la pantalla est├í apagada"
                 setShowBadge(false)
             }
         )
