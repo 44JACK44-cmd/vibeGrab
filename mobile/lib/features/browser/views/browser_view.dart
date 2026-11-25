@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
@@ -194,6 +194,8 @@ class _BrowserViewState extends State<BrowserView>
       allowUniversalAccessFromFileURLs: false,
       geolocationEnabled: false,
       safeBrowsingEnabled: true,
+      mixedContentMode: MixedContentMode.MIXED_CONTENT_NEVER_ALLOW,
+      isInspectable: kDebugMode,
       useHybridComposition: true,
     );
   }
