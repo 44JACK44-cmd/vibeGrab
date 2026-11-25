@@ -23,6 +23,58 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.45
+    WhatsNewEntry(
+      id: 'wn-1145-shares',
+      version: '1.1.45',
+      build: 57,
+      category: WhatsNewCategory.fixes,
+      emoji: '📎',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Comparte varios enlaces sin abrir la app',
+        en: 'Share several links without opening the app',
+      ),
+      description: LocalizedText(
+        es: 'Se agrupa una cola de enlaces compartidos, evitando que Android repita ventanas y un segundo enlace sustituya al primero. Con VibeGrab en segundo plano, los compartidos aparecen en un panel que no navega, y puedes seleccionar qué enlaces descargar.',
+        en: 'A queue of shared links is kept, so Android does not repeat windows and a second link does not replace the first. With VibeGrab in the background, shares appear in a panel that does not navigate; select which links you want to download.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1145-media',
+      version: '1.1.45',
+      build: 57,
+      category: WhatsNewCategory.features,
+      emoji: '🕐',
+      order: 1,
+      featured: true,
+      title: LocalizedText(
+        es: 'See radicales de analysis reales',
+        en: 'Real analysis timings',
+      ),
+      description: LocalizedText(
+        es: 'Explorar muestra tiempos reales del análisis de videos, no estimados.',
+        en: 'Explore shows real timings for video analysis, not estimates.',
+      ),
+    ),
+    WhatsNewEntry(
+      id: 'wn-1145-browser',
+      version: '1.1.45',
+      build: 57,
+      category: WhatsNewCategory.improvements,
+      emoji: '🖥️',
+      order: 2,
+      featured: true,
+      title: LocalizedText(
+        es: 'El navegador ya no salta: inicio de sesión in-app y auto-advance',
+        en: 'The browser stops jumping: in-app sign-in and auto-advance',
+      ),
+      description: LocalizedText(
+        es: 'Login de TikTok/Facebook/Instagram/X abre dentro del WebView: se navega en la misma pestaña. Al terminar un vídeo del navegador, pasa al siguiente sin pulsar Play.',
+        en: 'Login to TikTok/Facebook/Instagram/X opens in the same WebView. When a video in the browser ends, it advances to the next without pressing Play.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.44
     WhatsNewEntry(
       id: 'wn-1144-adblock',
