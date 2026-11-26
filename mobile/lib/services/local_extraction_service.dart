@@ -403,6 +403,7 @@ class LocalExtractionService {
           hasVideo: true,
           hasAudio: true,
           sizeBytes: muxed.size.totalBytes,
+          directUrl: muxed.url.toString(),
         ));
       }
     }
@@ -419,6 +420,7 @@ class LocalExtractionService {
           hasVideo: true,
           hasAudio: false,
           sizeBytes: videoOnly.size.totalBytes,
+          directUrl: videoOnly.url.toString(),
         ));
       }
     }
@@ -438,6 +440,7 @@ class LocalExtractionService {
           hasVideo: false,
           hasAudio: true,
           sizeBytes: audio.size.totalBytes,
+          directUrl: audio.url.toString(),
         ));
       }
     }

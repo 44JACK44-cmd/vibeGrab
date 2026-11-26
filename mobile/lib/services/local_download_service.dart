@@ -393,7 +393,7 @@ class LocalDownloadService {
     final canUseDirectFirst = directUri != null &&
         directUri.hasScheme &&
         directUri.host.isNotEmpty &&
-        (videoId == null || !task.hasVideo || synthetic);
+        (videoId == null || !task.hasVideo || task.hasAudio || synthetic);
     if (canUseDirectFirst) {
       // The synthetic `__mp3` format has fileExt=mp3, but its directUrl is
       // the provider's m4a/webm/mp4 source that still needs conversion.

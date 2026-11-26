@@ -23,6 +23,24 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.51
+    WhatsNewEntry(
+      id: 'wn-1151-yt-direct',
+      version: '1.1.51',
+      build: 63,
+      category: WhatsNewCategory.fixes,
+      emoji: '⬇️',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Descargas de YouTube más rápidas',
+        en: 'Faster YouTube downloads',
+      ),
+      description: LocalizedText(
+        es: 'Los formatos de YouTube ahora se descargan directamente desde el enlace firmado del propio dispositivo, sin pasar por el servidor.',
+        en: 'YouTube formats are now downloaded directly from the device-signed link, without going through the server.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.50
     WhatsNewEntry(
       id: 'wn-1150-youtube-errors',
