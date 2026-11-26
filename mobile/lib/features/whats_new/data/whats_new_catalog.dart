@@ -23,6 +23,24 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.49
+    WhatsNewEntry(
+      id: 'wn-1149-fast-analysis',
+      version: '1.1.49',
+      build: 61,
+      category: WhatsNewCategory.fixes,
+      emoji: '⚡',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Análisis de YouTube 10x más rápido',
+        en: 'YouTube analysis 10x faster',
+      ),
+      description: LocalizedText(
+        es: 'YouTube se resuelve directamente en el teléfono, sin esperar al servidor bloqueado. El resultado llega en segundos con formatos de vídeo y música.',
+        en: 'YouTube is resolved directly on the phone, without waiting for the blocked server. Results arrive in seconds with video and audio formats.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.48
     WhatsNewEntry(
       id: 'wn-1148-browser-build',

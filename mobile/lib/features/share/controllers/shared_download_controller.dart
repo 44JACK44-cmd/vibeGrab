@@ -164,16 +164,20 @@ class SharedDownloadController extends ChangeNotifier {
     if (running != null) return running;
     final future = () async {
       if (LocalExtractionService.supportsPlatform(sanitized)) {
-        return _firstSuccess<AnalyzeResponse>([
-          _extraction
+        // YouTube is resolved on the device: yt-dlp on the server is blocked
+        // by YouTube's anti-bot, so starting both legs only added latency and
+        // a false "content unavailable" error. The backend stays as a
+        // fallback for the cases the device path cannot handle.
+        try {
+          return await _extraction
               .extractMedia(
                 sanitized,
-                // Device metadata lands before the format list: show it.
                 onMetadata: (media) => _showEarlyMetadata(sanitized, media),
               )
-              .timeout(const Duration(seconds: 25)),
-          _api.analyze(sanitized),
-        ]);
+              .timeout(const Duration(seconds: 25));
+        } catch (_) {
+          return _api.analyze(sanitized);
+        }
       }
       return _api.analyze(sanitized);
     }();
@@ -199,26 +203,6 @@ class SharedDownloadController extends ChangeNotifier {
     _videoFormats = response.formats.where((f) => f.type == 'video').toList();
     await _selectDefaultFormat();
     _error = null;
-  }
-
-  Future<T> _firstSuccess<T>(List<Future<T>> futures) {
-    final completer = Completer<T>();
-    var remaining = futures.length;
-    Object? firstError;
-    StackTrace? firstStack;
-    for (final future in futures) {
-      future.then((value) {
-        if (!completer.isCompleted) completer.complete(value);
-      }, onError: (Object e, StackTrace st) {
-        firstError ??= e;
-        firstStack ??= st;
-        remaining--;
-        if (remaining == 0 && !completer.isCompleted) {
-          completer.completeError(firstError!, firstStack);
-        }
-      });
-    }
-    return completer.future;
   }
 
   /// Abandons the analysis in flight: its result is discarded instead of

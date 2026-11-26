@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -39,13 +38,12 @@ class _CountingApi extends ApiService {
   }
 }
 
-/// Device side of the race that never answers: the measurement is only about
-/// the backend leg, and this keeps the two from masking each other.
-class _SilentExtraction extends LocalExtractionService {
+/// YouTube's fast device path: the backend must not be called at all.
+class _FastLocalExtraction extends LocalExtractionService {
   @override
   Future<AnalyzeResponse> extractMedia(String url,
           {void Function(MediaInfo media)? onMetadata}) =>
-      Completer<AnalyzeResponse>().future;
+      _response(url);
 }
 
 class _SlowShortsExtraction extends LocalExtractionService {
@@ -137,10 +135,10 @@ void main() {
     expect(refreshMs, greaterThanOrEqualTo(kSlowLeg.inMilliseconds));
   });
 
-  test('DESCARGAS: one URL costs one analysis, repeats included', () async {
+  test('DESCARGAS: one URL costs one local analysis, repeats included', () async {
     final api = _CountingApi(kSlowLeg);
     final c = SharedDownloadController(
-      extraction: _SilentExtraction(),
+      extraction: _FastLocalExtraction(),
       api: api,
     );
     const urlA = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
@@ -160,15 +158,15 @@ void main() {
     final doubleTapMs = sw3.elapsedMilliseconds;
 
     // ignore: avoid_print
-    print('[tiempo] DESCARGAS análisis = ${coldMs}ms | repetido = '
+    print('[tiempo] DESCARGAS análisis local = ${coldMs}ms | repetido = '
         '${repeatMs}ms | doble toque = ${doubleTapMs}ms '
         '(llamadas de red: ${api.totalCalls})');
 
-    expect(coldMs, greaterThanOrEqualTo(kSlowLeg.inMilliseconds));
+    expect(coldMs, lessThan(kSlowLeg.inMilliseconds),
+        reason: 'YouTube must not wait for the blocked backend');
     expect(repeatMs, lessThan(kSlowLeg.inMilliseconds ~/ 2),
         reason: 'the cache must answer without a new network leg');
-    expect(api.totalCalls, 2,
-        reason: 'two distinct URLs, one request each: repeats and double '
-            'taps reuse the one in flight');
+    expect(api.totalCalls, 0,
+        reason: 'YouTube is resolved on the device');
   });
 }

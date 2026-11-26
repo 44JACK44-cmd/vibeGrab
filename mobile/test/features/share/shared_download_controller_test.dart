@@ -68,17 +68,6 @@ class _LateExtraction extends LocalExtractionService {
   }
 }
 
-/// Backend leg that answers immediately.
-class _FastApi extends ApiService {
-  @override
-  Future<AnalyzeResponse> analyze(String url) async => AnalyzeResponse(
-        success: true,
-        media:
-            MediaInfo(id: 'abc123abc12', title: 'Del backend', source: 'youtube'),
-        formats: const [],
-      );
-}
-
 /// The backend leg never answers: these tests are about the device path.
 class _SilentApi extends ApiService {
   @override
@@ -209,23 +198,26 @@ void main() {
     expect(controller.status, SharedSheetStatus.ready);
   });
 
-  test('late device metadata cannot overwrite a finished response', () async {
+  test('the device result is authoritative for YouTube', () async {
     final extraction = _LateExtraction();
+    final api = _CountingApi();
     final controller =
-        SharedDownloadController(extraction: extraction, api: _FastApi());
+        SharedDownloadController(extraction: extraction, api: api);
 
-    await controller
-        .analyzeUrl('https://www.youtube.com/watch?v=abc123abc12');
-    expect(controller.status, SharedSheetStatus.ready);
-    expect(controller.media?.title, 'Del backend');
-
-    // The device leg finally reports its own metadata after the backend has
-    // already answered: the sheet keeps the authoritative response.
+    final pending =
+        controller.analyzeUrl('https://www.youtube.com/watch?v=abc123abc12');
+    await Future<void>.delayed(Duration.zero);
+    // The metadata arrives while the sheet is still analysing.
     extraction.metadata.complete();
     await Future<void>.delayed(Duration.zero);
-    expect(controller.media?.title, 'Del backend');
+    expect(controller.media?.title, 'Titulo temprano');
 
     extraction.done.complete();
+    await pending;
+
+    expect(controller.status, SharedSheetStatus.ready);
+    expect(controller.media?.title, 'Titulo temprano');
+    expect(api.calls, 0);
   });
 
   test('analysisDurationMs is measured, not an invention', () async {
@@ -270,6 +262,23 @@ void main() {
     // The video format carries its audio: the user can still ask for a
     // video with audio, and the audio-only option exists in the list.
     expect(controller.allFormats.any((f) => f.hasVideo && f.hasAudio), isTrue);
+  });
+
+  test('YouTube is resolved on-device without waiting for the backend', () async {
+    final api = _CountingApi();
+    final extraction = _EarlyExtraction();
+    final controller =
+        SharedDownloadController(extraction: extraction, api: api);
+
+    final pending =
+        controller.analyzeUrl('https://www.youtube.com/watch?v=abc123abc12');
+    await Future<void>.delayed(Duration.zero);
+    extraction.metadata.complete();
+    extraction.formats.complete();
+    await pending;
+
+    expect(controller.status, SharedSheetStatus.ready);
+    expect(api.calls, 0);
   });
 
   test('a cached analysis does not repeat the network call', () async {
