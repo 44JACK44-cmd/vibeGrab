@@ -67,10 +67,16 @@ class BrowserPlaybackService extends ChangeNotifier {
   function report() {
     var state = snapshot();
     try {
+      var artist = '';
+      try {
+        var meta = document.querySelector('meta[name="artist"]');
+        if (meta && meta.content) artist = meta.content.toString();
+      } catch (e) {}
       window.flutter_inappwebview.callHandler('VibeGrabMedia', {
         playing: state.playing,
         ended: state.ended,
         title: document.title || '',
+        artist: artist,
         url: location.href
       });
     } catch (e) {}

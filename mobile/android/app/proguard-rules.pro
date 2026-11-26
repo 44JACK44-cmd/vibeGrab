@@ -16,3 +16,7 @@
     <init>(...);
 }
 -dontwarn androidx.room.paging.**
+# flutter_inappwebview is used from Dart through method channels and custom
+# tabs: R8 cannot see those reflection entry points.
+-keep class com.pichillilorenzo.flutter_inappwebview_android.** { *; }
+-dontwarn com.pichillilorenzo.**

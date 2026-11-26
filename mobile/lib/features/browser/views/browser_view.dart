@@ -226,8 +226,6 @@ class _BrowserViewState extends State<BrowserView>
           unawaited(BrowserPlaybackService.instance.onMediaState(
             playing: data['playing'] == true,
             ended: data['ended'] == true,
-            title: data['title'] as String?,
-            artist: data['artist'] as String?,
           ));
         }
         return null;

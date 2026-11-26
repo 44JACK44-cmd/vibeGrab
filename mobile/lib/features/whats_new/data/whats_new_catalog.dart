@@ -23,6 +23,24 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.48
+    WhatsNewEntry(
+      id: 'wn-1148-browser-build',
+      version: '1.1.48',
+      build: 60,
+      category: WhatsNewCategory.stability,
+      emoji: '🔒',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Build de release reforzado',
+        en: 'Hardened release build',
+      ),
+      description: LocalizedText(
+        es: 'Se conservan las clases del navegador interno durante la minificación y se limpia el código de reproducción.',
+        en: 'Internal browser classes are kept during minification and playback code is cleaned up.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.47
     WhatsNewEntry(
       id: 'wn-1147-google-login',
