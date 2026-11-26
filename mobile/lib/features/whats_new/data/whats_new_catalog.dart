@@ -23,6 +23,24 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.50
+    WhatsNewEntry(
+      id: 'wn-1150-youtube-errors',
+      version: '1.1.50',
+      build: 62,
+      category: WhatsNewCategory.fixes,
+      emoji: '🔍',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Errores de YouTube más claros',
+        en: 'Clearer YouTube errors',
+      ),
+      description: LocalizedText(
+        es: 'Los videos privados, con restricción de edad o no disponibles se identifican con un mensaje específico en lugar de un error genérico.',
+        en: 'Private, age-restricted or unavailable videos are identified with a specific message instead of a generic error.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.49
     WhatsNewEntry(
       id: 'wn-1149-fast-analysis',
