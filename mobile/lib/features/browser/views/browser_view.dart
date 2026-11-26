@@ -226,6 +226,8 @@ class _BrowserViewState extends State<BrowserView>
           unawaited(BrowserPlaybackService.instance.onMediaState(
             playing: data['playing'] == true,
             ended: data['ended'] == true,
+            title: data['title'] as String?,
+            artist: data['artist'] as String?,
           ));
         }
         return null;
@@ -284,6 +286,11 @@ class _BrowserViewState extends State<BrowserView>
     // Sign-in flows are allowed inside the WebView: a popup or redirect
     // to accounts.google.com etc. opens in the same browser tab rather
     // than exiting the app.
+    if (_isGoogleSignInHost(uri.host)) {
+      final loc = AppLocalizations.of(context);
+      unawaited(_openInCustomTab(url, loc));
+      return NavigationActionPolicy.CANCEL;
+    }
     // Top-level navigation to a known ad host never opens a page.
     if (BrowserBlockerService.instance.isBlockedUrl(url)) {
       BrowserBlockerService.instance.reportBlocked();
@@ -412,6 +419,33 @@ class _BrowserViewState extends State<BrowserView>
     }
   }
 
+  /// Google blocks sign-in inside WebViews ("disallowed_useragent") and
+  /// shows "No puedes acceder". The supported mechanism is a Chrome Custom
+  /// Tab: it stays inside the app task but runs in the system browser.
+  static bool _isGoogleSignInHost(String host) {
+    final h = host.toLowerCase();
+    return h == 'accounts.google.com' ||
+        h.endsWith('.accounts.google.com') ||
+        h == 'accounts.youtube.com';
+  }
+
+  Future<void> _openInCustomTab(String url, AppLocalizations loc) async {
+    final browser = ChromeSafariBrowser();
+    try {
+      await browser.open(url: WebUri(url));
+      return;
+    } catch (_) {}
+    try {
+      await launchUrl(Uri.parse(url),
+          mode: LaunchMode.externalApplication);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(loc.browserOpenFailed)),
+      );
+    }
+  }
+
   /// InAppWebView: let any web platform open login popups inside the browser.
   /// A popup (sign-in, authorization) is navigated in the main view instead
   /// of creating new windows, so VibeGrab doesn't open the app repeatedly.
@@ -427,6 +461,10 @@ class _BrowserViewState extends State<BrowserView>
         uri.scheme.toLowerCase() != 'https' &&
         uri.scheme.toLowerCase() != 'about') {
       return false;
+    }
+    if (_isGoogleSignInHost(uri.host)) {
+      unawaited(_openInCustomTab(url.toString(), AppLocalizations.of(context)));
+      return true;
     }
     try {
       _web?.loadUrl(urlRequest: URLRequest(url: url));

@@ -23,6 +23,24 @@ class WhatsNewCatalog {
   ];
 
   static const List<WhatsNewEntry> entries = [
+    // ----------------------------------------------------------------- 1.1.47
+    WhatsNewEntry(
+      id: 'wn-1147-google-login',
+      version: '1.1.47',
+      build: 59,
+      category: WhatsNewCategory.fixes,
+      emoji: '🔐',
+      order: 0,
+      featured: true,
+      title: LocalizedText(
+        es: 'Acceso a Google desde el navegador',
+        en: 'Google sign-in from the browser',
+      ),
+      description: LocalizedText(
+        es: 'Google bloquea el inicio de sesión en WebViews ("No puedes acceder"). Se abre ahora con Chrome Custom Tabs, la vía oficial, sin salir de la app.',
+        en: 'Google blocks sign-in inside WebViews ("You can\u2019t access"). It now opens with Chrome Custom Tabs, the official mechanism, without leaving the app.',
+      ),
+    ),
     // ----------------------------------------------------------------- 1.1.46
     WhatsNewEntry(
       id: 'wn-1146-browser-adblock',
