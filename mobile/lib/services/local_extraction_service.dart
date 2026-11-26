@@ -281,7 +281,10 @@ class LocalExtractionService {
           text.contains('removed') ||
           text.contains('not available') ||
           text.contains('age-restricted') ||
-          text.contains('age restricted')) {
+          text.contains('age restricted') ||
+          text.contains('sign in') ||
+          text.contains('login required') ||
+          text.contains('requires authentication')) {
         throw AnalysisException(
           AnalysisFailureType.unavailable,
           code: e.runtimeType.toString(),
